@@ -1,0 +1,4 @@
+owlready2==0.50
+py4j==0.10.9.9
+pyparsing==3.3.2
+rdflib==7.6.0

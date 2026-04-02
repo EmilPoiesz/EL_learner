@@ -1,0 +1,144 @@
+@prefix : <http://el-learner.example.org/medical#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# ---------------------------------------------------------------------------
+# Ontology declaration
+# ---------------------------------------------------------------------------
+
+<http://el-learner.example.org/medical>
+    a owl:Ontology ;
+    rdfs:label "Medical EL Demo Ontology" .
+
+# ---------------------------------------------------------------------------
+# Classes (Σ_O)
+# ---------------------------------------------------------------------------
+
+:Doctor              a owl:Class .
+:Nurse               a owl:Class .
+:MedicalProfessional a owl:Class .
+:Person              a owl:Class .
+:Patient             a owl:Class .
+:Surgeon             a owl:Class .
+:Researcher          a owl:Class .
+:AcademicDoctor      a owl:Class .
+:Operation           a owl:Class .
+:MedicalStudent      a owl:Class .
+:Disease             a owl:Class .
+
+# ---------------------------------------------------------------------------
+# Object properties (roles)
+# ---------------------------------------------------------------------------
+
+:performs       a owl:ObjectProperty .
+:teaches        a owl:ObjectProperty .
+:hasCondition   a owl:ObjectProperty .
+
+# ---------------------------------------------------------------------------
+# GCIs
+# ---------------------------------------------------------------------------
+
+# (1)  Doctor ⊑ MedicalProfessional
+:Doctor rdfs:subClassOf :MedicalProfessional .
+
+# (2)  Nurse ⊑ MedicalProfessional
+:Nurse rdfs:subClassOf :MedicalProfessional .
+
+# (3)  MedicalProfessional ⊑ Person
+:MedicalProfessional rdfs:subClassOf :Person .
+
+# (4)  Patient ⊑ Person
+:Patient rdfs:subClassOf :Person .
+
+# (5)  Surgeon ⊑ Doctor
+:Surgeon rdfs:subClassOf :Doctor .
+
+# (6)  Doctor ⊓ Researcher ⊑ AcademicDoctor   (conjunctive lhs)
+[ a owl:Class ;
+  owl:intersectionOf ( :Doctor :Researcher )
+] rdfs:subClassOf :AcademicDoctor .
+
+# (7)  Surgeon ⊑ ∃performs.Operation
+:Surgeon rdfs:subClassOf [
+    a owl:Restriction ;
+    owl:onProperty :performs ;
+    owl:someValuesFrom :Operation
+] .
+
+# (8)  AcademicDoctor ⊑ ∃teaches.MedicalStudent
+:AcademicDoctor rdfs:subClassOf [
+    a owl:Restriction ;
+    owl:onProperty :teaches ;
+    owl:someValuesFrom :MedicalStudent
+] .
+
+# (9)  Patient ⊑ ∃hasCondition.Disease
+:Patient rdfs:subClassOf [
+    a owl:Restriction ;
+    owl:onProperty :hasCondition ;
+    owl:someValuesFrom :Disease
+] .
+
+# (10) A Surgeon who performs an Operation that involves a Patient is a ClinicalSurgeon
+# Surgeon ⊓ ∃performs.(Operation ⊓ ∃hasParticipant.Patient) ⊑ :ClinicalSurgeon
+[ a owl:Class ;
+  owl:intersectionOf (
+    :Surgeon
+    [ a owl:Restriction ;
+      owl:onProperty :performs ;
+      owl:someValuesFrom [
+        a owl:Class ;
+        owl:intersectionOf (
+          :Operation
+          [ a owl:Restriction ;
+            owl:onProperty :hasParticipant ;
+            owl:someValuesFrom :Patient
+          ]
+        )
+      ]
+    ]
+  )
+] rdfs:subClassOf :ClinicalSurgeon .
+
+# (11) ∃teaches.MedicalStudent ⊑ :MedicalEducator
+[ a owl:Restriction ;
+  owl:onProperty :teaches ;
+  owl:someValuesFrom :MedicalStudent
+] rdfs:subClassOf :MedicalEducator .
+
+# (12) MedicalProfessional ⊓ ∃teaches.(MedicalStudent ⊓ ∃hasCondition.Disease) ⊑ :ClinicalInstructor
+# (A professional teaching a student who is currently a patient/has a disease)
+[ a owl:Class ;
+  owl:intersectionOf (
+    :MedicalProfessional
+    [ a owl:Restriction ;
+      owl:onProperty :teaches ;
+      owl:someValuesFrom [
+        a owl:Class ;
+        owl:intersectionOf (
+          :MedicalStudent
+          [ a owl:Restriction ;
+            owl:onProperty :hasCondition ;
+            owl:someValuesFrom :Disease
+          ]
+        )
+      ]
+    ]
+  )
+] rdfs:subClassOf :ClinicalInstructor .
+
+# (13) ∃performs.Operation ⊓ ∃teaches.MedicalStudent ⊑ :TeachingSurgeon
+[ a owl:Class ;
+  owl:intersectionOf (
+    [ a owl:Restriction ;
+      owl:onProperty :performs ;
+      owl:someValuesFrom :Operation
+    ]
+    [ a owl:Restriction ;
+      owl:onProperty :teaches ;
+      owl:someValuesFrom :MedicalStudent
+    ]
+  )
+] rdfs:subClassOf :TeachingSurgeon .

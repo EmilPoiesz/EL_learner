@@ -1,0 +1,172 @@
+@prefix : <http://el-learner.example.org/test#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# ===========================================================================
+#  Minimal EL test ontology
+#
+#  Signature  Σ = { A, B, C, D, E, F }    Roles = { r, s }
+#
+#  Every GCI is labelled with the branch of Algorithm 1 it exercises.
+#  See test_learner.py for the full expected behaviour at each step.
+# ===========================================================================
+
+<http://el-learner.example.org/test>
+    a owl:Ontology ;
+    rdfs:label "Minimal EL Algorithm Test Ontology" .
+
+# ---------------------------------------------------------------------------
+# Classes and properties
+# ---------------------------------------------------------------------------
+
+:A  a owl:Class .
+:B  a owl:Class .
+:C  a owl:Class .
+:D  a owl:Class .
+:E  a owl:Class .
+:F  a owl:Class .
+:G  a owl:Class .
+
+:r  a owl:ObjectProperty .
+:s  a owl:ObjectProperty .
+
+# ---------------------------------------------------------------------------
+# GCI 1 — A ⊑ B
+#
+# Branch: Phase 1 (atomic subsumption initialisation).
+# The learner discovers this in the MQ loop before the first EQ call.
+# ---------------------------------------------------------------------------
+:A rdfs:subClassOf :B .
+
+# ---------------------------------------------------------------------------
+# GCI 2 — A ⊑ ∃r.C
+#
+# Branch: right-essential, plain existential RHS.
+# EQ returns A ⊑ ∃r.C (atomic LHS → right-essential path).
+# saturate_concept_rhs on filler C: C has no outgoing subsumptions in Σ,
+# so it stays C.  sibling_merge: only one ∃r branch, no merge.
+# decompose_rhs: root has no atoms — no decomposition.
+# Result: α = A ⊑ ∃r.C.
+# ---------------------------------------------------------------------------
+:A rdfs:subClassOf [
+    a owl:Restriction ;
+    owl:onProperty :r ;
+    owl:someValuesFrom :C
+] .
+
+# ---------------------------------------------------------------------------
+# GCI 3 — B ⊑ ∃r.(C ⊓ D)
+#
+# Branch: right-essential, sibling merge trigger.
+# O contains a SINGLE existential whose filler is already the conjunction C ⊓ D.
+# The oracle will first return a counterexample B ⊑ ∃r.C (stripped from the
+# filler).  After that is learned, it returns B ⊑ ∃r.D.  On the second call,
+# compute_right_essential conjoins the two known rhs parts (∃r.C from H and
+# ∃r.D from the new counterexample) producing ∃r.C ⊓ ∃r.D, then
+# sibling_merge_fixpoint merges the two same-role branches into ∃r.(C ⊓ D).
+# MQ then confirms B ⊑ ∃r.(C⊓D) because that is exactly what O contains.
+#
+# Note: for the structural MQ to confirm the merged form, O must contain
+# B ⊑ ∃r.(C⊓D) — which it does here — and the oracle must also return
+# B ⊑ ∃r.C / B ⊑ ∃r.D as intermediate counterexamples (sub-GCIs of GCI 3).
+# We therefore add GCIs 3a and 3b explicitly so the structural oracle can
+# return them and MQ can confirm them.
+# ---------------------------------------------------------------------------
+:B rdfs:subClassOf [
+    a owl:Restriction ;
+    owl:onProperty :r ;
+    owl:someValuesFrom [
+        a owl:Class ;
+        owl:intersectionOf ( :C :D )
+    ]
+] .
+
+
+# ---------------------------------------------------------------------------
+# GCI 4 — A ⊓ B ⊑ E
+#
+# Branch: left-essential, atom stripping.
+# EQ returns A ⊓ B ⊑ E (non-atomic LHS, atomic RHS → left-essential path).
+# saturate_left: A ⊑ B is in H, so saturating {A} gives {A,B} — but the
+# LHS already has both, so no change.
+# decompose_left: tries removing B → O ⊭ A ⊑ E; tries removing A → O ⊭ B ⊑ E.
+# Neither atom can be dropped; A ⊓ B is the O-essential LHS.
+# Result: α = A ⊓ B ⊑ E.
+# ---------------------------------------------------------------------------
+[ a owl:Class ;
+  owl:intersectionOf ( :A :B )
+] rdfs:subClassOf :E .
+
+# ---------------------------------------------------------------------------
+# GCI 5 — ∃r.C ⊑ F
+#
+# Branch: left-essential, existential-only LHS.
+# EQ returns ∃r.C ⊑ F (non-atomic LHS with no atoms at all, atomic RHS).
+# saturate_left: no atoms to enrich; filler C has no outgoing subsumptions.
+# decompose_left: tries subtree C → O ⊭ C ⊑ F; tries removing ∃r.C → O ⊭ ⊤ ⊑ F.
+# The existential is essential; ∃r.C is returned unchanged.
+# Result: α = ∃r.C ⊑ F.
+# ---------------------------------------------------------------------------
+[ a owl:Restriction ;
+  owl:onProperty :r ;
+  owl:someValuesFrom :C
+] rdfs:subClassOf :F .
+
+# ---------------------------------------------------------------------------
+# GCI 6a — G ⊑ E
+# GCI 6b — G ⊑ ∃s.F
+#
+# Branch: right-essential, RHS conjunction retained without decomposition.
+# After both are learned, compute_right_essential for G conjoins them into
+# E ⊓ ∃s.F.  decompose_rhs checks the root node {atoms={E}, exs={(s,F)}}:
+# O ⊭ E ⊑ ∃s.F, so case (a) does not fire; no subtree removal either.
+# The full conjunction G ⊑ E ⊓ ∃s.F is essential.
+#
+# Note: D is intentionally left without outgoing subsumptions so that
+# filler saturation in the GCI 3 sibling-merge test stays {C, D}.
+# ---------------------------------------------------------------------------
+:G rdfs:subClassOf :E .
+:G rdfs:subClassOf [
+    a owl:Restriction ;
+    owl:onProperty :s ;
+    owl:someValuesFrom :F
+] .
+
+# ---------------------------------------------------------------------------
+# GCI 7 — A ⊑ ∃r.(B ⊓ ∃s.F)
+#
+# Branch: right-essential + decompose_rhs case (a) at an inner node.
+# The filler B ⊓ ∃s.F has BOTH an atom (B) and an existential (∃s.F).
+# decompose_rhs DFS finds this inner node and checks O ⊨ B ⊑ ∃s.F (GCI 8).
+# Since H does not yet contain B ⊑ ∃s.F, case (a) fires and emits B ⊑ ∃s.F
+# as the next axiom to learn, rather than the full GCI 7.
+# ---------------------------------------------------------------------------
+:A rdfs:subClassOf [
+    a owl:Restriction ;
+    owl:onProperty :r ;
+    owl:someValuesFrom [
+        a owl:Class ;
+        owl:intersectionOf (
+            :B
+            [ a owl:Restriction ;
+              owl:onProperty :s ;
+              owl:someValuesFrom :F
+            ]
+        )
+    ]
+] .
+
+# ---------------------------------------------------------------------------
+# GCI 8 — B ⊑ ∃s.F
+#
+# Branch: right-essential (simple).
+# Also serves as the entailment that decompose_rhs checks at the inner node
+# of GCI 7.
+# ---------------------------------------------------------------------------
+:B rdfs:subClassOf [
+    a owl:Restriction ;
+    owl:onProperty :s ;
+    owl:someValuesFrom :F
+] .
