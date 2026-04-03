@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# OWL API + HermiT reasoner bridge via py4j
+# OWL API + HermiT/ELK reasoner bridge via py4j
 # ---------------------------------------------------------------------------
 
 def _encode(concept: ELConcept) -> str:
@@ -61,28 +61,43 @@ def _wait_for_port(port: int, timeout: float = 10.0) -> None:
     raise RuntimeError(f"Port {port} did not open within {timeout:.0f} s.")
 
 
+def _wait_for_gateway(proc: subprocess.Popen, port: int, timeout: float = 10.0) -> None:
+    """Wait for the gateway port, and on failure raise with the Java stderr output."""
+    try:
+        _wait_for_port(port, timeout)
+    except RuntimeError:
+        proc.terminate()
+        try:
+            _, stderr_bytes = proc.communicate(timeout=3)
+        except Exception:
+            stderr_bytes = b""
+        stderr_str = stderr_bytes.decode(errors="replace").strip()
+        msg = f"OWLGateway Java process failed to start on port {port}."
+        if stderr_str:
+            msg += f"\nJava stderr:\n{stderr_str}"
+        raise RuntimeError(msg) from None
+
+
 class HypothesisReasoner:
     """
-    A HermiT-backed reasoner dedicated to the current hypothesis H.
+    A reasoner dedicated to the current hypothesis H.
 
     Maintains a running Java OWLGateway process whose ontology is kept in
     sync with H via add() calls.  Used by ReasonerOracle to provide a
     complete H-entailment check (make_H_MQ / on_H_add).
     """
 
-    def __init__(self, classpath: str, port: int):
+    def __init__(self, classpath: str, port: int, reasoner: str = "elk"):
         self._port = port
         self._java_proc = subprocess.Popen(
-            ["java", "-cp", classpath, "OWLGateway", str(port)],
+            ["java", "-cp", classpath, "OWLGateway", str(port), reasoner],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-        #self._java_proc.stdout.readline()  # consume ready line
-        _wait_for_port(port)
+        _wait_for_gateway(self._java_proc, port)
         
         self._gw  = JavaGateway(
             gateway_parameters=GatewayParameters(port=port, eager_load=True),
             callback_server_parameters=None,
-            #callback_server_parameters=CallbackServerParameters(port=0),
         )
         self._owl = self._gw.entry_point
 
@@ -112,16 +127,13 @@ class HypothesisReasoner:
 
 class ReasonerOracle(Oracle):
     """
-    An Oracle backed by the OWL API and HermiT reasoner via a py4j gateway.
+    An Oracle backed by the OWL API and a configurable DL reasoner via a py4j gateway.
 
     The gateway is a small Java process (OWLGateway.java) that wraps
-    OWL API + HermiT and exposes three methods over py4j:
+    OWL API + the chosen reasoner and exposes three methods over py4j:
       - add_gci(lhs_str, rhs_str)  — load an axiom
       - entails(lhs_str, rhs_str)  — subsumption query
       - clear()                    — reset the ontology
-
-    This gives us a proper DL reasoner that correctly handles conjunction
-    introduction on the RHS, unlike the structural MQ oracle.
 
     Parameters
     ----------
@@ -129,13 +141,27 @@ class ReasonerOracle(Oracle):
         Path to the OWL/Turtle ontology file.
     gateway_jar_dir : str, optional
         Directory containing OWLGateway.class.  Defaults to the directory
-        of this source file (learn_el.py), so compiling OWLGateway.java
-        in the project directory is all that is needed.
+        of this source file, so compiling OWLGateway.java in the project
+        directory is all that is needed.
+    reasoner : str, optional
+        Which DL reasoner to use: ``"hermit"`` (default) or ``"elk"``.
+        ELK is an OWL 2 EL reasoner; it is faster but only supports the EL
+        profile.  HermiT is a full OWL 2 DL reasoner.
+        When using ELK the ``elk-owlapi-standalone-*.jar`` must be on the
+        classpath (place it in the project directory or set ELK_JAR).
     """
 
     @staticmethod
+    def _search_for_jar(pattern: str, roots: list[str]) -> str | None:
+        """Return the first jar matching *pattern* found under any of *roots*, or None."""
+        for root in roots:
+            matches = glob.glob(os.path.join(root, "**", pattern), recursive=True)
+            if matches:
+                return matches[0]
+        return None
+
+    @staticmethod
     def _find_hermit_jar() -> str:
-        
         jar = os.path.join(os.path.dirname(owlready2.__file__), "hermit", "HermiT.jar")
         if not os.path.exists(jar):
             raise FileNotFoundError(f"HermiT.jar not found at {jar}")
@@ -143,29 +169,68 @@ class ReasonerOracle(Oracle):
 
     @staticmethod
     def _find_py4j_jar() -> str:
-        # Standard install locations
-        search_roots = [
+        roots = [
             "/usr/local/share/py4j",
             "/usr/share/py4j",
             "/opt/homebrew",
             os.path.expanduser("~/.local/share/py4j"),
         ]
-        # Also search the active venv
         venv = os.environ.get("VIRTUAL_ENV")
         if venv:
-            search_roots.append(venv)
-        for root in search_roots:
-            matches = glob.glob(os.path.join(root, "**", "py4j*.jar"), recursive=True)
-            if matches:
-                return matches[0]
-        raise FileNotFoundError(
-            "py4j jar not found. Check your venv or set VIRTUAL_ENV."
-        )
+            roots.append(venv)
+        jar = ReasonerOracle._search_for_jar("py4j*.jar", roots)
+        if jar is None:
+            raise FileNotFoundError("py4j jar not found. Check your venv or set VIRTUAL_ENV.")
+        return jar
 
-    def __init__(self, path: str, gateway_jar_dir: str | None = None, port: int = 25333, oracle_skills: dict[str, float] | None = None):
+    @staticmethod
+    def _find_elk_jar(gateway_jar_dir: str) -> str:
+        """
+        Locate the ELK standalone jar.
+        """
+        env_jar = os.environ.get("ELK_JAR")
+        if env_jar:
+            if not os.path.exists(env_jar):
+                raise FileNotFoundError(f"ELK_JAR={env_jar} does not exist.")
+            return env_jar
+
+        roots = [gateway_jar_dir]
+        venv = os.environ.get("VIRTUAL_ENV")
+        if venv:
+            roots.append(venv)
+        roots += ["/usr/local/share", "/usr/share", "/opt/homebrew", os.path.expanduser("~/.local/share")]
+
+        jar = ReasonerOracle._search_for_jar("elk-owlapi-standalone*.jar", roots)
+        if jar is None:
+            raise FileNotFoundError(
+                "ELK jar not found. Download elk-owlapi-standalone-0.4.2-bin.jar from "
+                "https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/ "
+                "and place it in the project directory (rename to elk-owlapi-standalone-0.4.2.jar), "
+                "or set the ELK_JAR environment variable."
+            )
+        return jar
+
+    @staticmethod
+    def _find_log4j_jars() -> list[str]:
+        """
+        Find log4j jars required by ELK 0.4.2.  The owlready2 pellet directory
+        ships log4j-1.2-api (legacy API bridge), log4j-api, and log4j-core,
+        which together satisfy org.apache.log4j.Logger at runtime.
+        """
+        pellet_dir = os.path.join(os.path.dirname(owlready2.__file__), "pellet")
+        return glob.glob(os.path.join(pellet_dir, "log4j*.jar"))
+
+
+    def __init__(
+        self,
+        path: str,
+        gateway_jar_dir: str | None = None,
+        port: int = 25333,
+        oracle_skills: dict[str, float] | None = None,
+        reasoner: str = "elk",
+    ):
         self._sig, self._O = extract_ontology(path)
-        hermit_jar = self._find_hermit_jar()
-        py4j_jar   = self._find_py4j_jar()
+        self._reasoner_type = reasoner.lower()
 
         # Default gateway_jar_dir: same directory as this source file,
         # which is where OWLGateway.class should be compiled.
@@ -173,18 +238,26 @@ class ReasonerOracle(Oracle):
             gateway_jar_dir = os.path.dirname(os.path.abspath(__file__))
         logger.info("Using gateway_jar_dir: %s", gateway_jar_dir)
 
-        classpath = os.pathsep.join([gateway_jar_dir, hermit_jar, py4j_jar])
+        hermit_jar = self._find_hermit_jar()
+        py4j_jar   = self._find_py4j_jar()
+
+        jars = [gateway_jar_dir, hermit_jar, py4j_jar]
+        if self._reasoner_type == "elk":
+            jars.append(self._find_elk_jar(gateway_jar_dir))
+            jars.extend(self._find_log4j_jars())
+
+        classpath = os.pathsep.join(jars)
         logger.debug("Java classpath: %s", classpath)
-        logger.info("Starting OWLGateway Java process...")
+        logger.info("Starting OWLGateway Java process (reasoner=%s)...", self._reasoner_type)
         self._java_proc = subprocess.Popen(
-            ["java", "-cp", classpath, "OWLGateway"],
+            ["java", "-cp", classpath, "OWLGateway", str(port), self._reasoner_type],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
         # GatewayServer.start() launches a daemon thread and returns before
         # the socket is bound, so the ready message can arrive slightly before
         # the port is actually accepting connections.  Poll until it is.
-        _wait_for_port(port)
+        _wait_for_gateway(self._java_proc, port)
 
         self._gw  = JavaGateway(
             gateway_parameters=GatewayParameters(port=port, eager_load=True),
@@ -198,7 +271,7 @@ class ReasonerOracle(Oracle):
 
         # Start a second gateway for H-entailment on a free port
         h_port = _find_free_port()
-        self._h_reasoner = HypothesisReasoner(classpath, h_port)
+        self._h_reasoner = HypothesisReasoner(classpath, h_port, self._reasoner_type)
 
         # oracle_skills: map skill name → probability in [0, 1].
         # Supported skills: "saturate_left", "unsaturate_right",

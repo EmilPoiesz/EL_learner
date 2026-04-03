@@ -1,14 +1,37 @@
-HERMIT_JAR=$(python3 -c "import owlready2, os; print(os.path.join(os.path.dirname(owlready2.__file__), 'hermit', 'HermiT.jar'))")
+#!/usr/bin/env bash
 
-# Try multiple locations for the py4j jar
-PY4J_JAR=$(find /usr/local/share/py4j /opt/homebrew /usr/share/py4j ~/.local/share/py4j 2>/dev/null -name "py4j*.jar" | head -1)
+set -e
 
-# Fallback: search the active venv
-if [ -z "$PY4J_JAR" ]; then
-    PY4J_JAR=$(find "$VIRTUAL_ENV" -name "py4j*.jar" 2>/dev/null | head -1)
+# Resolve script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Ensure venv is active
+if [ -z "$VIRTUAL_ENV" ]; then
+    echo "Error: virtual environment not activated"
+    exit 1
 fi
 
+# --- HermiT (from owlready2) ---
+HERMIT_JAR=$(python3 -c "import owlready2, os; print(os.path.join(os.path.dirname(owlready2.__file__), 'hermit', 'HermiT.jar'))")
+
+# --- py4j (from venv) ---
+PY4J_JAR=$(find "$VIRTUAL_ENV" -name "py4j*.jar" | head -1)
+
+# --- ELK (from venv) ---
+ELK_JAR=$(find "$VIRTUAL_ENV" -name "elk-owlapi-standalone*.jar" | head -1)
+
+# --- log4j (from owlready2 pellet dir) ---
+PELLET_DIR=$(python3 -c "import owlready2, os; print(os.path.join(os.path.dirname(owlready2.__file__), 'pellet'))")
+LOG4J_JARS=$(find "$PELLET_DIR" -maxdepth 1 -name "log4j*.jar" | tr '\n' ':' | sed 's/:$//')
+
+# --- Debug prints ---
 echo "HermiT: $HERMIT_JAR"
 echo "py4j:   $PY4J_JAR"
+echo "ELK:    ${ELK_JAR:-not found}"
+echo "log4j:  ${LOG4J_JARS:-not found}"
 
-javac -cp "$HERMIT_JAR:$PY4J_JAR" OWLGateway.java
+# --- Classpath ---
+CLASSPATH="$HERMIT_JAR:$PY4J_JAR:$ELK_JAR:$LOG4J_JARS"
+
+# --- Compile ---
+javac -cp "$CLASSPATH" "$SCRIPT_DIR/OWLGateway.java"

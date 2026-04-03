@@ -1,17 +1,18 @@
 """
-test_learner.py
-===============
-Unit and integration tests for the EL learning algorithm (el_learner.py).
+unit_tests.py
+=============
+Unit and integration tests for the EL learning algorithm (EL_algorithm.py).
 
 Each test targets a specific function or branch of Algorithm 1, using the
 minimal ontology in test_minimal.ttl (and hand-coded oracles where isolation
 matters).
 
 Run with:
-    python test_learner.py          # compact output
-    python test_learner.py -v       # verbose (shows every PASS line too)
+    python unit_tests.py              # ELK reasoner, compact output
+    python unit_tests.py -v           # ELK reasoner, verbose (shows every PASS line too)
+    python unit_tests.py --hermit     # HermiT reasoner
+    python unit_tests.py --hermit -v  # HermiT reasoner, verbose
 
-Tests use HermiT via ReasonerOracle for MQ.
 Tests 3, 4, 8 do not require a live reasoner.
 
 
@@ -56,13 +57,20 @@ from EL_algorithm import (
     learn_el_terminology,
 )
 
-from HermiT_reasoner import ReasonerOracle
+from Reasoner import ReasonerOracle
+
+# ---------------------------------------------------------------------------
+# CLI flags
+# ---------------------------------------------------------------------------
+
+VERBOSE    = "-v" in sys.argv
+USE_HERMIT = "--hermit" in sys.argv
+REASONER   = "hermit" if USE_HERMIT else "elk"
 
 # ---------------------------------------------------------------------------
 # Tiny test runner
 # ---------------------------------------------------------------------------
 
-VERBOSE = "-v" in sys.argv
 _PASS = 0
 _FAIL = 0
 _SKIP = 0
@@ -144,23 +152,24 @@ target_O: set[GCI] = {
 
 
 # ---------------------------------------------------------------------------
-# HermiT-backed oracle
+# Reasoner-backed oracle
 #
 # A single ReasonerOracle is started once for the whole test run so that the
 # Java gateway process is shared across all tests.  Tests 3, 4, 8 never call
-# MQ and always run.  All other tests require HERMIT_AVAILABLE = True.
+# MQ and always run.  All other tests require REASONER_AVAILABLE = True.
 # ---------------------------------------------------------------------------
 
 _TTL_PATH    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ontologies/test_minimal.ttl")
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-HERMIT_AVAILABLE = False
+REASONER_AVAILABLE = False
 _reasoner_oracle = None
 
 try:
-    print(f"  [Setup] Starting ReasonerOracle with TTL path: {_TTL_PATH}")
+    print(f"  [Setup] Starting ReasonerOracle ({REASONER}) with TTL path: {_TTL_PATH}")
     _reasoner_oracle = ReasonerOracle(
         path=_TTL_PATH, gateway_jar_dir=_PROJECT_DIR,
+        reasoner=REASONER,
         oracle_skills={
         "saturate_left":    0.5,
         "unsaturate_right": 0.5,
@@ -168,21 +177,21 @@ try:
         "compose_right":    0.5,
     })
     print(f"  [Setup] ReasonerOracle started successfully: {_reasoner_oracle!r}")
-    HERMIT_AVAILABLE = True
-    print("  [Setup] HermiT reasoner started successfully.")
+    REASONER_AVAILABLE = True
+    print(f"  [Setup] {REASONER} reasoner started successfully.")
     print(f"  [Setup] _reasoner_oracle = {_reasoner_oracle!r}")
 except Exception as _setup_exc:
-    print(f"  [Setup] HermiT unavailable: {_setup_exc}")
-    print("  [Setup] Tests requiring HermiT will be skipped.")
+    print(f"  [Setup] {REASONER} unavailable: {_setup_exc}")
+    print(f"  [Setup] Tests requiring {REASONER} will be skipped.")
 
 
 def MQ(gci: GCI) -> bool:
-    """Membership query: O |= lhs ⊑ rhs?  Backed by HermiT when available."""
+    """Membership query: O |= lhs ⊑ rhs?  Backed by the reasoner when available."""
     if _reasoner_oracle is not None:
         return _reasoner_oracle.MQ(gci)
-    
-    # Structural fallback so that HermiT-independent tests (3, 4, 8, 13) can
-    # still run, but note that tests with HermiT-specific expected values will
+
+    # Structural fallback so that reasoner-independent tests (3, 4, 8, 13) can
+    # still run, but note that tests with reasoner-specific expected values will
     # be skipped rather than called with this fallback.
     if gci in target_O:
         return True
@@ -197,11 +206,9 @@ def MQ(gci: GCI) -> bool:
 # ===========================================================================
 print_section_title("1–2  saturate_concept_rhs")
 
-# Test 1: HermiT derives A ⊑ B (GCI 1), A ⊑ E (via A⊑B + HermiT's conjunction
-# introduction on A⊓B⊑E), and A ⊑ F (via A⊑∃r.C + ∃r.C⊑F).
 result1 = saturate_concept_rhs(A, SIG, MQ)
-if not HERMIT_AVAILABLE:
-    skip("1  saturate atoms: {A}  →  {A, B, E, F}  (requires HermiT)")
+if not REASONER_AVAILABLE:
+    skip(f"1  saturate atoms: {{A}}  →  {{A, B, E, F}}  (requires {REASONER})")
 else:
     check(
         label="1  saturate atoms: {A}  →  {A, B, E, F}",
@@ -209,11 +216,10 @@ else:
         expected=frozenset({"A", "B", "E", "F"}),
     )
 
-# Test 2: Filler of ∃r.A is saturated recursively by the same reasoning.
 result2 = saturate_concept_rhs(rA, SIG, MQ)
 inner_atoms = next(f for role, f in result2.existentials if role == "r").atoms
-if not HERMIT_AVAILABLE:
-    skip("2  saturate filler: ∃r.A  →  filler becomes {A, B, E, F}  (requires HermiT)")
+if not REASONER_AVAILABLE:
+    skip(f"2  saturate filler: ∃r.A  →  filler becomes {{A, B, E, F}}  (requires {REASONER})")
 else:
     check(
         label="2  saturate filler: ∃r.A  →  filler becomes {A, B, E, F}",
@@ -357,8 +363,8 @@ check(
 # D has no outgoing subsumptions in the ontology, so filler saturation keeps D
 # as {D} and the merged filler is exactly {C, D}.
 H13: set[GCI] = {GCI(B, rC)}
-if not HERMIT_AVAILABLE:
-    skip("13  compute_right_essential: sibling merge → single ∃r.(C⊓D)  (requires HermiT)")
+if not REASONER_AVAILABLE:
+    skip(f"13  compute_right_essential: sibling merge → single ∃r.(C⊓D)  (requires {REASONER})")
 else:
     result13 = compute_right_essential(B, rD, H13, MQ, SIG)
     r13, filler13 = next(iter(result13.rhs.existentials))
@@ -437,8 +443,8 @@ check(
 
 # Test 19: Neither side is atomic.
 # LHS = A⊓B (non-atomic conjunction), RHS = E⊓F (two atoms, non-atomic).
-# normalise should split the RHS.  Under HermiT both O |= A⊓B ⊑ E (GCI 4)
-# and O |= A⊓B ⊑ F (via A⊑∃r.C⊑F) hold, so either atom is a valid result.
+# normalise should split the RHS.  Both O |= A⊓B ⊑ E (GCI 4) and
+# O |= A⊓B ⊑ F (via A⊑∃r.C⊑F) hold, so either atom is a valid result.
 compound_lhs19 = ELConcept(atoms=frozenset({"A", "B"}))
 compound_rhs19 = ELConcept(atoms=frozenset({"E", "F"}))
 ce19 = GCI(compound_lhs19, compound_rhs19)
@@ -449,7 +455,7 @@ check(
     expected=True,
 )
 check(
-    label="19  normalise: extracted atom is E or F (both entailed by O under HermiT)",
+    label="19  normalise: extracted atom is E or F (both entailed by O)",
     result=next(iter(result19.rhs.atoms)) in {"E", "F"},
     expected=True,
 )
@@ -461,24 +467,20 @@ check(
 
 print_section_title("20  Integration: learn_el_terminology on test_minimal.ttl")
 
-if not HERMIT_AVAILABLE:
+if not REASONER_AVAILABLE:
     skip("20a  all O-GCIs entailed by learned H")
     skip("20b  soundness: all H-GCIs semantically entailed by O")
     skip("20c  oracle confirms H ≡ O  (EQ returns None)")
 else:
     try:
-        # Close the unit-test oracle, then poll until port 25333 is free
-        # before starting the fresh integration-test oracle.
         print("  [Setup 20] Closing unit-test oracle…")
         if _reasoner_oracle is not None:
             _reasoner_oracle.close()
 
-        # close() waits for both Java processes to terminate, so port 25333
-        # is guaranteed free before we start the integration-test oracle.
-
         print("  [Setup 20] Starting fresh oracle for integration test…")
         oracle20 = ReasonerOracle(
             path=_TTL_PATH, gateway_jar_dir=_PROJECT_DIR,
+            reasoner=REASONER,
             oracle_skills={
                 "saturate_left":    0.8,
                 "unsaturate_right": 0.5,
@@ -499,7 +501,6 @@ else:
         )
 
         # (b) Every H-GCI must be entailed by O (soundness).
-        # HermiT gives a complete entailment check — no structural fallback needed.
         spurious = [g for g in H20 if not oracle20.MQ(g)]
         check(
             label="20b  soundness: all H-GCIs semantically entailed by O",
@@ -521,7 +522,6 @@ else:
             print(f"    [{tag}]  {gci}")
         print("  (* = in H but not directly in O — redundant but correct)")
 
-        # Clean up the integration-test oracle
         oracle20.close()
 
     except Exception as exc:

@@ -3,7 +3,7 @@ import os
 import sys
 
 from EL_algorithm import Oracle, learn_el_terminology
-from HermiT_reasoner import ReasonerOracle
+from Reasoner import ReasonerOracle
 
 
 def run_and_report(label: str, oracle: Oracle, verbose: bool = False) -> int:
@@ -39,7 +39,7 @@ def run_and_report(label: str, oracle: Oracle, verbose: bool = False) -> int:
     return len(H)
 
 
-def demo(filename: str = "ontologies/medical.ttl", verbose: bool = False):
+def demo(filename: str = "ontologies/medical.ttl", verbose: bool = False, reasoner: str = "elk"):
     """
     Demonstrate the algorithm on a tiny hand-coded EL terminology loaded from medical.ttl.
     """
@@ -48,6 +48,7 @@ def demo(filename: str = "ontologies/medical.ttl", verbose: bool = False):
     print("="*60 + "\n")
 
     print(f"\n  Loading Turtle file: {filename}")
+    print(f"  Reasoner: {reasoner}")
 
     _TTL_PATH    = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
     _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +56,7 @@ def demo(filename: str = "ontologies/medical.ttl", verbose: bool = False):
         reasoning_oracle = ReasonerOracle(
             path=_TTL_PATH,
             gateway_jar_dir=_PROJECT_DIR,
+            reasoner=reasoner,
             oracle_skills={
                 "saturate_left":    0.8,
                 "unsaturate_right": 0.5,
@@ -62,7 +64,7 @@ def demo(filename: str = "ontologies/medical.ttl", verbose: bool = False):
                 "compose_right":    0.6,
             }
         )
-        result = run_and_report("Run: Reasoning Oracle on medical.ttl", reasoning_oracle, verbose=verbose)
+        result = run_and_report(f"Run: Reasoning Oracle on medical.ttl ({reasoner})", reasoning_oracle, verbose=verbose)
     except Exception as exc:
         print(f"  ✗  Turtle loader failed: {exc}")
         return
@@ -75,4 +77,11 @@ def demo(filename: str = "ontologies/medical.ttl", verbose: bool = False):
 
 if __name__ == "__main__":
     verbose = "-v" in sys.argv
-    demo(verbose=verbose)
+
+    reasoner = "elk"
+    for arg in sys.argv[1:]:
+        if arg.startswith("--reasoner="):
+            reasoner = arg.split("=", 1)[1]
+            break
+
+    demo(verbose=verbose, reasoner=reasoner)
