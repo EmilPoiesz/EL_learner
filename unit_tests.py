@@ -57,7 +57,7 @@ from EL_algorithm import (
     learn_el_terminology,
 )
 
-from Reasoner import ReasonerOracle
+from ReasonerOracle import ReasonerOracle
 
 # ---------------------------------------------------------------------------
 # CLI flags

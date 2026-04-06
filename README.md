@@ -1,10 +1,12 @@
 # EL Ontology Learner
 
-An implementation of an exact learning algorithm for EL terminologies, based on Angluin-style queries to a DL reasoner (ELK or HermiT).
+An implementation of an exact learning algorithm for EL terminologies, based on Angluin-style queries to an oracle.
 
 Given a target OWL ontology expressed in the EL description logic fragment, the learner reconstructs an equivalent terminology by issuing:
 - **Membership queries (MQ)** — "Does O entail C ⊑ D?"
 - **Equivalence queries (EQ)** — "Is my current hypothesis equivalent to O?"
+
+The oracle answering these queries is pluggable. The current implementation provides a reasoner-backed oracle (ELK or HermiT), and the architecture is designed to allow the O-oracle to be replaced by a language model (`LLMOracle`).
 
 The algorithm is described in:
 > Duarte et al., *ExactLearner: a Tool for Exact Learning of EL Ontologies*.
@@ -31,8 +33,10 @@ pip install -r requirements.txt
 
 | File | Description |
 |---|---|
-| `EL_algorithm.py` | Core learning algorithm and EL concept data structures |
-| `Reasoner.py` | `ReasonerOracle` — bridges Python to OWL API + ELK/HermiT via py4j |
+| `EL_algorithm.py` | Core learning algorithm, EL concept data structures, and `Oracle` ABC |
+| `Reasoner.py` | `HypothesisReasoner` and Java gateway helpers — shared by all oracle implementations |
+| `ReasonerOracle.py` | `ReasonerOracle` — O-oracle backed by OWL API + ELK/HermiT via py4j |
+| `LLMOracle.py` | `LLMOracle` — O-oracle skeleton to be backed by a language model |
 | `OWLGateway.java` | Java gateway process exposing `add_gci`, `entails`, `clear` over py4j |
 | `demo.py` | End-to-end demo on `ontologies/medical.ttl` |
 | `unit_tests.py` | Unit and integration tests |
@@ -55,24 +59,47 @@ This produces `OWLGateway.class` in the project directory.
 
 ---
 
-## How it works
+## Architecture
 
-The learner is written in Python but relies on Java reasoners (ELK and HermiT) which have no Python bindings. Communication happens via **py4j**, which runs a small Java process (`OWLGateway`) that listens on a local TCP port and exposes three methods to Python:
+### Oracle abstraction
+
+The learning algorithm interacts with the outside world exclusively through the `Oracle` ABC defined in `EL_algorithm.py`. Any oracle must implement:
+
+| Method | Description |
+|---|---|
+| `MQ(gci)` | Membership query — does O entail this GCI? |
+| `EQ(H)` | Equivalence query — return a counterexample GCI, or `None` if H ≡ O |
+| `signature` | Σ_O — the set of atomic concept names in O |
+| `make_H_MQ(H)` | Return a callable for H-entailment (default: structural EL check) |
+| `on_H_add(gci)` | Called when a GCI is added to H (override to keep an external reasoner in sync) |
+
+Two oracle implementations are provided:
+
+- **`ReasonerOracle`** (`ReasonerOracle.py`) — answers MQ and EQ using a DL reasoner (ELK or HermiT). The O-axioms are loaded once at construction; H-entailment is delegated to a `HypothesisReasoner`.
+- **`LLMOracle`** (`LLMOracle.py`) — skeleton oracle that accepts a `HypothesisReasoner` for H-entailment and delegates MQ/EQ to a language model (not yet implemented).
+
+### HypothesisReasoner
+
+`HypothesisReasoner` (`Reasoner.py`) is a standalone component shared by both oracle types. It maintains a running Java OWLGateway process whose ontology is kept in sync with H via `add()` calls, and answers H-entailment queries via `entails()`. It is passed into `LLMOracle` as a constructor parameter, so the H-entailment side does not need to be reimplemented when swapping the O-oracle.
+
+### Java gateway (ReasonerOracle only)
+
+`ReasonerOracle` relies on Java reasoners (ELK and HermiT) which have no Python bindings. Communication happens via **py4j**, which runs a small Java process (`OWLGateway`) that listens on a local TCP port and exposes three methods to Python:
 
 - `add_gci(lhs, rhs)` — load an axiom into the reasoner
 - `entails(lhs, rhs)` — subsumption query
 - `clear()` — reset the ontology
 
-Two separate gateway processes are started:
+`ReasonerOracle` starts two separate gateway processes:
 
-- **O-reasoner** — holds the target ontology O, used to answer membership queries
-- **H-reasoner** (`HypothesisReasoner`) — holds the current hypothesis H, used to check entailment during equivalence queries; grows incrementally as the algorithm adds GCIs
+- **O-reasoner** — holds the target ontology O, used to answer MQ
+- **H-reasoner** (`HypothesisReasoner`) — holds the current hypothesis H, used during EQ
 
 Concepts are serialised as strings when passed over the py4j bridge (see [Concept encoding](#concept-encoding-python--java) below).
 
 ---
 
-## Reasoners
+## Reasoners (ReasonerOracle)
 
 Two reasoners are supported, selected via the `reasoner` parameter of `ReasonerOracle`:
 
@@ -99,7 +126,7 @@ Set `ELK_JAR=/path/to/elk-owlapi-standalone-0.4.2.jar` to bypass the search enti
 ## Usage
 
 ```python
-from Reasoner import ReasonerOracle
+from ReasonerOracle import ReasonerOracle
 from EL_algorithm import learn_el_terminology
 
 # ELK is the default reasoner

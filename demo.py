@@ -3,7 +3,7 @@ import os
 import sys
 
 from EL_algorithm import Oracle, learn_el_terminology
-from Reasoner import ReasonerOracle
+from ReasonerOracle import ReasonerOracle
 
 
 def run_and_report(label: str, oracle: Oracle, verbose: bool = False) -> int:

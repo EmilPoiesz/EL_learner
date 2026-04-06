@@ -1,16 +1,21 @@
 import logging
 import random
 import subprocess
-import time
 import owlready2
 import os
 import glob
-import socket
 
 from py4j.java_gateway import JavaGateway, GatewayParameters
 
 from EL_algorithm import Oracle, ELConcept, GCI
 from typing import Optional
+
+from HypothesisReasoner import (
+    HypothesisReasoner,
+    _encode,
+    _find_free_port,
+    _wait_for_gateway,
+)
 
 from rdflib import OWL, RDF, RDFS, Graph, URIRef, BNode
 from rdflib.collection import Collection
@@ -21,109 +26,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # OWL API + HermiT/ELK reasoner bridge via py4j
 # ---------------------------------------------------------------------------
-
-def _encode(concept: ELConcept) -> str:
-    """
-    Encode an ELConcept as a string for the OWLGateway Java process.
-
-    Grammar:
-      TOP                  → owl:Thing
-      A                    → named class A
-      AND:(e1),(e2),...    → intersection
-      SOME:r:(filler)      → existential restriction  ∃r.filler
-    """
-    if not concept.atoms and not concept.existentials:
-        return "TOP"
-    parts = list(concept.atoms)
-    for role, filler in concept.existentials:
-        parts.append(f"SOME:{role}:({_encode(filler)})")
-    if len(parts) == 1:
-        return parts[0]
-    return "AND:" + ",".join(f"({p})" for p in parts)
-
-
-def _find_free_port() -> int:
-    """Bind to port 0 to let the OS pick an available port, then return it."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(port: int, timeout: float = 10.0) -> None:
-    """Block until *port* on localhost is accepting connections, or raise."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                return
-        except OSError:
-            time.sleep(0.1)
-    raise RuntimeError(f"Port {port} did not open within {timeout:.0f} s.")
-
-
-def _wait_for_gateway(proc: subprocess.Popen, port: int, timeout: float = 10.0) -> None:
-    """Wait for the gateway port, and on failure raise with the Java stderr output."""
-    try:
-        _wait_for_port(port, timeout)
-    except RuntimeError:
-        proc.terminate()
-        try:
-            _, stderr_bytes = proc.communicate(timeout=3)
-        except Exception:
-            stderr_bytes = b""
-        stderr_str = stderr_bytes.decode(errors="replace").strip()
-        msg = f"OWLGateway Java process failed to start on port {port}."
-        if stderr_str:
-            msg += f"\nJava stderr:\n{stderr_str}"
-        raise RuntimeError(msg) from None
-
-
-class HypothesisReasoner:
-    """
-    A reasoner dedicated to the current hypothesis H.
-
-    Maintains a running Java OWLGateway process whose ontology is kept in
-    sync with H via add() calls.  Used by ReasonerOracle to provide a
-    complete H-entailment check (make_H_MQ / on_H_add).
-    """
-
-    def __init__(self, classpath: str, port: int, reasoner: str = "elk"):
-        self._port = port
-        self._java_proc = subprocess.Popen(
-            ["java", "-cp", classpath, "OWLGateway", str(port), reasoner],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        _wait_for_gateway(self._java_proc, port)
-        
-        self._gw  = JavaGateway(
-            gateway_parameters=GatewayParameters(port=port, eager_load=True),
-            callback_server_parameters=None,
-        )
-        self._owl = self._gw.entry_point
-
-    def add(self, gci: "GCI") -> None:
-        self._owl.add_gci(_encode(gci.lhs), _encode(gci.rhs))
-
-    def entails(self, gci: "GCI") -> bool:
-        return self._owl.entails(_encode(gci.lhs), _encode(gci.rhs))
-
-    def __call__(self, gci: "GCI") -> bool:
-        return self.entails(gci)
-
-    def close(self) -> None:
-        try:
-            self._gw.close()
-        except Exception:
-            pass
-        try:
-            self._java_proc.terminate()
-            self._java_proc.wait(timeout=5)
-        except Exception:
-            pass
-
-    def __del__(self):
-        self.close()
-
 
 class ReasonerOracle(Oracle):
     """
@@ -456,19 +358,19 @@ class ReasonerOracle(Oracle):
         return ce
 
 
-# Parsing ontologies
+# ---------------------------------------------------------------------------
+# Ontology parsing
+# ---------------------------------------------------------------------------
+
 def extract_ontology(path: str) -> tuple[set[str], set[GCI]]:
     g = Graph()
     g.parse(path)
 
-    # --- Signature: all named OWL classes ----------------------------
     sig: set[str] = set()
     for clause in g.subjects(RDF.type, OWL.Class):
         if isinstance(clause, URIRef):
             sig.add(local_name(clause))
 
-    # --- GCIs: all rdfs:subClassOf triples ---------------------------
-    # Also pick up classes used only as subjects/objects of subClassOf
     gcis: set[GCI] = set()
     for subj, _, obj in g.triples((None, RDFS.subClassOf, None)):
         for node in (subj, obj):
@@ -482,46 +384,24 @@ def extract_ontology(path: str) -> tuple[set[str], set[GCI]]:
             logger.warning("Skipping unrecognised SubClassOf triple: %s", exc)
 
     return sig, gcis
- 
-def local_name(uri: URIRef) -> str:
-    """
-    Extract the local name from a URI.
 
-    For  http://example.org/onto#Doctor  →  "Doctor"
-    For  http://example.org/onto/Doctor  →  "Doctor"
-    """
+
+def local_name(uri: URIRef) -> str:
     uri_str = str(uri)
     if "#" in uri_str:
         return uri_str.split("#")[-1]
     return uri_str.split("/")[-1]
 
-def parse_concept(g:Graph, node) -> ELConcept:
-    """
-    Recursively parse an RDF node into an ELConcept.
 
-    Named class (URIRef)
-        → ELConcept(atoms={local_name})
-
-    Anonymous intersection (BNode with owl:intersectionOf)
-        → ELConcept(atoms={all named members}, existentials={...})
-
-    Anonymous restriction (BNode with owl:onProperty + owl:someValuesFrom)
-        → ELConcept(existentials={(role, filler_concept)})
-
-    owl:Thing
-        → ELConcept()  (⊤)
-    """
-
-    # Named class
+def parse_concept(g: Graph, node) -> ELConcept:
     if isinstance(node, URIRef):
         if node == OWL.Thing:
-            return ELConcept()   # ⊤
+            return ELConcept()
         return ELConcept(atoms=frozenset({local_name(node)}))
 
     if not isinstance(node, BNode):
         raise ValueError(f"Unexpected node type: {type(node)} for {node}")
 
-    # owl:Restriction  →  ∃role.filler
     if (node, RDF.type, OWL.Restriction) in g:
         role_node   = g.value(node, OWL.onProperty)
         filler_node = g.value(node, OWL.someValuesFrom)
@@ -531,7 +411,6 @@ def parse_concept(g:Graph, node) -> ELConcept:
         filler = parse_concept(g, filler_node)
         return ELConcept(existentials=frozenset({(role, filler)}))
 
-    # owl:intersectionOf  →  C1 ⊓ C2 ⊓ ...
     list_head = g.value(node, OWL.intersectionOf)
     if list_head is not None:
         members = list(Collection(g, list_head))
@@ -546,5 +425,4 @@ def parse_concept(g:Graph, node) -> ELConcept:
             existentials=frozenset(combined_existentials),
         )
 
-    raise ValueError(f"Unrecognised BNode structure at {node}") 
- 
+    raise ValueError(f"Unrecognised BNode structure at {node}")
