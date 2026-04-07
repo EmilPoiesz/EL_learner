@@ -6,7 +6,9 @@ Given a target OWL ontology expressed in the EL description logic fragment, the 
 - **Membership queries (MQ)** — "Does O entail C ⊑ D?"
 - **Equivalence queries (EQ)** — "Is my current hypothesis equivalent to O?"
 
-The oracle answering these queries is pluggable. The current implementation provides a reasoner-backed oracle (ELK or HermiT), and the architecture is designed to allow the O-oracle to be replaced by a language model (`LLMOracle`).
+The oracle answering these queries is pluggable. Two implementations are provided:
+- **`ReasonerOracle`** — backed by a DL reasoner (ELK or HermiT)
+- **`LLMOracle`** — backed by a local HuggingFace language model
 
 The algorithm is described in:
 > Duarte et al., *ExactLearner: a Tool for Exact Learning of EL Ontologies*.
@@ -27,6 +29,8 @@ Install Python dependencies:
 pip install -r requirements.txt
 ```
 
+The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`, which are included in `requirements.txt`.
+
 ---
 
 ## Files
@@ -34,11 +38,12 @@ pip install -r requirements.txt
 | File | Description |
 |---|---|
 | `EL_algorithm.py` | Core learning algorithm, EL concept data structures, and `Oracle` ABC |
-| `Reasoner.py` | `HypothesisReasoner` and Java gateway helpers — shared by all oracle implementations |
+| `HypothesisReasoner.py` | `HypothesisReasoner` and Java gateway helpers — shared by all oracle implementations |
 | `ReasonerOracle.py` | `ReasonerOracle` — O-oracle backed by OWL API + ELK/HermiT via py4j |
-| `LLMOracle.py` | `LLMOracle` — O-oracle skeleton to be backed by a language model |
+| `LLMOracle.py` | `LLMOracle` — O-oracle backed by a local HuggingFace language model; Manchester syntax serializer and parser |
 | `OWLGateway.java` | Java gateway process exposing `add_gci`, `entails`, `clear` over py4j |
-| `demo.py` | End-to-end demo on `ontologies/medical.ttl` |
+| `demo.py` | End-to-end demo on `ontologies/medical.ttl` using `ReasonerOracle` |
+| `demo_llm.py` | End-to-end demo using `LLMOracle` with a local HuggingFace model |
 | `unit_tests.py` | Unit and integration tests |
 | `java_env.bash` | Helper script to compile `OWLGateway.java` |
 | `ontologies/` | Example OWL/Turtle ontology files |
@@ -76,11 +81,11 @@ The learning algorithm interacts with the outside world exclusively through the 
 Two oracle implementations are provided:
 
 - **`ReasonerOracle`** (`ReasonerOracle.py`) — answers MQ and EQ using a DL reasoner (ELK or HermiT). The O-axioms are loaded once at construction; H-entailment is delegated to a `HypothesisReasoner`.
-- **`LLMOracle`** (`LLMOracle.py`) — skeleton oracle that accepts a `HypothesisReasoner` for H-entailment and delegates MQ/EQ to a language model (not yet implemented).
+- **`LLMOracle`** (`LLMOracle.py`) — answers MQ and EQ by prompting a local HuggingFace language model using Manchester syntax. H-entailment is delegated to a `HypothesisReasoner`.
 
 ### HypothesisReasoner
 
-`HypothesisReasoner` (`Reasoner.py`) is a standalone component shared by both oracle types. It maintains a running Java OWLGateway process whose ontology is kept in sync with H via `add()` calls, and answers H-entailment queries via `entails()`. It is passed into `LLMOracle` as a constructor parameter, so the H-entailment side does not need to be reimplemented when swapping the O-oracle.
+`HypothesisReasoner` (`HypothesisReasoner.py`) is a standalone component shared by both oracle types. It maintains a running Java OWLGateway process whose ontology is kept in sync with H via `add()` calls, and answers H-entailment queries via `entails()`. It is passed into `LLMOracle` as a constructor parameter, so the H-entailment side does not need to be reimplemented when swapping the O-oracle.
 
 ### Java gateway (ReasonerOracle only)
 
@@ -125,11 +130,12 @@ Set `ELK_JAR=/path/to/elk-owlapi-standalone-0.4.2.jar` to bypass the search enti
 
 ## Usage
 
+### ReasonerOracle
+
 ```python
 from ReasonerOracle import ReasonerOracle
 from EL_algorithm import learn_el_terminology
 
-# ELK is the default reasoner
 oracle = ReasonerOracle(
     path="ontologies/medical.ttl",
     gateway_jar_dir="."        # directory containing OWLGateway.class
@@ -142,7 +148,7 @@ for gci in sorted(H, key=str):
 oracle.close()
 ```
 
-To use HermiT instead:
+To use HermiT instead of ELK:
 
 ```python
 oracle = ReasonerOracle(
@@ -151,15 +157,131 @@ oracle = ReasonerOracle(
 )
 ```
 
-`learn_el_terminology` returns a `set[GCI]` equivalent to the target ontology O.
+### LLMOracle
+
+The `LLMOracle` uses a local HuggingFace model as the O-oracle. The model is loaded via `transformers.pipeline` and communicates through Manchester syntax prompts. H-entailment is still handled by `HypothesisReasoner` (Java/ELK).
+
+```python
+import os
+from HypothesisReasoner import HypothesisReasoner, _find_free_port
+from LLMOracle import LLMOracle
+from ReasonerOracle import ReasonerOracle
+from EL_algorithm import learn_el_terminology
+
+# Build classpath using ReasonerOracle's jar-finding helpers
+gateway_jar_dir = os.path.dirname(os.path.abspath(__file__))
+classpath = os.pathsep.join([
+    gateway_jar_dir,
+    ReasonerOracle._find_hermit_jar(),
+    ReasonerOracle._find_py4j_jar(),
+    ReasonerOracle._find_elk_jar(gateway_jar_dir),
+    *ReasonerOracle._find_log4j_jars(),
+])
+
+h_reasoner = HypothesisReasoner(classpath, _find_free_port(), "elk")
+
+oracle = LLMOracle(
+    model_name_or_path="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    signature={"Person", "Male", "Female", "Parent", "Father", "Mother"},
+    h_reasoner=h_reasoner,
+    max_new_tokens=128,
+    device="cpu",       # or "cuda" / "mps"
+    verbose=False,
+)
+
+H = learn_el_terminology(oracle)
+oracle.close()
+```
+
+`learn_el_terminology` returns a `set[GCI]` representing what the language model knows about the domain.
+
+#### Manchester syntax
+
+`LLMOracle.py` exports module-level helpers for converting between `ELConcept`/`GCI` objects and Manchester syntax strings:
+
+```python
+from LLMOracle import concept_to_manchester, gci_to_manchester, parse_manchester_gci, parse_manchester_concept
+```
+
+| Function | Direction |
+|---|---|
+| `concept_to_manchester(concept)` | `ELConcept` → string |
+| `gci_to_manchester(gci)` | `GCI` → string |
+| `parse_manchester_concept(s)` | string → `ELConcept` |
+| `parse_manchester_gci(s)` | string → `GCI` (raises `ValueError` on invalid input) |
+
+#### How MQ and EQ work
+
+**MQ** sends a single prompt asking the model to answer yes or no:
+
+```
+Concept names in scope: Father, Female, Male, Mother, Parent, Person.
+Does the target ontology O entail the following GCI?
+  Father SubClassOf Parent
+Reply with exactly one word: yes or no.
+```
+
+**EQ** uses two sequential prompts:
+
+1. **Judge** — asks whether H is complete:
+```
+Does H capture all subsumptions entailed by the target ontology O?
+Reply with exactly one word: yes or no.
+```
+
+2. **Counterexample** — sent only when the judge answers "no", asks for a missing GCI in Manchester syntax:
+```
+Name one GCI that is entailed by target ontology O but is NOT entailed by H.
+Output exactly one line in Manchester syntax, e.g.: Cat SubClassOf Animal
+Output nothing else.
+```
+
+Parsing is strict: any response that does not parse as a valid GCI raises `ValueError`.
+
+#### Verbose mode
+
+Pass `verbose=True` to `LLMOracle` (or `-v` in `demo_llm.py`) to print every prompt and response, labelled by query type:
+
+```
+--- MQ ---
+[PROMPT] ...
+[RESPONSE] yes
+
+--- EQ (judge) ---
+[PROMPT] ...
+[RESPONSE] no
+
+--- EQ (counterexample) ---
+[PROMPT] ...
+[RESPONSE] Male and Parent SubClassOf Father
+```
 
 ---
 
 ## Demo
 
+### ReasonerOracle demo
+
 ```bash
-python demo.py          # run on ontologies/medical.ttl
-python demo.py -v       # verbose (shows all logging)
+python demo.py                      # run on ontologies/medical.ttl with ELK
+python demo.py --reasoner=hermit    # use HermiT instead
+python demo.py -v                   # verbose logging
+```
+
+### LLMOracle demo
+
+```bash
+python demo_llm.py                  # run learning loop (CPU)
+python demo_llm.py --device=mps     # Apple Silicon GPU
+python demo_llm.py --device=cuda    # NVIDIA GPU
+python demo_llm.py -v               # print all prompts and responses
+python demo_llm.py --dry-run        # preview prompts without loading the model
+```
+
+The demo uses `HuggingFaceTB/SmolLM2-1.7B-Instruct` on a kinship domain (`{Person, Male, Female, Parent, Father, Mother}`). The model is downloaded automatically on first run and cached in `~/.cache/huggingface/`. To pre-download:
+
+```bash
+huggingface-cli download HuggingFaceTB/SmolLM2-1.7B-Instruct
 ```
 
 ---
@@ -189,7 +311,7 @@ Concepts are encoded as strings when passed to the Java gateway:
 
 ---
 
-## Oracle skills (optional)
+## Oracle skills (optional, ReasonerOracle only)
 
 `ReasonerOracle` accepts an `oracle_skills` dict that probabilistically transforms counterexamples before returning them, simulating a more varied teacher:
 
