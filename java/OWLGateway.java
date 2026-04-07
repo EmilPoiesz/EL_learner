@@ -208,9 +208,9 @@ public class OWLGateway {
         GatewayServer server = new GatewayServer(gateway, port);
 
         server.start();
+        int listeningPort = server.getListeningPort();
 
-        System.out.println("OWLGateway started on port " + port +
-                " with reasoner: " + reasonerType);
+        System.out.println("READY:" + listeningPort);
         System.out.flush();
     }
 }

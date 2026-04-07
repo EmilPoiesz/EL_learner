@@ -1,24 +1,16 @@
 import logging
 import random
 import subprocess
-import owlready2
 import os
-import glob
 
 from py4j.java_gateway import JavaGateway, GatewayParameters
 
-from EL_algorithm import Oracle, ELConcept, GCI
+from el_algorithm import Oracle, ELConcept, GCI
 from typing import Optional
 
-from HypothesisReasoner import (
-    HypothesisReasoner,
-    _encode,
-    _find_free_port,
-    _wait_for_gateway,
-)
-
-from rdflib import OWL, RDF, RDFS, Graph, URIRef, BNode
-from rdflib.collection import Collection
+from utils.java_utils import find_hermit_jar, find_py4j_jar, find_elk_jar, find_log4j_jars, start_gateway, encode
+from hypothesis_reasoner import HypothesisReasoner
+from utils.owl_parser import extract_ontology
 
 logger = logging.getLogger(__name__)
 
@@ -53,81 +45,10 @@ class ReasonerOracle(Oracle):
         classpath (place it in the project directory or set ELK_JAR).
     """
 
-    @staticmethod
-    def _search_for_jar(pattern: str, roots: list[str]) -> str | None:
-        """Return the first jar matching *pattern* found under any of *roots*, or None."""
-        for root in roots:
-            matches = glob.glob(os.path.join(root, "**", pattern), recursive=True)
-            if matches:
-                return matches[0]
-        return None
-
-    @staticmethod
-    def _find_hermit_jar() -> str:
-        jar = os.path.join(os.path.dirname(owlready2.__file__), "hermit", "HermiT.jar")
-        if not os.path.exists(jar):
-            raise FileNotFoundError(f"HermiT.jar not found at {jar}")
-        return jar
-
-    @staticmethod
-    def _find_py4j_jar() -> str:
-        roots = [
-            "/usr/local/share/py4j",
-            "/usr/share/py4j",
-            "/opt/homebrew",
-            os.path.expanduser("~/.local/share/py4j"),
-        ]
-        venv = os.environ.get("VIRTUAL_ENV")
-        if venv:
-            roots.append(venv)
-        jar = ReasonerOracle._search_for_jar("py4j*.jar", roots)
-        if jar is None:
-            raise FileNotFoundError("py4j jar not found. Check your venv or set VIRTUAL_ENV.")
-        return jar
-
-    @staticmethod
-    def _find_elk_jar(gateway_jar_dir: str) -> str:
-        """
-        Locate the ELK standalone jar.
-        """
-        env_jar = os.environ.get("ELK_JAR")
-        if env_jar:
-            if not os.path.exists(env_jar):
-                raise FileNotFoundError(f"ELK_JAR={env_jar} does not exist.")
-            return env_jar
-
-        roots = [gateway_jar_dir]
-        venv = os.environ.get("VIRTUAL_ENV")
-        if venv:
-            roots.append(venv)
-        roots += ["/usr/local/share", "/usr/share", "/opt/homebrew", os.path.expanduser("~/.local/share")]
-
-        jar = ReasonerOracle._search_for_jar("elk-owlapi-standalone*.jar", roots)
-        if jar is None:
-            raise FileNotFoundError(
-                "ELK jar not found. Download elk-owlapi-standalone-0.4.2-bin.jar from "
-                "https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/ "
-                "and place it in the project directory (rename to elk-owlapi-standalone-0.4.2.jar), "
-                "or set the ELK_JAR environment variable."
-            )
-        return jar
-
-    @staticmethod
-    def _find_log4j_jars() -> list[str]:
-        """
-        Find log4j jars required by ELK 0.4.2.  The owlready2 pellet directory
-        ships log4j-1.2-api (legacy API bridge), log4j-api, and log4j-core,
-        which together satisfy org.apache.log4j.Logger at runtime.
-        """
-        pellet_dir = os.path.join(os.path.dirname(owlready2.__file__), "pellet")
-        return glob.glob(os.path.join(pellet_dir, "log4j*.jar"))
-
-
     def __init__(
         self,
         path: str,
         gateway_jar_dir: str | None = None,
-        port: int = 25333,
         oracle_skills: dict[str, float] | None = None,
         reasoner: str = "elk",
     ):
@@ -137,29 +58,26 @@ class ReasonerOracle(Oracle):
         # Default gateway_jar_dir: same directory as this source file,
         # which is where OWLGateway.class should be compiled.
         if gateway_jar_dir is None:
-            gateway_jar_dir = os.path.dirname(os.path.abspath(__file__))
+            gateway_jar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
         logger.info("Using gateway_jar_dir: %s", gateway_jar_dir)
 
-        hermit_jar = self._find_hermit_jar()
-        py4j_jar   = self._find_py4j_jar()
+        hermit_jar = find_hermit_jar()
+        py4j_jar   = find_py4j_jar()
 
         jars = [gateway_jar_dir, hermit_jar, py4j_jar]
         if self._reasoner_type == "elk":
-            jars.append(self._find_elk_jar(gateway_jar_dir))
-            jars.extend(self._find_log4j_jars())
+            jars.append(find_elk_jar(gateway_jar_dir))
+            jars.extend(find_log4j_jars())
 
         classpath = os.pathsep.join(jars)
         logger.debug("Java classpath: %s", classpath)
         logger.info("Starting OWLGateway Java process (reasoner=%s)...", self._reasoner_type)
         self._java_proc = subprocess.Popen(
-            ["java", "-cp", classpath, "OWLGateway", str(port), self._reasoner_type],
+            ["java", "-cp", classpath, "OWLGateway", "0", self._reasoner_type],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-
-        # GatewayServer.start() launches a daemon thread and returns before
-        # the socket is bound, so the ready message can arrive slightly before
-        # the port is actually accepting connections.  Poll until it is.
-        _wait_for_gateway(self._java_proc, port)
+        port = start_gateway(self._java_proc)
+        logger.info("OWLGateway listening on port %d", port)
 
         self._gw  = JavaGateway(
             gateway_parameters=GatewayParameters(port=port, eager_load=True),
@@ -169,11 +87,10 @@ class ReasonerOracle(Oracle):
 
         # Load all O-axioms into the O-reasoner
         for gci in self._O:
-            self._owl.add_gci(_encode(gci.lhs), _encode(gci.rhs))
+            self._owl.add_gci(encode(gci.lhs), encode(gci.rhs))
 
-        # Start a second gateway for H-entailment on a free port
-        h_port = _find_free_port()
-        self._h_reasoner = HypothesisReasoner(classpath, h_port, self._reasoner_type)
+        # Start a second gateway for H-entailment
+        self._h_reasoner = HypothesisReasoner(classpath, self._reasoner_type)
 
         # oracle_skills: map skill name → probability in [0, 1].
         # Supported skills: "saturate_left", "unsaturate_right",
@@ -189,18 +106,26 @@ class ReasonerOracle(Oracle):
             self._java_proc.terminate()
             self._java_proc.wait(timeout=5)
         except Exception:
-            pass
+            logger.debug("Error shutting down O-reasoner", exc_info=True)
         try:
             self._h_reasoner.close()
         except Exception:
-            pass
+            logger.debug("Error shutting down H-reasoner", exc_info=True)
 
-    def __del__(self):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
         self.close()
 
     @property
     def signature(self) -> set[str]:
         return self._sig
+
+    @property
+    def axioms(self) -> set[GCI]:
+        """The set of GCIs parsed from the target ontology file."""
+        return self._O
 
     def make_H_MQ(self, H):
         """Return the H-reasoner as the H-entailment callable."""
@@ -212,7 +137,7 @@ class ReasonerOracle(Oracle):
 
     def MQ(self, gci: GCI) -> bool:
         """Membership query via HermiT: O |= lhs ⊑ rhs?"""
-        return self._owl.entails(_encode(gci.lhs), _encode(gci.rhs))
+        return self._owl.entails(encode(gci.lhs), encode(gci.rhs))
 
     # ------------------------------------------------------------------
     # Oracle skills — structural transformations of counterexamples
@@ -220,7 +145,7 @@ class ReasonerOracle(Oracle):
 
     def _is_counterexample(self, gci: GCI) -> bool:
         """True iff O |= gci and H ⊭ gci."""
-        return (self._owl.entails(_encode(gci.lhs), _encode(gci.rhs))
+        return (self._owl.entails(encode(gci.lhs), encode(gci.rhs))
                 and not self._h_reasoner.entails(gci))
 
     def _saturate_left(self, gci: GCI) -> GCI:
@@ -357,72 +282,3 @@ class ReasonerOracle(Oracle):
 
         return ce
 
-
-# ---------------------------------------------------------------------------
-# Ontology parsing
-# ---------------------------------------------------------------------------
-
-def extract_ontology(path: str) -> tuple[set[str], set[GCI]]:
-    g = Graph()
-    g.parse(path)
-
-    sig: set[str] = set()
-    for clause in g.subjects(RDF.type, OWL.Class):
-        if isinstance(clause, URIRef):
-            sig.add(local_name(clause))
-
-    gcis: set[GCI] = set()
-    for subj, _, obj in g.triples((None, RDFS.subClassOf, None)):
-        for node in (subj, obj):
-            if isinstance(node, URIRef):
-                sig.add(local_name(node))
-        try:
-            lhs = parse_concept(g, subj)
-            rhs = parse_concept(g, obj)
-            gcis.add(GCI(lhs=lhs, rhs=rhs))
-        except ValueError as exc:
-            logger.warning("Skipping unrecognised SubClassOf triple: %s", exc)
-
-    return sig, gcis
-
-
-def local_name(uri: URIRef) -> str:
-    uri_str = str(uri)
-    if "#" in uri_str:
-        return uri_str.split("#")[-1]
-    return uri_str.split("/")[-1]
-
-
-def parse_concept(g: Graph, node) -> ELConcept:
-    if isinstance(node, URIRef):
-        if node == OWL.Thing:
-            return ELConcept()
-        return ELConcept(atoms=frozenset({local_name(node)}))
-
-    if not isinstance(node, BNode):
-        raise ValueError(f"Unexpected node type: {type(node)} for {node}")
-
-    if (node, RDF.type, OWL.Restriction) in g:
-        role_node   = g.value(node, OWL.onProperty)
-        filler_node = g.value(node, OWL.someValuesFrom)
-        if role_node is None or filler_node is None:
-            raise ValueError(f"Malformed owl:Restriction at {node}")
-        role   = local_name(role_node)
-        filler = parse_concept(g, filler_node)
-        return ELConcept(existentials=frozenset({(role, filler)}))
-
-    list_head = g.value(node, OWL.intersectionOf)
-    if list_head is not None:
-        members = list(Collection(g, list_head))
-        combined_atoms: set[str] = set()
-        combined_existentials: set[tuple] = set()
-        for member in members:
-            part = parse_concept(g, member)
-            combined_atoms        |= part.atoms
-            combined_existentials |= part.existentials
-        return ELConcept(
-            atoms=frozenset(combined_atoms),
-            existentials=frozenset(combined_existentials),
-        )
-
-    raise ValueError(f"Unrecognised BNode structure at {node}")

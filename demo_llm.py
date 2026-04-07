@@ -27,17 +27,17 @@ Usage
 
 from __future__ import annotations
 
+import argparse
 import os
-import sys
 
-from EL_algorithm import ELConcept, GCI, learn_el_terminology
-from HypothesisReasoner import HypothesisReasoner, _find_free_port
-from LLMOracle import (
+from utils.java_utils import build_classpath
+from el_algorithm import ELConcept, GCI, learn_el_terminology
+from hypothesis_reasoner import HypothesisReasoner
+from llm_oracle import (
     LLMOracle,
     gci_to_manchester,
     hypothesis_to_manchester,
 )
-from ReasonerOracle import ReasonerOracle  # reuse jar-finding helpers
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -78,12 +78,8 @@ PREVIEW_HYPOTHESIS: set[GCI] = {
 
 def _build_classpath() -> str:
     """Assemble the Java classpath needed for ELK + OWLGateway."""
-    gateway_jar_dir = os.path.dirname(os.path.abspath(__file__))
-    hermit_jar = ReasonerOracle._find_hermit_jar()
-    py4j_jar   = ReasonerOracle._find_py4j_jar()
-    elk_jar    = ReasonerOracle._find_elk_jar(gateway_jar_dir)
-    log4j_jars = ReasonerOracle._find_log4j_jars()
-    return os.pathsep.join([gateway_jar_dir, hermit_jar, py4j_jar, elk_jar] + log4j_jars)
+    gateway_jar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
+    return build_classpath(gateway_jar_dir)
 
 
 def _section(title: str) -> None:
@@ -99,15 +95,9 @@ def _section(title: str) -> None:
 def dry_run() -> None:
     _section("Dry-run — prompt preview (no model loaded)")
 
-    # Instantiate a dummy oracle just to use its prompt builders
-    dummy = object.__new__(LLMOracle)
-    dummy._sig = SIGNATURE
-    dummy._h_reasoner = None
-    dummy._max_new_tokens = 128
-
     print("\n--- MQ prompts ---\n")
     for gci in PREVIEW_GCIS:
-        prompt = dummy._build_mq_prompt(gci)
+        prompt = LLMOracle._build_mq_prompt(SIGNATURE, gci)
         print(f"GCI: {gci_to_manchester(gci)}")
         print("-" * 40)
         print(prompt)
@@ -118,10 +108,10 @@ def dry_run() -> None:
     print(hypothesis_to_manchester(PREVIEW_HYPOTHESIS))
     print("\n[Step 1 — judge equivalence]")
     print("-" * 40)
-    print(dummy._build_eq_judge_prompt(PREVIEW_HYPOTHESIS))
+    print(LLMOracle._build_eq_judge_prompt(SIGNATURE, PREVIEW_HYPOTHESIS))
     print("\n[Step 2 — request counterexample, sent only if Step 1 answers 'no']")
     print("-" * 40)
-    print(dummy._build_eq_counterexample_prompt(PREVIEW_HYPOTHESIS))
+    print(LLMOracle._build_eq_counterexample_prompt(SIGNATURE, PREVIEW_HYPOTHESIS))
 
 
 # ---------------------------------------------------------------------------
@@ -138,50 +128,47 @@ def run_demo(device: str = "cpu", verbose: bool = False) -> None:
     # ------------------------------------------------------------------
     print("\n  Building classpath and starting ELK H-reasoner …")
     classpath = _build_classpath()
-    h_port    = _find_free_port()
-    h_reasoner = HypothesisReasoner(classpath, h_port, "elk")
+    h_reasoner = HypothesisReasoner(classpath, "elk")
     print("  H-reasoner ready.")
 
     # ------------------------------------------------------------------
     # Load the LLM oracle
     # ------------------------------------------------------------------
     print(f"\n  Loading model '{MODEL}' …")
-    oracle = LLMOracle(
+    with LLMOracle(
         model_name_or_path=MODEL,
         signature=SIGNATURE,
         h_reasoner=h_reasoner,
         max_new_tokens=128,
         device=device,
         verbose=verbose,
-    )
-    print("  Model loaded.")
+    ) as oracle:
+        print("  Model loaded.")
 
-    # ------------------------------------------------------------------
-    # Quick MQ sanity check
-    # ------------------------------------------------------------------
-    _section("MQ sanity check")
-    for gci in PREVIEW_GCIS:
-        result = oracle.MQ(gci)
-        print(f"  MQ({gci_to_manchester(gci)}) = {result}")
+        # ------------------------------------------------------------------
+        # Quick MQ sanity check
+        # ------------------------------------------------------------------
+        _section("MQ sanity check")
+        for gci in PREVIEW_GCIS:
+            result = oracle.MQ(gci)
+            print(f"  MQ({gci_to_manchester(gci)}) = {result}")
 
-    # ------------------------------------------------------------------
-    # Run the learning algorithm
-    # ------------------------------------------------------------------
-    _section("Learning EL terminology from LLM oracle")
-    print("  (This may take a while — each MQ/EQ call queries the LLM)\n")
+        # ------------------------------------------------------------------
+        # Run the learning algorithm
+        # ------------------------------------------------------------------
+        _section("Learning EL terminology from LLM oracle")
+        print("  (This may take a while — each MQ/EQ call queries the LLM)\n")
 
-    H = learn_el_terminology(oracle, max_iterations=30)
+        H = learn_el_terminology(oracle, max_iterations=30)
 
-    # ------------------------------------------------------------------
-    # Report
-    # ------------------------------------------------------------------
-    _section("Result")
-    print(f"\n  |H| = {len(H)}\n")
-    print("  Learned GCIs (Manchester syntax):")
-    for gci in sorted(H, key=str):
-        print(f"    {gci_to_manchester(gci)}")
-
-    oracle.close()
+        # ------------------------------------------------------------------
+        # Report
+        # ------------------------------------------------------------------
+        _section("Result")
+        print(f"\n  |H| = {len(H)}\n")
+        print("  Learned GCIs (Manchester syntax):")
+        for gci in sorted(H, key=str):
+            print(f"    {gci_to_manchester(gci)}")
 
 
 # ---------------------------------------------------------------------------
@@ -189,14 +176,13 @@ def run_demo(device: str = "cpu", verbose: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    dry     = "--dry-run" in sys.argv
-    verbose = "-v" in sys.argv
-    device  = "cpu"
-    for arg in sys.argv[1:]:
-        if arg.startswith("--device="):
-            device = arg.split("=", 1)[1]
+    parser = argparse.ArgumentParser(description="EL learner demo using LLMOracle.")
+    parser.add_argument("--device", default="cpu", help="Inference device (cpu, cuda, mps).")
+    parser.add_argument("--dry-run", action="store_true", help="Print prompts without loading the model.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Print every prompt and LLM response.")
+    args = parser.parse_args()
 
-    if dry:
+    if args.dry_run:
         dry_run()
     else:
-        run_demo(device=device, verbose=verbose)
+        run_demo(device=args.device, verbose=args.verbose)

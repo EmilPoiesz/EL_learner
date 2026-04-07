@@ -1,9 +1,9 @@
+import argparse
 import logging
 import os
-import sys
 
-from EL_algorithm import Oracle, learn_el_terminology
-from ReasonerOracle import ReasonerOracle
+from el_algorithm import Oracle, learn_el_terminology
+from reasoner_oracle import ReasonerOracle
 
 
 def run_and_report(label: str, oracle: Oracle, verbose: bool = False) -> int:
@@ -17,10 +17,10 @@ def run_and_report(label: str, oracle: Oracle, verbose: bool = False) -> int:
     H = learn_el_terminology(oracle, max_iterations=20)
     logging.disable(logging.NOTSET)
 
-    target_O = oracle._O
+    target_O = oracle.axioms
 
-    print(f"\n  Iterations to convergence: {len(H) - len([g for g in H if g in target_O])}"
-          f" extra axiom(s) accumulated")
+    redundant = [g for g in H if g not in target_O]
+    print(f"\n  Redundant axioms in H (entailed by O but not primitive): {len(redundant)}")
     print(f"  |H| = {len(H)}  (target |O| = {len(target_O)})")
 
     print("\n  Learned H:")
@@ -51,9 +51,9 @@ def demo(filename: str = "ontologies/medical.ttl", verbose: bool = False, reason
     print(f"  Reasoner: {reasoner}")
 
     _TTL_PATH    = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
-    _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+    _PROJECT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
     try:
-        reasoning_oracle = ReasonerOracle(
+        with ReasonerOracle(
             path=_TTL_PATH,
             gateway_jar_dir=_PROJECT_DIR,
             reasoner=reasoner,
@@ -63,8 +63,8 @@ def demo(filename: str = "ontologies/medical.ttl", verbose: bool = False, reason
                 "compose_left":     0.6,
                 "compose_right":    0.6,
             }
-        )
-        result = run_and_report(f"Run: Reasoning Oracle on medical.ttl ({reasoner})", reasoning_oracle, verbose=verbose)
+        ) as reasoning_oracle:
+            result = run_and_report(f"Run: Reasoning Oracle on medical.ttl ({reasoner})", reasoning_oracle, verbose=verbose)
     except Exception as exc:
         print(f"  ✗  Turtle loader failed: {exc}")
         return
@@ -76,12 +76,9 @@ def demo(filename: str = "ontologies/medical.ttl", verbose: bool = False, reason
 
 
 if __name__ == "__main__":
-    verbose = "-v" in sys.argv
+    parser = argparse.ArgumentParser(description="EL learner demo using ReasonerOracle.")
+    parser.add_argument("--reasoner", choices=["elk", "hermit"], default="elk")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args()
 
-    reasoner = "elk"
-    for arg in sys.argv[1:]:
-        if arg.startswith("--reasoner="):
-            reasoner = arg.split("=", 1)[1]
-            break
-
-    demo(verbose=verbose, reasoner=reasoner)
+    demo(verbose=args.verbose, reasoner=args.reasoner)

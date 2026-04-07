@@ -37,16 +37,20 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 
 | File | Description |
 |---|---|
-| `EL_algorithm.py` | Core learning algorithm, EL concept data structures, and `Oracle` ABC |
-| `HypothesisReasoner.py` | `HypothesisReasoner` and Java gateway helpers — shared by all oracle implementations |
-| `ReasonerOracle.py` | `ReasonerOracle` — O-oracle backed by OWL API + ELK/HermiT via py4j |
-| `LLMOracle.py` | `LLMOracle` — O-oracle backed by a local HuggingFace language model; Manchester syntax serializer and parser |
-| `OWLGateway.java` | Java gateway process exposing `add_gci`, `entails`, `clear` over py4j |
+| `el_algorithm.py` | Core learning algorithm, EL concept data structures, and `Oracle` ABC |
+| `hypothesis_reasoner.py` | `HypothesisReasoner` and Java gateway helpers — shared by all oracle implementations |
+| `reasoner_oracle.py` | `ReasonerOracle` — O-oracle backed by OWL API + ELK/HermiT via py4j |
+| `llm_oracle.py` | `LLMOracle` — O-oracle backed by a local HuggingFace language model; Manchester syntax serializer and parser |
 | `demo.py` | End-to-end demo on `ontologies/medical.ttl` using `ReasonerOracle` |
 | `demo_llm.py` | End-to-end demo using `LLMOracle` with a local HuggingFace model |
-| `unit_tests.py` | Unit and integration tests |
-| `java_env.bash` | Helper script to compile `OWLGateway.java` |
+| `utils/java_utils.py` | Jar discovery and gateway lifecycle utilities |
+| `utils/owl_parser.py` | OWL/Turtle ontology parser (rdflib-based) |
+| `java/OWLGateway.java` | Java gateway process exposing `add_gci`, `entails`, `clear` over py4j |
+| `java/java_env.bash` | Helper script to compile `OWLGateway.java` |
+| `tests/test_el_algorithm.py` | Pytest test suite — unit and integration tests |
+| `conftest.py` | Pytest fixtures and `--reasoner` CLI option |
 | `ontologies/` | Example OWL/Turtle ontology files |
+| `papers/` | Reference papers |
 
 ---
 
@@ -55,10 +59,10 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 The Java gateway wraps OWL API + ELK/HermiT and must be compiled before use. The helper script auto-detects the required jars from your Python environment:
 
 ```bash
-bash java_env.bash
+bash java/java_env.bash
 ```
 
-This produces `OWLGateway.class` in the project directory.
+This produces `OWLGateway.class` in the `java/` directory.
 
 > **Note:** The script expects `owlready2`, `py4j`, and the ELK jar to be available. Activate your virtual environment first, and ensure the ELK jar is in the project directory or on `$VIRTUAL_ENV`.
 
@@ -68,7 +72,7 @@ This produces `OWLGateway.class` in the project directory.
 
 ### Oracle abstraction
 
-The learning algorithm interacts with the outside world exclusively through the `Oracle` ABC defined in `EL_algorithm.py`. Any oracle must implement:
+The learning algorithm interacts with the outside world exclusively through the `Oracle` ABC defined in `el_algorithm.py`. Any oracle must implement:
 
 | Method | Description |
 |---|---|
@@ -80,12 +84,12 @@ The learning algorithm interacts with the outside world exclusively through the 
 
 Two oracle implementations are provided:
 
-- **`ReasonerOracle`** (`ReasonerOracle.py`) — answers MQ and EQ using a DL reasoner (ELK or HermiT). The O-axioms are loaded once at construction; H-entailment is delegated to a `HypothesisReasoner`.
-- **`LLMOracle`** (`LLMOracle.py`) — answers MQ and EQ by prompting a local HuggingFace language model using Manchester syntax. H-entailment is delegated to a `HypothesisReasoner`.
+- **`ReasonerOracle`** (`reasoner_oracle.py`) — answers MQ and EQ using a DL reasoner (ELK or HermiT). The O-axioms are loaded once at construction; H-entailment is delegated to a `HypothesisReasoner`.
+- **`LLMOracle`** (`llm_oracle.py`) — answers MQ and EQ by prompting a local HuggingFace language model using Manchester syntax. H-entailment is delegated to a `HypothesisReasoner`.
 
 ### HypothesisReasoner
 
-`HypothesisReasoner` (`HypothesisReasoner.py`) is a standalone component shared by both oracle types. It maintains a running Java OWLGateway process whose ontology is kept in sync with H via `add()` calls, and answers H-entailment queries via `entails()`. It is passed into `LLMOracle` as a constructor parameter, so the H-entailment side does not need to be reimplemented when swapping the O-oracle.
+`HypothesisReasoner` (`hypothesis_reasoner.py`) is a standalone component shared by both oracle types. It maintains a running Java OWLGateway process whose ontology is kept in sync with H via `add()` calls, and answers H-entailment queries via `entails()`. It is passed into `LLMOracle` as a constructor parameter, so the H-entailment side does not need to be reimplemented when swapping the O-oracle.
 
 ### Java gateway (ReasonerOracle only)
 
@@ -133,28 +137,27 @@ Set `ELK_JAR=/path/to/elk-owlapi-standalone-0.4.2.jar` to bypass the search enti
 ### ReasonerOracle
 
 ```python
-from ReasonerOracle import ReasonerOracle
-from EL_algorithm import learn_el_terminology
+from reasoner_oracle import ReasonerOracle
+from el_algorithm import learn_el_terminology
 
-oracle = ReasonerOracle(
+with ReasonerOracle(
     path="ontologies/medical.ttl",
     gateway_jar_dir="."        # directory containing OWLGateway.class
-)
-H = learn_el_terminology(oracle)
+) as oracle:
+    H = learn_el_terminology(oracle)
 
 for gci in sorted(H, key=str):
     print(gci)
-
-oracle.close()
 ```
 
 To use HermiT instead of ELK:
 
 ```python
-oracle = ReasonerOracle(
+with ReasonerOracle(
     path="ontologies/medical.ttl",
     reasoner="hermit"
-)
+) as oracle:
+    H = learn_el_terminology(oracle)
 ```
 
 ### LLMOracle
@@ -163,44 +166,33 @@ The `LLMOracle` uses a local HuggingFace model as the O-oracle. The model is loa
 
 ```python
 import os
-from HypothesisReasoner import HypothesisReasoner, _find_free_port
-from LLMOracle import LLMOracle
-from ReasonerOracle import ReasonerOracle
-from EL_algorithm import learn_el_terminology
+from utils.java_utils import build_classpath
+from hypothesis_reasoner import HypothesisReasoner
+from llm_oracle import LLMOracle
+from el_algorithm import learn_el_terminology
 
-# Build classpath using ReasonerOracle's jar-finding helpers
 gateway_jar_dir = os.path.dirname(os.path.abspath(__file__))
-classpath = os.pathsep.join([
-    gateway_jar_dir,
-    ReasonerOracle._find_hermit_jar(),
-    ReasonerOracle._find_py4j_jar(),
-    ReasonerOracle._find_elk_jar(gateway_jar_dir),
-    *ReasonerOracle._find_log4j_jars(),
-])
+h_reasoner = HypothesisReasoner(build_classpath(gateway_jar_dir), "elk")
 
-h_reasoner = HypothesisReasoner(classpath, _find_free_port(), "elk")
-
-oracle = LLMOracle(
+with LLMOracle(
     model_name_or_path="HuggingFaceTB/SmolLM2-1.7B-Instruct",
     signature={"Person", "Male", "Female", "Parent", "Father", "Mother"},
     h_reasoner=h_reasoner,
     max_new_tokens=128,
     device="cpu",       # or "cuda" / "mps"
     verbose=False,
-)
-
-H = learn_el_terminology(oracle)
-oracle.close()
+) as oracle:
+    H = learn_el_terminology(oracle)
 ```
 
 `learn_el_terminology` returns a `set[GCI]` representing what the language model knows about the domain.
 
 #### Manchester syntax
 
-`LLMOracle.py` exports module-level helpers for converting between `ELConcept`/`GCI` objects and Manchester syntax strings:
+`llm_oracle.py` exports module-level helpers for converting between `ELConcept`/`GCI` objects and Manchester syntax strings:
 
 ```python
-from LLMOracle import concept_to_manchester, gci_to_manchester, parse_manchester_gci, parse_manchester_concept
+from llm_oracle import concept_to_manchester, gci_to_manchester, parse_manchester_gci, parse_manchester_concept
 ```
 
 | Function | Direction |
@@ -289,8 +281,10 @@ huggingface-cli download HuggingFaceTB/SmolLM2-1.7B-Instruct
 ## Tests
 
 ```bash
-python unit_tests.py        # compact output
-python unit_tests.py -v     # verbose
+pytest                          # ELK reasoner, compact output
+pytest -v                       # verbose output
+pytest --reasoner=hermit        # HermiT reasoner
+pytest --reasoner=hermit -v
 ```
 
 Tests cover all algorithm sub-routines (saturate, merge, decompose, normalise) as well as a full end-to-end integration run on `ontologies/test_minimal.ttl`. Tests that require a running gateway are skipped automatically if the Java process cannot start.

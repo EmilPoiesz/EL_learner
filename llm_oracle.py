@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 from transformers import pipeline, GenerationConfig
 
-from EL_algorithm import Oracle, ELConcept, GCI
-from HypothesisReasoner import HypothesisReasoner
+from el_algorithm import Oracle, ELConcept, GCI
+from hypothesis_reasoner import HypothesisReasoner
 
 
 # ---------------------------------------------------------------------------
@@ -217,8 +220,9 @@ class LLMOracle(Oracle):
     # Prompt construction
     # ------------------------------------------------------------------
 
-    def _build_mq_prompt(self, gci: GCI) -> str:
-        sig_str = ", ".join(sorted(self._sig))
+    @staticmethod
+    def _build_mq_prompt(sig: set[str], gci: GCI) -> str:
+        sig_str = ", ".join(sorted(sig))
         return (
             f"Concept names in scope: {sig_str}.\n"
             "Does the target ontology O entail the following GCI?\n"
@@ -226,8 +230,9 @@ class LLMOracle(Oracle):
             "Reply with exactly one word: yes or no."
         )
 
-    def _build_eq_judge_prompt(self, H: set[GCI]) -> str:
-        sig_str = ", ".join(sorted(self._sig))
+    @staticmethod
+    def _build_eq_judge_prompt(sig: set[str], H: set[GCI]) -> str:
+        sig_str = ", ".join(sorted(sig))
         h_str = hypothesis_to_manchester(H)
         return (
             f"Concept names in scope: {sig_str}.\n\n"
@@ -237,8 +242,9 @@ class LLMOracle(Oracle):
             "Reply with exactly one word: yes or no."
         )
 
-    def _build_eq_counterexample_prompt(self, H: set[GCI]) -> str:
-        sig_str = ", ".join(sorted(self._sig))
+    @staticmethod
+    def _build_eq_counterexample_prompt(sig: set[str], H: set[GCI]) -> str:
+        sig_str = ", ".join(sorted(sig))
         h_str = hypothesis_to_manchester(H)
         return (
             f"Concept names in scope: {sig_str}.\n\n"
@@ -289,7 +295,7 @@ class LLMOracle(Oracle):
         The LLM is prompted for a yes/no answer in Manchester syntax.
         Raises ValueError if the response cannot be parsed as yes or no.
         """
-        response = self._query(self._build_mq_prompt(gci), label="MQ")
+        response = self._query(self._build_mq_prompt(self._sig, gci), label="MQ")
         lower = response.lower()
         if lower.startswith("yes"):
             return True
@@ -310,12 +316,12 @@ class LLMOracle(Oracle):
         returns the counterexample GCI.
         Raises ValueError if either response cannot be parsed.
         """
-        judge = self._query(self._build_eq_judge_prompt(hypothesis), label="EQ (judge)").lower()
+        judge = self._query(self._build_eq_judge_prompt(self._sig, hypothesis), label="EQ (judge)").lower()
         if judge.startswith("yes"):
             return None
         if not judge.startswith("no"):
             raise ValueError(f"Unparseable EQ judge response: {judge!r}")
-        ce = self._query(self._build_eq_counterexample_prompt(hypothesis), label="EQ (counterexample)")
+        ce = self._query(self._build_eq_counterexample_prompt(self._sig, hypothesis), label="EQ (counterexample)")
         return parse_manchester_gci(ce.strip())
 
     # ------------------------------------------------------------------
@@ -326,7 +332,10 @@ class LLMOracle(Oracle):
         try:
             self._h_reasoner.close()
         except Exception:
-            pass
+            logger.debug("Error closing H-reasoner", exc_info=True)
 
-    def __del__(self):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
         self.close()

@@ -44,8 +44,8 @@ class ELConcept:
     # Pretty-printing
     # ------------------------------------------------------------------
     def __str__(self) -> str:
-        parts = list(self.atoms)
-        for role, filler in self.existentials:
+        parts = sorted(self.atoms)
+        for role, filler in sorted(self.existentials, key=lambda x: (x[0], str(x[1]))):
             parts.append(f"∃{role}.({filler})")
         if not parts:
             return "⊤"
@@ -139,18 +139,19 @@ class Oracle(ABC):
           - None, meaning H ≡ O and learning is complete.
         """
 
+    @abstractmethod
     def make_H_MQ(self, H: set[GCI]) -> Callable[[GCI], bool]:
         """
         Return a callable  H_MQ(gci) -> bool  that answers whether the current
         hypothesis H entails gci.
 
-        The default implementation is the structural EL check in entails_in_H.
-        Override in subclasses to use a full DL reasoner for complete entailment.
+        Must be overridden. A complete H-entailment check requires a DL reasoner
+        (e.g. ELK via HypothesisReasoner); the EL closure is not computable by
+        structural inspection alone.
 
-        H is passed by reference; the returned closure always reflects the
+        H is passed by reference; the returned callable should always reflect the
         *current* state of H, so it remains valid as H grows during learning.
         """
-        return lambda gci: entails_in_H(gci, H)
 
     def on_H_add(self, gci: GCI) -> None:
         """
@@ -200,27 +201,6 @@ def saturate_concept_rhs(concept: ELConcept, signature: set[str], MQ: Callable[[
 
     return ELConcept(frozenset(atoms), frozenset(existentials))
 
-def merge_sibling(concept: ELConcept) -> ELConcept:
-
-    role_map = {}
-    for role, sub_concept in concept.existentials:
-        role_map.setdefault(role, []).append(sub_concept)
-
-    new_existentials = set()
-    for role, sub_concepts in role_map.items():
-        if len(sub_concepts) == 1:
-            new_existentials.add((role, merge_sibling(sub_concepts[0])))
-        else:
-            merged_atoms = set()
-            merged_existentials = set()
-            for sub_concept in sub_concepts:
-                merged_concept = merge_sibling(sub_concept)
-                merged_atoms |= merged_concept.atoms
-                merged_existentials |= merged_concept.existentials
-            new_existentials.add((role, ELConcept(merged_atoms, merged_existentials)))
-
-    return ELConcept(concept.atoms, new_existentials)
-
 def _try_merge_in_concept(lhs: ELConcept, MQ: Callable, node: ELConcept, rebuild: Callable[[ELConcept], ELConcept]) -> tuple[ELConcept, bool]:
     """
     Attempt ONE valid sibling merge anywhere in the `node` subtree.
@@ -269,29 +249,15 @@ def _try_merge_in_concept(lhs: ELConcept, MQ: Callable, node: ELConcept, rebuild
 
     return rebuild(node), False
 
-def sibling_merge_fixpoint(concept: ELConcept, lhs: ELConcept | None = None, MQ: Callable | None = None) -> ELConcept:
+def sibling_merge(concept: ELConcept, lhs: ELConcept, MQ: Callable) -> ELConcept:
     """
     Repeatedly merge same-role sibling existentials until no more merges apply.
 
-    When ``lhs`` and ``MQ`` are provided each merge step is validated against T:
-    ``MQ(GCI(lhs, full_rhs_after_merge))`` must return True before the merge is
-    accepted.  This mirrors the original ExactLearner's ``mergeRight()`` /
-    ``merging()`` which guards every candidate with
-    ``myEngineForT.entailed(cl ⊑ merged)``.
-
-    When called without ``lhs`` / ``MQ`` (e.g. from unit tests) the original
-    unconditional behaviour is preserved.
+    Each merge step is validated against O: ``MQ(GCI(lhs, full_rhs_after_merge))``
+    must return True before the merge is accepted.  This mirrors the original
+    ExactLearner's ``mergeRight()`` / ``merging()`` which guards every candidate
+    with ``myEngineForT.entailed(cl ⊑ merged)``.
     """
-    if lhs is None or MQ is None:
-        # Unconditional path — backward-compatible with existing call sites
-        prev = None
-        current = concept
-        while prev != current:
-            prev = current
-            current = merge_sibling(current)
-        return current
-
-    # T-validated path: one merge step at a time, each checked against O
     current = concept
     while True:
         new, changed = _try_merge_in_concept(lhs, MQ, current, lambda x: x)
@@ -507,7 +473,7 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
     #    accepted when O actually entails lhs ⊑ ∃r.(D1 ⊓ D2).  This mirrors
     #    the original ExactLearner's merging() guard:
     #        T.entailed(cl ⊑ merged_expression)
-    rhs_merged = sibling_merge_fixpoint(rhs_saturated, lhs=lhs, MQ=MQ)
+    rhs_merged = sibling_merge(rhs_saturated, lhs=lhs, MQ=MQ)
 
     logger.info(f"refined {rhs_refined}")
     logger.info(f"saturated {rhs_saturated}")
