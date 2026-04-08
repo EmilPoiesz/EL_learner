@@ -13,7 +13,7 @@ Run with:
     pytest --reasoner=hermit        # HermiT reasoner
     pytest --reasoner=hermit -v
 
-Tests 3, 4, 8 do not require a live reasoner and always run.
+Tests 3, 4, 8, 12, 13, 14 do not require a live reasoner and always run.
 All others are skipped automatically when the chosen reasoner cannot start.
 
 Test catalogue
@@ -29,15 +29,19 @@ Test catalogue
  9  decompose_left         — redundant ∃r.C stripped; essential {A,B} kept
 10  decompose_left         — both atoms essential; {A,B} ⊑ E returned intact
 11  decompose_left         — existential-only LHS kept intact
-12  compute_right_essential — simple ∃r.C (GCI 2 scenario)
-13  compute_right_essential — sibling merge fires; two ∃r. → ∃r.(C⊓D) (GCI 3)
-14  compute_right_essential — decompose_rhs case (a) inside right-essential
-15  compute_left_essential  — conjunctive LHS; both atoms essential (GCI 4)
-16  compute_left_essential  — existential-only LHS kept intact (GCI 5)
-17  normalise_counterexample — already normalised (atomic LHS)
-18  normalise_counterexample — already normalised (atomic RHS)
-19  normalise_counterexample — compound RHS; extracts one atomic RHS entailed by O
-20  Integration             — full learn_el_terminology on test_minimal.ttl
+12  unsaturate_left        — mock: both atoms essential; LHS unchanged
+13  unsaturate_left        — mock: one atom redundant; removed from LHS
+14  unsaturate_left        — mock: nested atom in existential filler removed
+15  unsaturate_left        — real MQ: B dropped from A⊓B (A⊑B in O collapses LHS)
+16  compute_right_essential — simple ∃r.C (GCI 2 scenario)
+17  compute_right_essential — sibling merge fires; two ∃r. → ∃r.(C⊓D) (GCI 3)
+18  compute_right_essential — decompose_rhs case (a) inside right-essential
+19  compute_left_essential  — A⊓B ⊑ E: B dropped because A⊑B in O (GCI 4)
+20  compute_left_essential  — existential-only LHS kept intact (GCI 5)
+21  normalise_counterexample — already normalised (atomic LHS)
+22  normalise_counterexample — already normalised (atomic RHS)
+23  normalise_counterexample — compound RHS; extracts one atomic RHS entailed by O
+24  Integration             — full learn_el_terminology on test_minimal.ttl
 """
 
 from __future__ import annotations
@@ -56,6 +60,7 @@ from el_algorithm import (
     saturate_concept_rhs,
     saturate_left,
     sibling_merge,
+    unsaturate_left,
 )
 
 # ---------------------------------------------------------------------------
@@ -141,7 +146,7 @@ def req(reasoner_oracle, reasoner_name):
 def learned_h(integration_oracle):
     """
     Run learn_el_terminology once against the integration oracle and cache the
-    result.  All three test_20_* sub-tests share this fixture so the algorithm
+    result.  All three test_24_* sub-tests share this fixture so the algorithm
     executes exactly once per session.
     """
     if integration_oracle is None:
@@ -246,17 +251,69 @@ def test_11_decompose_left_existential_only(mq):
 
 
 # ===========================================================================
-# 12–14  compute_right_essential
+# 12–15  unsaturate_left
 # ===========================================================================
 
 
-def test_12_right_essential_simple(mq):
+def test_12_unsaturate_left_essential_atoms_unchanged():
+    # Mock where only A⊓B ⊑ E holds; neither A alone nor B alone forces E.
+    # Neither atom can be dropped, so the LHS must be returned intact.
+    def mock_mq(gci: GCI) -> bool:
+        return gci.lhs == AB and gci.rhs == E
+
+    result = unsaturate_left(AB, E, mock_mq)
+    assert result.atoms == frozenset({"A", "B"})
+
+
+def test_13_unsaturate_left_redundant_atom_removed():
+    # Mock where A alone suffices (A ⊑ E holds), so B is redundant in A⊓B ⊑ E.
+    def mock_mq(gci: GCI) -> bool:
+        if gci.rhs != E:
+            return False
+        return gci.lhs in (AB, A)
+
+    result = unsaturate_left(AB, E, mock_mq)
+    assert result.atoms == frozenset({"A"})
+    assert not result.existentials
+
+
+def test_14_unsaturate_left_nested_filler_atom_removed():
+    # LHS = ∃r.(A⊓B), RHS = F.
+    # Mock: ∃r.A ⊑ F holds, so B is redundant inside the filler.
+    rA_only = ELConcept(existentials=frozenset({("r", A)}))
+    rAB     = ELConcept(existentials=frozenset({("r", AB)}))
+
+    def mock_mq(gci: GCI) -> bool:
+        if gci.rhs != F:
+            return False
+        return gci.lhs in (rAB, rA_only)
+
+    result = unsaturate_left(rAB, F, mock_mq)
+    assert len(result.existentials) == 1
+    _, filler = next(iter(result.existentials))
+    assert filler.atoms == frozenset({"A"})
+
+
+def test_15_unsaturate_left_real_mq_b_dropped(mq):
+    # O contains A ⊑ B (GCI 1), which makes A alone sufficient to satisfy
+    # A⊓B ⊑ E (GCI 4).  unsaturate_left should therefore drop B from the LHS.
+    result = unsaturate_left(AB, E, mq)
+    assert result.atoms == frozenset({"A"})
+    assert not result.existentials
+
+
+# ===========================================================================
+# 16–18  compute_right_essential
+# ===========================================================================
+
+
+def test_16_right_essential_simple(mq):
     # GCI 2: A ⊑ ∃r.C — no merging or decomposition needed.
     result = compute_right_essential(A, rC, set(), mq, SIG)
     assert result == GCI(A, rC)
 
 
-def test_13_right_essential_sibling_merge(req, mq):
+def test_17_right_essential_sibling_merge(req, mq):
     # GCI 3: H has B ⊑ ∃r.C; new CE is B ⊑ ∃r.D → merge → ∃r.(C⊓D).
     H: set[GCI] = {GCI(B, rC)}
     result = compute_right_essential(B, rD, H, mq, SIG)
@@ -266,50 +323,52 @@ def test_13_right_essential_sibling_merge(req, mq):
     assert filler.atoms == frozenset({"C", "D"})
 
 
-def test_14_right_essential_decompose_rhs_case_a(mq):
+def test_18_right_essential_decompose_rhs_case_a(mq):
     # GCI 7: A ⊑ ∃r.(B⊓∃s.F); decompose_rhs case (a) fires → returns B ⊑ ∃s.F.
     result = compute_right_essential(A, rBsF, set(), mq, SIG)
     assert result == GCI(B, sF)
 
 
 # ===========================================================================
-# 15–16  compute_left_essential
+# 19–20  compute_left_essential
 # ===========================================================================
 
 
-def test_15a_left_essential_conjunctive_lhs_atoms(mq):
-    # GCI 4: A ⊓ B ⊑ E; both atoms are essential.
+def test_19a_left_essential_conjunctive_lhs_atoms(mq):
+    # GCI 4: A ⊓ B ⊑ E.  O contains A ⊑ B (GCI 1), so A alone already forces E
+    # (A ⊑ B makes the LHS A ⊓ B collapse to A under O).  The desaturation step
+    # removes B, leaving just A as the minimal sufficient precondition.
     result = compute_left_essential(AB, E, set(), mq, SIG)
-    assert result.lhs.atoms == frozenset({"A", "B"})
+    assert result.lhs.atoms == frozenset({"A"})
 
 
-def test_15b_left_essential_conjunctive_lhs_rhs(mq):
+def test_19b_left_essential_conjunctive_lhs_rhs(mq):
     result = compute_left_essential(AB, E, set(), mq, SIG)
     assert result.rhs == E
 
 
-def test_16_left_essential_existential_lhs(mq):
+def test_20_left_essential_existential_lhs(mq):
     # GCI 5: ∃r.C ⊑ F; existential-only LHS returned unchanged.
     result = compute_left_essential(rC, F, set(), mq, SIG)
     assert result == GCI(rC, F)
 
 
 # ===========================================================================
-# 17–19  normalise_counterexample
+# 21–23  normalise_counterexample
 # ===========================================================================
 
 
-def test_17_normalise_atomic_lhs(mq):
+def test_21_normalise_atomic_lhs(mq):
     ce = GCI(A, rC)
     assert normalise_counterexample(ce, SIG, mq) == ce
 
 
-def test_18_normalise_atomic_rhs(mq):
+def test_22_normalise_atomic_rhs(mq):
     ce = GCI(AB, E)
     assert normalise_counterexample(ce, SIG, mq) == ce
 
 
-def test_19a_normalise_compound_rhs_atomic(mq):
+def test_23a_normalise_compound_rhs_atomic(mq):
     # LHS = A⊓B (non-atomic), RHS = E⊓F (two atoms).
     # normalise_counterexample must split the RHS to one atom entailed by O.
     rhs = ELConcept(atoms=frozenset({"E", "F"}))
@@ -318,7 +377,7 @@ def test_19a_normalise_compound_rhs_atomic(mq):
     assert not result.rhs.existentials
 
 
-def test_19b_normalise_compound_rhs_valid_atom(mq):
+def test_23b_normalise_compound_rhs_valid_atom(mq):
     # Both O |= A⊓B ⊑ E (GCI 4) and O |= A⊓B ⊑ F (via A⊑∃r.C⊑F) hold.
     rhs = ELConcept(atoms=frozenset({"E", "F"}))
     result = normalise_counterexample(GCI(AB, rhs), SIG, mq)
@@ -326,23 +385,23 @@ def test_19b_normalise_compound_rhs_valid_atom(mq):
 
 
 # ===========================================================================
-# 20  Integration: learn_el_terminology on test_minimal.ttl
+# 24  Integration: learn_el_terminology on test_minimal.ttl
 # ===========================================================================
 
 
-def test_20a_completeness(learned_h, integration_oracle):
+def test_24a_completeness(learned_h, integration_oracle):
     """Every GCI in O must be entailed by the learned H."""
     missing = [g for g in TARGET_O if not integration_oracle._h_reasoner.entails(g)]
     assert missing == [], f"GCIs in O not entailed by H: {missing}"
 
 
-def test_20b_soundness(learned_h, integration_oracle):
+def test_24b_soundness(learned_h, integration_oracle):
     """Every GCI in H must be semantically entailed by O."""
     spurious = [g for g in learned_h if not integration_oracle.MQ(g)]
     assert spurious == [], f"GCIs in H not entailed by O: {spurious}"
 
 
-def test_20c_equivalence(learned_h, integration_oracle):
+def test_24c_equivalence(learned_h, integration_oracle):
     """The oracle must confirm H ≡ O (EQ returns None)."""
     remaining_ce = integration_oracle.EQ(learned_h)
     assert remaining_ce is None, f"Oracle found counterexample: {remaining_ce}"

@@ -102,16 +102,17 @@ class Oracle(ABC):
     """
     Abstract base class defining the interface that any oracle must implement.
     In the learning framework, the oracle represents the "teacher" that knows
-    the target terminology O.  The learner interacts with it through exactly
-    two operations:
+    the target terminology O.  The learner interacts with it through four
+    abstract members:
 
-      1. MQ(gci)   – membership query: does O entail this GCI?
-      2. EQ(H)     – equivalence query: given the current hypothesis
-                     H, return a GCI entailed by O but not by H,
-                     or None if H ≡ O.
-
-    The signature Σ_O is exposed as a property rather than a method, because
-    it is fixed background knowledge that never changes during learning.
+      1. signature        – Σ_O, the set of atomic concept names in O.
+      2. MQ(gci)          – membership query: does O entail this GCI?
+      3. EQ(H)            – equivalence query: given the current hypothesis
+                            H, return a GCI entailed by O but not by H,
+                            or None if H ≡ O.
+      4. make_H_MQ(H)     – return a callable that answers H-entailment queries.
+      5. on_H_add(gci)    – called after each GCI is added to H; use this to
+                            keep any external H-reasoner in sync with H.
     """
 
     @property
@@ -145,22 +146,22 @@ class Oracle(ABC):
         Return a callable  H_MQ(gci) -> bool  that answers whether the current
         hypothesis H entails gci.
 
-        Must be overridden. A complete H-entailment check requires a DL reasoner
-        (e.g. ELK via HypothesisReasoner); the EL closure is not computable by
-        structural inspection alone.
+        A complete H-entailment check requires a DL reasoner (e.g. ELK via
+        HypothesisReasoner); the EL closure is not computable by structural
+        inspection alone.
 
-        H is passed by reference; the returned callable should always reflect the
-        *current* state of H, so it remains valid as H grows during learning.
+        H is passed by reference; keep the returned callable in sync with H
+        by implementing on_H_add to push each new GCI to the underlying reasoner.
         """
 
+    @abstractmethod
     def on_H_add(self, gci: GCI) -> None:
         """
         Called by learn_el_terminology immediately after a GCI is added to H.
 
-        Override in subclasses to keep an external reasoner (e.g. HermiT)
-        in sync with H so that make_H_MQ stays up to date.
+        Keep any external H-reasoner in sync so that make_H_MQ stays correct
+        as H grows.  If no external state needs updating, implement as a no-op.
         """
-        pass
 
 # ---------------------------------------------------------------------------
 # O-essential GCI computation helper functions
@@ -392,6 +393,77 @@ def saturate_left(lhs: ELConcept, hypothesis: set[GCI], signature: set[str], H_M
 
     return ELConcept(atoms=frozenset(new_atoms), existentials=frozenset(new_exs))
 
+def _unsaturate_node(
+    node: ELConcept,
+    rhs: ELConcept,
+    MQ: Callable[[GCI], bool],
+    rebuild: Callable[[ELConcept], ELConcept],
+) -> ELConcept:
+    """
+    Recursively try to remove atoms from `node` and all descendant nodes.
+
+    `rebuild(new_node)` reconstructs the full LHS concept given a replacement
+    for `node`, so O-entailment is always checked against the complete GCI.
+    Changes are committed immediately; each child's rebuild closure captures the
+    most up-to-date parent state so subsequent siblings see prior removals.
+    """
+    # --- Try dropping atoms at this level ---
+    current_node = node
+    for atom in list(node.atoms):
+        candidate = ELConcept(
+            atoms=frozenset(current_node.atoms - {atom}),
+            existentials=current_node.existentials,
+        )
+        if MQ(GCI(rebuild(candidate), rhs)):
+            current_node = candidate
+
+    # --- Recurse into existential fillers ---
+    new_exs: list[tuple[str, ELConcept]] = []
+    for role, sub in list(current_node.existentials):
+        # Capture current_node by value via default arg so each child's rebuild
+        # reflects all prior sibling modifications.
+        def child_rebuild(
+            new_sub: ELConcept,
+            *,
+            r: str = role,
+            s: ELConcept = sub,
+            frozen_node: ELConcept = current_node,
+        ) -> ELConcept:
+            updated_exs = frozenset(
+                {(r2, s2) for r2, s2 in frozen_node.existentials if not (r2 == r and s2 == s)}
+                | {(r, new_sub)}
+            )
+            return rebuild(ELConcept(frozen_node.atoms, updated_exs))
+
+        new_sub = _unsaturate_node(sub, rhs, MQ, child_rebuild)
+        new_exs.append((role, new_sub))
+
+        # Update current_node so the next sibling's rebuild closure is current.
+        current_node = ELConcept(
+            current_node.atoms,
+            frozenset(
+                {(r2, s2) for r2, s2 in current_node.existentials if not (r2 == role and s2 == sub)}
+                | {(role, new_sub)}
+            ),
+        )
+
+    return ELConcept(current_node.atoms, frozenset(new_exs))
+
+
+def unsaturate_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool]) -> ELConcept:
+    """
+    Concept desaturation on the left side of the inclusion lhs ⊑ rhs.
+
+    Mirrors Java ExactLearner.unsaturateLeft(): iterates over every node in the
+    LHS concept tree and, for each atomic concept name in the node's label,
+    attempts to remove it.  The removal is kept when O still entails the GCI
+    (checked via MQ); otherwise the atom is restored.
+
+    This is applied after decompose_left to minimise the left-hand side.
+    """
+    return _unsaturate_node(lhs, rhs, MQ, rebuild=lambda x: x)
+
+
 def decompose_left(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], H_MQ=None) -> ELConcept:
     if H_MQ is None:
         def H_MQ(gci):
@@ -512,7 +584,8 @@ def compute_left_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI],
     """
 
     lhs_saturated = saturate_left(lhs, hypothesis, signature, H_MQ)
-    lhs_essential = decompose_left(lhs_saturated, rhs, hypothesis, MQ, H_MQ)
+    lhs_decomposed = decompose_left(lhs_saturated, rhs, hypothesis, MQ, H_MQ)
+    lhs_essential = unsaturate_left(lhs_decomposed, rhs, MQ)
 
     return GCI(lhs=lhs_essential, rhs=rhs)
 
@@ -597,9 +670,11 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
     ----------
     oracle : Oracle
         The teacher.  Must implement:
-          - oracle.signature  → set[str]    (Σ_O, the atomic concept names)
-          - oracle.MQ(gci)    → bool        (membership query)
-          - oracle.EQ(H)      → GCI | None  (equivalence query)
+          - oracle.signature     → set[str]              (Σ_O, the atomic concept names)
+          - oracle.MQ(gci)       → bool                  (membership query against O)
+          - oracle.EQ(H)         → GCI | None            (equivalence query)
+          - oracle.make_H_MQ(H)  → Callable[[GCI], bool] (membership query against H)
+          - oracle.on_H_add(gci) → None                  (called after each GCI is added to H)
 
     max_iterations : int
         Safety cap to prevent infinite loops during development/debugging.
