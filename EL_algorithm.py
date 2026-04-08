@@ -113,7 +113,20 @@ class Oracle(ABC):
       4. make_H_MQ(H)     – return a callable that answers H-entailment queries.
       5. on_H_add(gci)    – called after each GCI is added to H; use this to
                             keep any external H-reasoner in sync with H.
+
+    Call counts are tracked automatically.  After learning, inspect
+    ``oracle.mq_count`` and ``oracle.eq_count``, or call ``reset_counts()``
+    to zero them before a new run.
     """
+
+    def __init__(self) -> None:
+        self.mq_count: int = 0
+        self.eq_count: int = 0
+
+    def reset_counts(self) -> None:
+        """Reset MQ and EQ call counters to zero."""
+        self.mq_count = 0
+        self.eq_count = 0
 
     @property
     @abstractmethod
@@ -123,22 +136,33 @@ class Oracle(ABC):
         The learner is given this upfront as background knowledge.
         """
 
-    @abstractmethod
     def MQ(self, gci: GCI) -> bool:
         """
         Membership query: return True iff O entails the given GCI.
 
-        This is the "Does O |= C ⊑ D?" check that the learner uses during
-        the essential-computation steps (lines 6 and 8 of Algorithm 1).
+        Increments ``mq_count`` and delegates to ``_MQ``.
         """
+        self.mq_count += 1
+        return self._MQ(gci)
 
-    @abstractmethod
     def EQ(self, hypothesis: set[GCI]) -> Optional[GCI]:
         """
         Equivalence query: given the current hypothesis H, return either:
           - A *positive* counterexample: a GCI entailed by O but not by H, or
           - None, meaning H ≡ O and learning is complete.
+
+        Increments ``eq_count`` and delegates to ``_EQ``.
         """
+        self.eq_count += 1
+        return self._EQ(hypothesis)
+
+    @abstractmethod
+    def _MQ(self, gci: GCI) -> bool:
+        """Oracle-specific membership query implementation."""
+
+    @abstractmethod
+    def _EQ(self, hypothesis: set[GCI]) -> Optional[GCI]:
+        """Oracle-specific equivalence query implementation."""
 
     @abstractmethod
     def make_H_MQ(self, H: set[GCI]) -> Callable[[GCI], bool]:

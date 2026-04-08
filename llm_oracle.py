@@ -188,6 +188,7 @@ class LLMOracle(Oracle):
         device: str | int = "cpu",
         verbose: bool = False,
     ):
+        super().__init__()
         self._sig = signature
         self._h_reasoner = h_reasoner
         self._max_new_tokens = max_new_tokens
@@ -288,7 +289,7 @@ class LLMOracle(Oracle):
     # Oracle interface — O-entailment via LLM
     # ------------------------------------------------------------------
 
-    def MQ(self, gci: GCI) -> bool:
+    def _MQ(self, gci: GCI) -> bool:
         """
         Membership query: does O entail lhs ⊑ rhs?
 
@@ -305,7 +306,7 @@ class LLMOracle(Oracle):
             f"Unparseable MQ response for '{gci_to_manchester(gci)}': {response!r}"
         )
 
-    def EQ(self, hypothesis: set[GCI]) -> Optional[GCI]:
+    def _EQ(self, hypothesis: set[GCI]) -> Optional[GCI]:
         """
         Equivalence query: is H equivalent to O?
 

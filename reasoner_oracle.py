@@ -52,6 +52,7 @@ class ReasonerOracle(Oracle):
         oracle_skills: dict[str, float] | None = None,
         reasoner: str = "elk",
     ):
+        super().__init__()
         self._sig, self._O = extract_ontology(path)
         self._reasoner_type = reasoner.lower()
 
@@ -135,7 +136,7 @@ class ReasonerOracle(Oracle):
         """Keep the H-reasoner in sync when a GCI is added to H."""
         self._h_reasoner.add(gci)
 
-    def MQ(self, gci: GCI) -> bool:
+    def _MQ(self, gci: GCI) -> bool:
         """Membership query via HermiT: O |= lhs ⊑ rhs?"""
         return self._owl.entails(encode(gci.lhs), encode(gci.rhs))
 
@@ -240,7 +241,7 @@ class ReasonerOracle(Oracle):
                         break
         return current
 
-    def EQ(self, hypothesis: set[GCI]) -> Optional[GCI]:
+    def _EQ(self, hypothesis: set[GCI]) -> Optional[GCI]:
         """
         Equivalence query: return a (possibly transformed) counterexample GCI,
         or None if H ≡ O.

@@ -76,6 +76,9 @@ def _run_and_report(oracle: Oracle, verbose: bool) -> None:
     H = learn_el_terminology(oracle, max_iterations=20)
     logging.disable(logging.NOTSET)
 
+    mq_calls = oracle.mq_count
+    eq_calls = oracle.eq_count
+
     target_O  = oracle.axioms
     redundant = [g for g in H if g not in target_O]
 
@@ -95,6 +98,8 @@ def _run_and_report(oracle: Oracle, verbose: bool) -> None:
         print("  ✓  H ≡ O")
     else:
         print("  ✗  H ≢ O")
+
+    print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
 
 
 # ---------------------------------------------------------------------------
@@ -178,13 +183,17 @@ def _run_llm_demo(model: str, device: str, verbose: bool) -> None:
 
         _section("Learning EL terminology from LLM oracle")
         print("  (Each MQ/EQ call queries the LLM — this may take a while)\n")
+        oracle.reset_counts()
         H = learn_el_terminology(oracle, max_iterations=30)
+        mq_calls = oracle.mq_count
+        eq_calls = oracle.eq_count
 
         _section("Result")
         print(f"\n  |H| = {len(H)}\n")
         print("  Learned GCIs (Manchester syntax):")
         for gci in sorted(H, key=str):
             print(f"    {gci_to_manchester(gci)}")
+        print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
 
 
 # ---------------------------------------------------------------------------
