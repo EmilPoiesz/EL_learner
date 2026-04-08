@@ -41,8 +41,7 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 | `hypothesis_reasoner.py` | `HypothesisReasoner` and Java gateway helpers — shared by all oracle implementations |
 | `reasoner_oracle.py` | `ReasonerOracle` — O-oracle backed by OWL API + ELK/HermiT via py4j |
 | `llm_oracle.py` | `LLMOracle` — O-oracle backed by a local HuggingFace language model; Manchester syntax serializer and parser |
-| `demo.py` | End-to-end demo on `ontologies/medical.ttl` using `ReasonerOracle` |
-| `demo_llm.py` | End-to-end demo using `LLMOracle` with a local HuggingFace model |
+| `demo.py` | Unified demo — select oracle backend with `--oracle reasoner` (default) or `--oracle llm` |
 | `utils/java_utils.py` | Jar discovery and gateway lifecycle utilities |
 | `utils/owl_parser.py` | OWL/Turtle ontology parser (rdflib-based) |
 | `java/OWLGateway.java` | Java gateway process exposing `add_gci`, `entails`, `clear` over py4j |
@@ -86,6 +85,22 @@ Two oracle implementations are provided:
 
 - **`ReasonerOracle`** (`reasoner_oracle.py`) — answers MQ and EQ using a DL reasoner (ELK or HermiT). The O-axioms are loaded once at construction; H-entailment is delegated to a `HypothesisReasoner`.
 - **`LLMOracle`** (`llm_oracle.py`) — answers MQ and EQ by prompting a local HuggingFace language model using Manchester syntax. H-entailment is delegated to a `HypothesisReasoner`.
+
+### Algorithm internals
+
+The core of the learner is `learn_el_terminology` in `el_algorithm.py`.  When a counterexample `C ⊑ D` is received from the oracle it is processed by one of two pipelines depending on which side is atomic.
+
+**Right O-essential** (C is atomic):
+
+1. **Concept saturation** (`saturate_concept_rhs`) — close the RHS under O-subsumptions to add all implied atomic names.
+2. **Sibling merge** (`sibling_merge`) — merge same-role existentials validated against O.
+3. **RHS decomposition** (`decompose_rhs`) — split off sub-GCIs already known to H.
+
+**Left O-essential** (D is atomic):
+
+1. **Left saturation** (`saturate_left`) — add to each LHS node every atomic name implied by H.
+2. **LHS decomposition** (`decompose_left`) — prune existentials and descend into sub-concepts whose conjunction alone forces D.
+3. **Left desaturation** (`unsaturate_left`) — iterate over every node in the LHS tree and remove each atomic concept name whose removal still leaves the GCI entailed by O.  This minimises the left-hand side so the learner does not commit to an unnecessarily strong precondition.
 
 ### HypothesisReasoner
 
@@ -252,25 +267,25 @@ Pass `verbose=True` to `LLMOracle` (or `-v` in `demo_llm.py`) to print every pro
 
 ## Demo
 
-### ReasonerOracle demo
+Both oracle backends are accessed through a single entry point. Use `--oracle` to select the backend.
 
 ```bash
-python demo.py                      # run on ontologies/medical.ttl with ELK
-python demo.py --reasoner=hermit    # use HermiT instead
-python demo.py -v                   # verbose logging
+# ReasonerOracle (default)
+python demo.py                                     # ELK on ontologies/medical.ttl
+python demo.py --reasoner hermit                   # HermiT instead of ELK
+python demo.py --ontology ontologies/medical.ttl   # explicit ontology path
+python demo.py -v                                  # verbose logging
+
+# LLMOracle
+python demo.py --oracle llm                        # run learning loop (CPU)
+python demo.py --oracle llm --device mps           # Apple Silicon GPU
+python demo.py --oracle llm --device cuda          # NVIDIA GPU
+python demo.py --oracle llm -v                     # print all prompts and responses
+python demo.py --oracle llm --dry-run              # preview prompts without loading the model
+python demo.py --oracle llm --model <hf-path>      # use a different HuggingFace model
 ```
 
-### LLMOracle demo
-
-```bash
-python demo_llm.py                  # run learning loop (CPU)
-python demo_llm.py --device=mps     # Apple Silicon GPU
-python demo_llm.py --device=cuda    # NVIDIA GPU
-python demo_llm.py -v               # print all prompts and responses
-python demo_llm.py --dry-run        # preview prompts without loading the model
-```
-
-The demo uses `HuggingFaceTB/SmolLM2-1.7B-Instruct` on a kinship domain (`{Person, Male, Female, Parent, Father, Mother}`). The model is downloaded automatically on first run and cached in `~/.cache/huggingface/`. To pre-download:
+The LLM demo uses `HuggingFaceTB/SmolLM2-1.7B-Instruct` on a kinship domain (`{Person, Male, Female, Parent, Father, Mother}`). The model is downloaded automatically on first run and cached in `~/.cache/huggingface/`. To pre-download:
 
 ```bash
 huggingface-cli download HuggingFaceTB/SmolLM2-1.7B-Instruct
