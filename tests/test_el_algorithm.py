@@ -235,19 +235,29 @@ def test_09_decompose_left_redundant_existential(req, mq):
     # LHS = A ⊓ B ⊓ ∃r.C, RHS = E.  O |= A ⊓ B ⊑ E, so ∃r.C is redundant.
     lhs = ELConcept(atoms=frozenset({"A", "B"}), existentials=frozenset({("r", C)}))
     result = decompose_left(lhs, E, set(), mq)
-    assert result == AB
+    assert result == GCI(AB, E)
 
 
 def test_10_decompose_left_both_atoms_essential(mq):
     # O ⊭ A ⊑ E and O ⊭ B ⊑ E alone; both atoms are essential.
     result = decompose_left(AB, E, set(), mq)
-    assert result.atoms == frozenset({"A", "B"})
+    assert result.lhs.atoms == frozenset({"A", "B"})
 
 
 def test_11_decompose_left_existential_only(mq):
     # ∃r.C is the only component; it is essential.
     result = decompose_left(rC, F, set(), mq)
-    assert result == rC
+    assert result == GCI(rC, F)
+
+
+def test_11b_decompose_left_case1_new_rhs(req, mq):
+    # lhs = ∃r.G, rhs = F.
+    # O |= G ⊑ E (GCI 6a) but O ⊭ G ⊑ F, so the old rhs-only check would not
+    # fire.  With the new check against all of ΣO, Case 1 fires with A′ = E and
+    # the result is GCI(G, E) — not GCI(∃r.G, F) and not GCI(G, F).
+    rG = ELConcept(existentials=frozenset({("r", G)}))
+    result = decompose_left(rG, F, set(), mq, signature=SIG)
+    assert result == GCI(G, E)
 
 
 # ===========================================================================
