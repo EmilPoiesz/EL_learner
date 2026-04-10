@@ -3,7 +3,7 @@ import subprocess
 
 from py4j.java_gateway import JavaGateway, GatewayParameters
 
-from el_algorithm import ELConcept, GCI
+from learner.el_algorithm import GCI
 from utils.java_utils import encode, start_gateway
 
 logger = logging.getLogger(__name__)

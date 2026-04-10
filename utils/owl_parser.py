@@ -2,8 +2,7 @@ import logging
 
 from rdflib import OWL, RDF, RDFS, Graph, URIRef, BNode
 from rdflib.collection import Collection
-
-from el_algorithm import ELConcept, GCI
+from learner.el_algorithm import ELConcept, GCI
 
 logger = logging.getLogger(__name__)
 

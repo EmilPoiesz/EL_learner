@@ -11,14 +11,14 @@ integration_oracle : ReasonerOracle | None — separate session-scoped oracle fo
 import os
 import pytest
 
-from reasoner_oracle import ReasonerOracle
+from learner.reasoner_oracle import ReasonerOracle
 
 _ROOT        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
 _TTL_PATH    = os.path.join(_ROOT, "ontologies", "test_minimal.ttl")
 _PROJECT_DIR = os.path.join(_ROOT, "java")
 
 
-def pytest_addoption(parser):
+def pytest_add_option(parser):
     parser.addoption(
         "--reasoner", choices=["elk", "hermit"], default="elk",
         help="DL reasoner backend (elk or hermit). Default: elk.",

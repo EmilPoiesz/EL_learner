@@ -5,11 +5,11 @@ import os
 
 from py4j.java_gateway import JavaGateway, GatewayParameters
 
-from el_algorithm import Oracle, ELConcept, GCI
+from learner.el_algorithm import Oracle, ELConcept, GCI
 from typing import Optional
 
 from utils.java_utils import find_hermit_jar, find_py4j_jar, find_elk_jar, find_log4j_jars, start_gateway, encode
-from hypothesis_reasoner import HypothesisReasoner
+from learner.hypothesis_reasoner import HypothesisReasoner
 from utils.owl_parser import extract_ontology
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ class ReasonerOracle(Oracle):
         # Default gateway_jar_dir: same directory as this source file,
         # which is where OWLGateway.class should be compiled.
         if gateway_jar_dir is None:
-            gateway_jar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
+            gateway_jar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../java")
         logger.info("Using gateway_jar_dir: %s", gateway_jar_dir)
 
         hermit_jar = find_hermit_jar()

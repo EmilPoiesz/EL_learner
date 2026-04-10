@@ -43,7 +43,7 @@ def _run_reasoner_demo(
     reasoner: str,
     verbose: bool,
 ) -> None:
-    from reasoner_oracle import ReasonerOracle
+    from learner.reasoner_oracle import ReasonerOracle
 
     ttl_path    = os.path.join(os.path.dirname(os.path.abspath(__file__)), ontology)
     project_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
@@ -130,7 +130,7 @@ _PREVIEW_HYPOTHESIS: set[GCI] = {
 
 
 def _llm_dry_run() -> None:
-    from llm_oracle import LLMOracle, gci_to_manchester, hypothesis_to_manchester
+    from learner.llm_oracle import LLMOracle, gci_to_manchester, hypothesis_to_manchester
 
     _section("Dry-run — prompt preview (no model loaded)")
 
@@ -154,8 +154,8 @@ def _llm_dry_run() -> None:
 
 def _run_llm_demo(model: str, device: str, verbose: bool) -> None:
     from utils.java_utils import build_classpath
-    from hypothesis_reasoner import HypothesisReasoner
-    from llm_oracle import LLMOracle, gci_to_manchester
+    from learner.hypothesis_reasoner import HypothesisReasoner
+    from learner.llm_oracle import LLMOracle, gci_to_manchester
 
     _section(f"EL Learner — LLMOracle  ({model})")
     print(f"\n  Signature Σ_O : {sorted(_LLM_SIGNATURE)}")

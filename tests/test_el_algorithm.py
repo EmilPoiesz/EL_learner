@@ -1,7 +1,7 @@
 """
 test_el_algorithm.py
 ====================
-Pytest test suite for the EL learning algorithm (EL_algorithm.py).
+Pytest test suite for the EL learning algorithm (el_algorithm.py).
 
 Each test targets a specific function or branch of Algorithm 1, using the
 minimal ontology in ontologies/test_minimal.ttl (and hand-coded oracles where
@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import pytest
 
-from el_algorithm import (
+from learner.el_algorithm import (
     ELConcept,
     GCI,
     compute_left_essential,

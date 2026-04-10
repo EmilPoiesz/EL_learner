@@ -152,12 +152,12 @@ Set `ELK_JAR=/path/to/elk-owlapi-standalone-0.4.2.jar` to bypass the search enti
 ### ReasonerOracle
 
 ```python
-from reasoner_oracle import ReasonerOracle
+from learner.reasoner_oracle import ReasonerOracle
 from el_algorithm import learn_el_terminology
 
 with ReasonerOracle(
-    path="ontologies/medical.ttl",
-    gateway_jar_dir="."        # directory containing OWLGateway.class
+        path="ontologies/medical.ttl",
+        gateway_jar_dir="."  # directory containing OWLGateway.class
 ) as oracle:
     H = learn_el_terminology(oracle)
 
@@ -182,20 +182,20 @@ The `LLMOracle` uses a local HuggingFace model as the O-oracle. The model is loa
 ```python
 import os
 from utils.java_utils import build_classpath
-from hypothesis_reasoner import HypothesisReasoner
-from llm_oracle import LLMOracle
+from learner.hypothesis_reasoner import HypothesisReasoner
+from learner.llm_oracle import LLMOracle
 from el_algorithm import learn_el_terminology
 
 gateway_jar_dir = os.path.dirname(os.path.abspath(__file__))
 h_reasoner = HypothesisReasoner(build_classpath(gateway_jar_dir), "elk")
 
 with LLMOracle(
-    model_name_or_path="HuggingFaceTB/SmolLM2-1.7B-Instruct",
-    signature={"Person", "Male", "Female", "Parent", "Father", "Mother"},
-    h_reasoner=h_reasoner,
-    max_new_tokens=128,
-    device="cpu",       # or "cuda" / "mps"
-    verbose=False,
+        model_name_or_path="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+        signature={"Person", "Male", "Female", "Parent", "Father", "Mother"},
+        h_reasoner=h_reasoner,
+        max_new_tokens=128,
+        device="cpu",  # or "cuda" / "mps"
+        verbose=False,
 ) as oracle:
     H = learn_el_terminology(oracle)
 ```
@@ -207,7 +207,7 @@ with LLMOracle(
 `llm_oracle.py` exports module-level helpers for converting between `ELConcept`/`GCI` objects and Manchester syntax strings:
 
 ```python
-from llm_oracle import concept_to_manchester, gci_to_manchester, parse_manchester_gci, parse_manchester_concept
+from learner.llm_oracle import concept_to_manchester, gci_to_manchester, parse_manchester_gci, parse_manchester_concept
 ```
 
 | Function | Direction |

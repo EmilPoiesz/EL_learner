@@ -28,7 +28,7 @@ import threading
 
 import owlready2
 
-from el_algorithm import ELConcept
+from learner.el_algorithm import ELConcept
 
 
 # ---------------------------------------------------------------------------
