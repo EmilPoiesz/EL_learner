@@ -1,0 +1,68 @@
+name: check
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+      - 'updates/**'
+      - 'feature/**'
+      - 'features/**'
+  workflow_dispatch:
+env:
+  PROJECT_NAME: EL_learner
+  WORKFLOW: check
+jobs:
+  run-unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+        python-version:
+          - '3.12.3'
+    runs-on: ${{ matrix.os }}
+    name: Run tests on Python ${{ matrix.python-version }}, on ${{ matrix.os }}
+    timeout-minutes: 60
+    concurrency:
+      group: ${{ github.workflow }}-run-unit-tests-${{ matrix.python-version }}-${{ matrix.os }}-${{ github.event.number || github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '11'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore Python dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Generate coverage report
+        run: |
+          pip install pytest
+          pip install pytest-cov
+          pytest --cov=./ --cov-report=xml --ignore=tests --cov-config=.coveragerc
+          pytest --cov-append --cov=./ --cov-report=xml tests --cov-config=.coveragerc
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          directory: ./coverage/reports/
+          env_vars: OS,PYTHON
+          fail_ci_if_error: true
+          files: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          verbose: false
