@@ -112,7 +112,7 @@ def find_elk_jar(gateway_jar_dir: str) -> str:
         raise FileNotFoundError(
             "ELK jar not found. Download elk-owlapi-standalone-0.4.2-bin.jar from "
             "https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/ "
-            "and place it in the project directory (rename to elk-owlapi-standalone-0.4.2.jar), "
+            "and place it in the java/ directory (rename to elk-owlapi-standalone-0.4.2.jar), "
             "or set the ELK_JAR environment variable."
         )
     return jar

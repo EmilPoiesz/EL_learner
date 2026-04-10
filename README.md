@@ -18,8 +18,8 @@ The algorithm is described in:
 ## Prerequisites
 
 - **Python 3.10+**
-- **Java 11+** (Java 21 recommended)
-- **ELK jar** — `elk-owlapi-standalone-0.4.2-bin.jar` from [Maven Central](https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/), renamed to `elk-owlapi-standalone-0.4.2.jar` and placed in the project directory (or pointed to via the `ELK_JAR` environment variable).
+- **Java 11**
+- **ELK jar** — `elk-owlapi-standalone-0.4.2-bin.jar` from [Maven Central](https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/), renamed to `elk-owlapi-standalone-0.4.2.jar` and placed in the `java/` directory (or pointed to via the `ELK_JAR` environment variable).
 
 > **ELK version note:** ELK 0.4.2 is required because it targets OWL API 3.x, which is compatible with the HermiT jar bundled by `owlready2`. Newer ELK versions target OWL API 4+ and are incompatible.
 
@@ -29,33 +29,52 @@ Install Python dependencies:
 pip install -r requirements.txt
 ```
 
+Alternatively, if you use [Poetry](https://python-poetry.org/):
+
+```bash
+poetry install
+```
+
 The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`, which are included in `requirements.txt`.
 
 ---
 
-## Files
+## Project structure
 
-| File | Description |
-|---|---|
-| `el_algorithm.py` | Core learning algorithm, EL concept data structures, and `Oracle` ABC |
-| `hypothesis_reasoner.py` | `HypothesisReasoner` and Java gateway helpers — shared by all oracle implementations |
-| `reasoner_oracle.py` | `ReasonerOracle` — O-oracle backed by OWL API + ELK/HermiT via py4j |
-| `llm_oracle.py` | `LLMOracle` — O-oracle backed by a local HuggingFace language model; Manchester syntax serializer and parser |
-| `demo.py` | Unified demo — select oracle backend with `--oracle reasoner` (default) or `--oracle llm` |
-| `utils/java_utils.py` | Jar discovery and gateway lifecycle utilities |
-| `utils/owl_parser.py` | OWL/Turtle ontology parser (rdflib-based) |
-| `java/OWLGateway.java` | Java gateway process exposing `add_gci`, `entails`, `clear` over py4j |
-| `java/java_env.bash` | Helper script to compile `OWLGateway.java` |
-| `tests/test_el_algorithm.py` | Pytest test suite — unit and integration tests |
-| `conftest.py` | Pytest fixtures and `--reasoner` CLI option |
-| `ontologies/` | Example OWL/Turtle ontology files |
-| `papers/` | Reference papers |
+```
+.
+├── learner/
+│   ├── el_algorithm.py          # Core learning algorithm, EL concept data structures, Oracle ABC
+│   ├── hypothesis_reasoner.py   # HypothesisReasoner — shared H-entailment component
+│   ├── reasoner_oracle.py       # ReasonerOracle — O-oracle backed by OWL API + ELK/HermiT
+│   └── llm_oracle.py            # LLMOracle — O-oracle backed by a local HuggingFace model
+├── utils/
+│   ├── java_utils.py            # Jar discovery and gateway lifecycle utilities
+│   └── owl_parser.py            # OWL/Turtle ontology parser (rdflib-based)
+├── java/
+│   ├── OWLGateway.java          # Java gateway process exposing add_gci, entails, clear over py4j
+│   ├── OWLGateway.class         # Compiled gateway (Java 11)
+│   └── java_env.bash            # Helper script to recompile OWLGateway.java
+├── tests/
+│   ├── conftest.py              # Pytest fixtures and --reasoner CLI option
+│   └── test_el_algorithm.py     # Unit and integration tests
+├── ontologies/
+│   ├── medical.ttl              # Example medical ontology
+│   └── test_minimal.ttl         # Minimal ontology used by the test suite
+├── .github/workflows/
+│   └── check.yml                # CI workflow — runs tests with coverage on every push
+├── demo.py                      # Unified demo entry point
+├── requirements.txt             # Pinned dependencies
+└── pyproject.toml               # Poetry project config
+```
 
 ---
 
 ## Setup: Compile the Java gateway
 
-The Java gateway wraps OWL API + ELK/HermiT and must be compiled before use. The helper script auto-detects the required jars from your Python environment:
+A pre-compiled `OWLGateway.class` (Java 11) is committed to the repository, so no compilation step is required for normal use.
+
+If you need to recompile (e.g. after modifying `OWLGateway.java`), use the helper script, which auto-detects the required jars from your Python environment:
 
 ```bash
 bash java/java_env.bash
@@ -63,7 +82,7 @@ bash java/java_env.bash
 
 This produces `OWLGateway.class` in the `java/` directory.
 
-> **Note:** The script expects `owlready2`, `py4j`, and the ELK jar to be available. Activate your virtual environment first, and ensure the ELK jar is in the project directory or on `$VIRTUAL_ENV`.
+> **Note:** The script expects `owlready2`, `py4j`, and the ELK jar to be available. Activate your virtual environment first, and ensure the ELK jar is in the `java/` directory or pointed to via `$ELK_JAR`.
 
 ---
 
@@ -139,7 +158,7 @@ ELK is the default because the learning algorithm targets the EL profile, making
 The ELK jar is located by searching in this order:
 
 1. `ELK_JAR` environment variable (explicit path)
-2. Project directory (`gateway_jar_dir`)
+2. `java/` directory (`gateway_jar_dir`)
 3. Active virtual environment (`$VIRTUAL_ENV`)
 4. Common system locations (`/usr/local/share`, `/usr/share`, `/opt/homebrew`, `~/.local/share`)
 
@@ -153,11 +172,11 @@ Set `ELK_JAR=/path/to/elk-owlapi-standalone-0.4.2.jar` to bypass the search enti
 
 ```python
 from learner.reasoner_oracle import ReasonerOracle
-from el_algorithm import learn_el_terminology
+from learner.el_algorithm import learn_el_terminology
 
 with ReasonerOracle(
         path="ontologies/medical.ttl",
-        gateway_jar_dir="."  # directory containing OWLGateway.class
+        gateway_jar_dir="java"  # directory containing OWLGateway.class
 ) as oracle:
     H = learn_el_terminology(oracle)
 
@@ -184,9 +203,9 @@ import os
 from utils.java_utils import build_classpath
 from learner.hypothesis_reasoner import HypothesisReasoner
 from learner.llm_oracle import LLMOracle
-from el_algorithm import learn_el_terminology
+from learner.el_algorithm import learn_el_terminology
 
-gateway_jar_dir = os.path.dirname(os.path.abspath(__file__))
+gateway_jar_dir = "java"
 h_reasoner = HypothesisReasoner(build_classpath(gateway_jar_dir), "elk")
 
 with LLMOracle(
@@ -290,6 +309,19 @@ The LLM demo uses `HuggingFaceTB/SmolLM2-1.7B-Instruct` on a kinship domain (`{P
 ```bash
 huggingface-cli download HuggingFaceTB/SmolLM2-1.7B-Instruct
 ```
+
+---
+
+## CI
+
+Every push to `master`, `main`, `develop`, or `feature/**` / `updates/**` branches runs the test suite automatically via GitHub Actions (`.github/workflows/check.yml`). The workflow:
+
+- Runs on Ubuntu, Windows, and macOS
+- Downloads the ELK jar from Maven Central
+- Recompiles `OWLGateway.java` with Java 11
+- Runs all tests with coverage and uploads the report to Codecov
+
+A `CODECOV_TOKEN` repository secret is required for the Codecov upload step.
 
 ---
 
