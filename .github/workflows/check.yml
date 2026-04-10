@@ -53,6 +53,17 @@ jobs:
           curl -L -o java/elk-owlapi-standalone-0.4.2.jar https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/elk-owlapi-standalone-0.4.2-bin.jar
         shell: bash
 
+      - name: Compile OWLGateway.java
+        run: |
+          python3 -c "
+          import sys, subprocess
+          sys.path.insert(0, '.')
+          from utils.java_utils import build_classpath
+          cp = build_classpath('java')
+          subprocess.run(['javac', '-cp', cp, 'java/OWLGateway.java'], check=True)
+          "
+        shell: bash
+
       - name: Generate coverage report
         run: |
           pip install pytest

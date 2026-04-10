@@ -50,7 +50,9 @@ def reasoner_oracle(reasoner_name):
             "saturate_left": 0.5, "unsaturate_right": 0.5,
             "compose_left":  0.5, "compose_right":    0.5,
         })
-    except Exception:
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Reasoner oracle failed to start ({type(e).__name__}: {e}); tests requiring a live reasoner will be skipped.")
         yield None
         return
     try:

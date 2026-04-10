@@ -24,6 +24,7 @@ import glob
 import os
 import queue
 import subprocess
+import sys
 import threading
 
 import owlready2
@@ -77,6 +78,7 @@ def find_hermit_jar() -> str:
 
 def find_py4j_jar() -> str:
     roots = [
+        os.path.join(sys.prefix, "share", "py4j"),
         "/usr/local/share/py4j",
         "/usr/share/py4j",
         "/opt/homebrew",
