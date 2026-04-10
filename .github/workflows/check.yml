@@ -48,6 +48,11 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - name: Download ELK reasoner jar
+        run: |
+          curl -L -o java/elk-owlapi-standalone-0.4.2.jar https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/elk-owlapi-standalone-0.4.2-bin.jar
+        shell: bash
+
       - name: Generate coverage report
         run: |
           pip install pytest
