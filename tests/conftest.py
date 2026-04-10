@@ -18,7 +18,7 @@ _TTL_PATH    = os.path.join(_ROOT, "ontologies", "test_minimal.ttl")
 _PROJECT_DIR = os.path.join(_ROOT, "java")
 
 
-def pytest_add_option(parser):
+def pytest_addoption(parser):
     parser.addoption(
         "--reasoner", choices=["elk", "hermit"], default="elk",
         help="DL reasoner backend (elk or hermit). Default: elk.",
