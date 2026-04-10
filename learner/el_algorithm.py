@@ -27,10 +27,12 @@ class ELConcept:
 
     Examples
     --------
-    ⊤              → ELConcept(frozenset(), frozenset())
-    A              → ELConcept(frozenset({"A"}), frozenset())
-    A ⊓ ∃r.B       → ELConcept(frozenset({"A"}), frozenset({("r", ELConcept({"B"}, {}))}))
-    A ⊓ B ⊓ ∃r.C   → ELConcept(frozenset({"A", "B"}), frozenset({("r", ELConcept({"C"}, {}))}))
+    ⊤                    → ELConcept(frozenset(), frozenset())
+    A                    → ELConcept(frozenset({"A"}), frozenset())
+    A ⊓ ∃r.B             → ELConcept(frozenset({"A"}), frozenset({("r", ELConcept({"B"}, {}))}))
+    A ⊓ B ⊓ ∃r.C         → ELConcept(frozenset({"A", "B"}), frozenset({("r", ELConcept({"C"}, {}))}))
+    ∃r.(A ⊓ ∃s.B)        → ELConcept(frozenset(), frozenset({("r", ELConcept({"A"}, {("s", ELConcept({"B"}, {}))}))}))
+
     """
     atoms: frozenset[str] = field(default_factory=frozenset)
     existentials: frozenset[Tuple[str, "ELConcept"]] = field(default_factory=frozenset)
@@ -488,19 +490,33 @@ def unsaturate_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool]) -
     return _unsaturate_node(lhs, rhs, MQ, rebuild=lambda x: x)
 
 
-def decompose_left(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], H_MQ=None) -> ELConcept:
+def decompose_left(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], H_MQ=None, signature: set[str] = None) -> GCI:
     if H_MQ is None:
         def H_MQ(gci):
             return entails_in_H(gci, hypothesis)
 
-    # Case 1: Try subtrees (Cd)
-    # For every existential restriction exists r.D in C
+    def _find_undiscovered_atom(concept: ELConcept) -> Optional[ELConcept]:
+        """Return A′ ∈ ΣO s.t. O ⊨ concept ⊑ A′ and H ⊭ concept ⊑ A′, or None."""
+        if signature is not None:
+            for A in signature:
+                if A in concept.atoms:
+                    continue  # trivially entailed; not informative
+                A_concept = ELConcept(frozenset({A}), frozenset())
+                if MQ(GCI(concept, A_concept)) and not H_MQ(GCI(concept, A_concept)):
+                    return A_concept
+            return None
+        # Fallback: check only against rhs (original behaviour when no signature given)
+        if MQ(GCI(concept, rhs)) and not H_MQ(GCI(concept, rhs)):
+            return rhs
+        return None
+
+    # Case 1: Try subtrees (Cd) — non-root nodes only (existential fillers).
+    # Per the paper: if O ⊨ Cd ⊑ A′ and H ⊭ Cd ⊑ A′ for some A′ ∈ ΣO,
+    # replace C ⊑ A by Cd ⊑ A′.  A′ need not equal the original rhs.
     for role, sub_concept in lhs.existentials:
-        # If O thinks the nested part D is enough to force A,
-        # but our current H hasn't learned that yet:
-        if MQ(GCI(sub_concept, rhs)) and not H_MQ(GCI(sub_concept, rhs)):
-            # Recurse on the smaller piece
-            return decompose_left(sub_concept, rhs, hypothesis, MQ, H_MQ)
+        a_prime = _find_undiscovered_atom(sub_concept)
+        if a_prime is not None:
+            return decompose_left(sub_concept, a_prime, hypothesis, MQ, H_MQ, signature)
 
     # Case 2: Try pruning (C \ d)
     # Try removing one existential at a time from the top level
@@ -509,10 +525,10 @@ def decompose_left(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Cal
         lhs_minus_sub_concept = ELConcept(lhs.atoms, reduced_exs)
 
         if MQ(GCI(lhs_minus_sub_concept, rhs)) and not H_MQ(GCI(lhs_minus_sub_concept, rhs)):
-            return decompose_left(lhs_minus_sub_concept, rhs, hypothesis, MQ, H_MQ)
+            return decompose_left(lhs_minus_sub_concept, rhs, hypothesis, MQ, H_MQ, signature)
 
     # If no further decomposition is possible, C is O-essential
-    return lhs
+    return GCI(lhs, rhs)
 
 
 # ---------------------------------------------------------------------------
@@ -608,10 +624,10 @@ def compute_left_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI],
     """
 
     lhs_saturated = saturate_left(lhs, hypothesis, signature, H_MQ)
-    lhs_decomposed = decompose_left(lhs_saturated, rhs, hypothesis, MQ, H_MQ)
-    lhs_essential = unsaturate_left(lhs_decomposed, rhs, MQ)
+    decomposed = decompose_left(lhs_saturated, rhs, hypothesis, MQ, H_MQ, signature)
+    lhs_essential = unsaturate_left(decomposed.lhs, decomposed.rhs, MQ)
 
-    return GCI(lhs=lhs_essential, rhs=rhs)
+    return GCI(lhs=lhs_essential, rhs=decomposed.rhs)
 
 
 # ---------------------------------------------------------------------------

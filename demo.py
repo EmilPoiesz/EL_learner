@@ -73,7 +73,7 @@ def _run_and_report(oracle: Oracle, verbose: bool) -> None:
     """Run the learner and print a comparison report against oracle.axioms."""
     if not verbose:
         logging.disable(logging.INFO)
-    H = learn_el_terminology(oracle, max_iterations=20)
+    H = learn_el_terminology(oracle, max_iterations=50)
     logging.disable(logging.NOTSET)
 
     mq_calls = oracle.mq_count
@@ -184,7 +184,7 @@ def _run_llm_demo(model: str, device: str, verbose: bool) -> None:
         _section("Learning EL terminology from LLM oracle")
         print("  (Each MQ/EQ call queries the LLM — this may take a while)\n")
         oracle.reset_counts()
-        H = learn_el_terminology(oracle, max_iterations=30)
+        H = learn_el_terminology(oracle, max_iterations=50)
         mq_calls = oracle.mq_count
         eq_calls = oracle.eq_count
 
