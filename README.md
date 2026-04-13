@@ -2,6 +2,10 @@
 
 An implementation of an exact learning algorithm for EL terminologies, based on Angluin-style queries to an oracle.
 
+[![Test](https://github.com/EmilPoiesz/EL_Learner/actions/workflows/check.yml/badge.svg?event=push)]()
+![Codecov](https://img.shields.io/codecov/c/github/EmilPoiesz/EL_Learner)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 Given a target OWL ontology expressed in the EL description logic fragment, the learner reconstructs an equivalent terminology by issuing:
 - **Membership queries (MQ)** — "Does O entail C ⊑ D?"
 - **Equivalence queries (EQ)** — "Is my current hypothesis equivalent to O?"
