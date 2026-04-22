@@ -8,8 +8,8 @@ logger = logging.getLogger(__name__)
 
 from transformers import pipeline, GenerationConfig
 
-from el_algorithm import Oracle, ELConcept, GCI
-from hypothesis_reasoner import HypothesisReasoner
+from learner.el_algorithm import Oracle, ELConcept, GCI
+from learner.hypothesis_reasoner import HypothesisReasoner
 
 
 # ---------------------------------------------------------------------------

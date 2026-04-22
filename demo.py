@@ -22,7 +22,7 @@ import argparse
 import logging
 import os
 
-from el_algorithm import ELConcept, GCI, Oracle, learn_el_terminology
+from learner.el_algorithm import ELConcept, GCI, Oracle, learn_el_terminology
 
 # ---------------------------------------------------------------------------
 # Shared helpers

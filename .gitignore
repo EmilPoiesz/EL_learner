@@ -213,6 +213,10 @@ __marimo__/
 # java class files
 *.class
 *.jar
+*.slurm
+*.def
+*.sif
+*.out
 
 # vscode settings
 .vscode/
