@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+import os
+from learner.cache.cache import LLMCache
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -198,6 +200,15 @@ class LLMOracle(Oracle):
             model=model_name_or_path,
             device=device,
         )
+        self._model_name = model_name_or_path
+        cache_enabled = os.getenv("LLM_CACHE_ENABLED", "1") != "0"
+        cache_db = os.getenv("LLM_CACHE_DB", "llm_cache.db")
+        store_prompts = os.getenv("LLM_CACHE_STORE_PROMPTS", "0") == "1"
+        self._cache = LLMCache(
+            enabled=cache_enabled,
+            db_path=cache_db,
+            store_prompts=store_prompts,
+        )
 
     # ------------------------------------------------------------------
     # Oracle.signature
@@ -261,7 +272,6 @@ class LLMOracle(Oracle):
     # ------------------------------------------------------------------
 
     def _query(self, prompt: str, label: str = "QUERY") -> str:
-        """Run *prompt* through the pipeline and return only the new tokens."""
         messages = [
             {
                 "role": "system",
@@ -273,16 +283,32 @@ class LLMOracle(Oracle):
             },
             {"role": "user", "content": prompt},
         ]
+
+        # Cache lookup
+        cached = self._cache.get(self._model_name, messages)
+        if cached is not None:
+            if self._verbose:
+                print(f"\n--- {label} (CACHED) ---")
+                print("[PROMPT]\n" + prompt)
+                print("[RESPONSE]\n" + cached)
+            return cached
+
         generation_config = GenerationConfig(
             max_new_tokens=self._max_new_tokens,
             do_sample=False,
         )
+
         outputs = self._pipe(messages, generation_config=generation_config)
         response = outputs[0]["generated_text"][-1]["content"].strip()
+
+        # Cache store
+        self._cache.set(self._model_name, messages, response)
+
         if self._verbose:
             print(f"\n--- {label} ---")
             print("[PROMPT]\n" + prompt)
             print("[RESPONSE]\n" + response)
+
         return response
 
     # ------------------------------------------------------------------
@@ -334,6 +360,11 @@ class LLMOracle(Oracle):
             self._h_reasoner.close()
         except Exception:
             logger.debug("Error closing H-reasoner", exc_info=True)
+
+        try:
+            self._cache.close()
+        except Exception:
+            logger.debug("Error closing cache", exc_info=True)
 
     def __enter__(self):
         return self
