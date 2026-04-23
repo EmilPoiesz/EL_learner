@@ -1,4 +1,4 @@
-import os
+from learner.cache import PATH as CACHE_PATH
 from typing import Optional
 
 from .hashing import stable_hash
@@ -9,7 +9,7 @@ class LLMCache:
     def __init__(
         self,
         enabled: bool = True,
-        db_path: str = "llm_cache.db",
+        db_path: str = CACHE_PATH / "llm_cache.db",
         store_prompts: bool = False,
     ):
         self.enabled = enabled

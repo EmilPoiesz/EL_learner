@@ -1,9 +1,10 @@
 import sqlite3
 from typing import Optional
+from learner.cache import PATH as CACHE_PATH
 
 
 class SQLiteCacheBackend:
-    def __init__(self, path: str = "llm_cache.db"):
+    def __init__(self, path: str = CACHE_PATH / "llm_cache.db"):
         self.conn = sqlite3.connect(path)
         self._init_db()
 

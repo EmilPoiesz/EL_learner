@@ -1,3 +1,5 @@
+learner/cache/*.db
+
 .idea
 .DS_Store
 **/.DS_Store
