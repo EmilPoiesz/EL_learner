@@ -18,8 +18,8 @@ All others are skipped automatically when the chosen reasoner cannot start.
 
 Test catalogue
 --------------
- 1  saturate_concept_rhs   — atoms propagated transitively via MQ
- 2  saturate_concept_rhs   — filler of ∃r.A saturated recursively to ∃r.(A⊓B⊓E⊓F)
+ 1  saturate_concept_rhs   — atoms propagated transitively via MQ (lhs = A)
+ 2  saturate_concept_rhs   — filler of ∃r.C gets D added because O ⊨ B ⊑ ∃r.(C⊓D)
  3  sibling_merge — two same-role branches merged into ∃r.(C⊓D)
  4  sibling_merge — single ∃r.C branch left unchanged
  5  decompose_rhs case (a) — inner node fires, emits B ⊑ ∃s.F
@@ -160,14 +160,15 @@ def learned_h(integration_oracle):
 
 
 def test_01_saturate_atoms(req, mq):
-    result = saturate_concept_rhs(A, SIG, mq)
+    result = saturate_concept_rhs(A, SIG, mq, lhs=A)
     assert result.atoms == frozenset({"A", "B", "E", "F"})
 
 
 def test_02_saturate_filler(req, mq):
-    result = saturate_concept_rhs(rA, SIG, mq)
+    # lhs = B; O ⊨ B ⊑ ∃r.(C⊓D) (GCI 3), so filler C must gain atom D
+    result = saturate_concept_rhs(rC, SIG, mq, lhs=B)
     inner = next(f for role, f in result.existentials if role == "r")
-    assert inner.atoms == frozenset({"A", "B", "E", "F"})
+    assert inner.atoms == frozenset({"C", "D"})
 
 
 # ===========================================================================
@@ -318,9 +319,17 @@ def test_15_unsaturate_left_real_mq_b_dropped(mq):
 
 
 def test_16_right_essential_simple(mq):
-    # GCI 2: A ⊑ ∃r.C — no merging or decomposition needed.
+    # GCI 2: A ⊑ ∃r.C as counterexample with lhs = A.
+    # Concept saturation (paper rule) uses A as the LHS oracle, so it adds
+    # B, E, F to the root (O ⊨ A ⊑ B, E, F) and D to the filler C
+    # (O ⊨ A ⊑ ∃r.(C⊓D) via A ⊑ B ⊑ ∃r.(C⊓D)).  No decomposition fires
+    # because the original RHS has no root atoms to pivot on.
     result = compute_right_essential(A, rC, set(), mq, SIG)
-    assert result == GCI(A, rC)
+    expected_rhs = ELConcept(
+        atoms=frozenset({"A", "B", "E", "F"}),
+        existentials=frozenset({("r", ELConcept(atoms=frozenset({"C", "D"})))}),
+    )
+    assert result == GCI(A, expected_rhs)
 
 
 def test_17_right_essential_sibling_merge(req, mq):

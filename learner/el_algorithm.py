@@ -193,33 +193,71 @@ class Oracle(ABC):
 # O-essential GCI computation helper functions
 # ---------------------------------------------------------------------------
 
-def saturate_concept_rhs(concept: ELConcept, signature: set[str], MQ: Callable[[GCI], bool]) -> ELConcept:
+def _make_filler_rebuild(
+    role: str,
+    old_filler: ELConcept,
+    current_atoms: frozenset,
+    current_existentials: frozenset,
+    outer_rebuild: Callable[[ELConcept], ELConcept],
+) -> Callable[[ELConcept], ELConcept]:
+    """
+    Create a function to rebuild the full RHS concept with an updated filler for a specific existential.
+    """
+    def rebuild(new_filler: ELConcept) -> ELConcept:
+        # Rebuild the full RHS concept with the updated filler for this existential.
+        new_exs = frozenset(
+            {(r, s) for r, s in current_existentials if not (r == role and s == old_filler)} | {(role, new_filler)}
+        )
+        return outer_rebuild(ELConcept(current_atoms, new_exs))
+    return rebuild
 
+
+def saturate_concept_rhs(
+    concept: ELConcept,
+    signature: set[str],
+    MQ: Callable[[GCI], bool],
+    lhs: ELConcept,
+    _rebuild: Callable[[ELConcept], ELConcept] = lambda x: x,
+) -> ELConcept:
+    """
+    Saturate the RHS concept tree, per the paper's concept saturation rule:
+
+        For each node in the tree and each A′ ∈ signature,
+        if O ⊨ A ⊑ C′  (where C′ is the concept with A′ added to that node),
+        add A′ to that node.
+
+    The check is always anchored to ``lhs`` (the atomic A of the full GCI).
+    ``_rebuild`` is an internal continuation used during recursion to reconstruct
+    the full RHS from a modified subtree, so the MQ is always  lhs ⊑ full_rhs.
+    External callers only pass the first four arguments.
+    """
     atoms = set(concept.atoms)
     existentials = set(concept.existentials)
 
     changed = True
     while changed:
         changed = False
-        # For each atom already in the concept, propagate to its subsumers.
-        # Using per-atom checks avoids inflating the RHS with atoms that are
-        # only derivable from the outer LHS, not from the concept itself.
-        new_atoms = set(atoms)
-        for atom in atoms:
-            for atom_prime in signature:
-                if atom_prime in new_atoms:
-                    continue
-                if MQ(GCI(ELConcept(frozenset({atom})), ELConcept(frozenset({atom_prime})))):
-                    new_atoms.add(atom_prime)
-                    changed = True
 
+        new_atoms = set(atoms)
+        for atom_prime in signature:
+            if atom_prime in new_atoms:
+                continue
+            # New RHS concept with atom_prime added at this node; the rest of the tree is unchanged.
+            candidate = ELConcept(frozenset(new_atoms | {atom_prime}), frozenset(existentials))
+            # Check if O entails lhs ⊑ candidate (where candidate is the full RHS with atom_prime added at this node).
+            if MQ(GCI(lhs, _rebuild(candidate))):
+                new_atoms.add(atom_prime)
+                changed = True
         atoms = new_atoms
 
-        # Saturate existentials — use the filler itself as lhs for recursive calls,
-        # since the r-successor satisfies the filler, not the outer LHS.
         new_existentials = set()
         for role, filler in existentials:
-            saturated_filler = saturate_concept_rhs(filler, signature, MQ)
+            # Create a rebuild function for this specific existential so that recursive saturation of the filler can reconstruct the full RHS correctly.
+            filler_rebuild = _make_filler_rebuild(
+                role, filler, frozenset(atoms), frozenset(existentials), _rebuild
+            )
+            # Recursively saturate the filler concept; the rebuild function ensures that the MQ check is always against the full RHS with the updated filler.
+            saturated_filler = saturate_concept_rhs(filler, signature, MQ, lhs, filler_rebuild)
             new_existentials.add((role, saturated_filler))
 
             if saturated_filler != filler:
@@ -578,7 +616,7 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
     )
 
     # 1) Concept Saturation
-    rhs_saturated = saturate_concept_rhs(rhs_refined, signature, MQ)
+    rhs_saturated = saturate_concept_rhs(rhs_refined, signature, MQ, lhs=lhs)
 
     # 2) Sibling Merge — each merge step is validated against T via MQ so that
     #    merging two same-role existentials (e.g. ∃r.D1 and ∃r.D2) is only
