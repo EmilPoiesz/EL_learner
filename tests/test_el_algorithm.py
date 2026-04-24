@@ -41,6 +41,9 @@ Test catalogue
 21  normalise_counterexample — already normalised (atomic LHS)
 22  normalise_counterexample — already normalised (atomic RHS)
 23  normalise_counterexample — compound RHS; extracts one atomic RHS entailed by O
+23c normalise_counterexample — case (b) H_MQ filter: atoms already in H are skipped
+23d normalise_counterexample — case 1: recursive reduction on matching existential filler
+23e normalise_counterexample — case 2: atomic LHS via Lemma 3 (no matching filler in C)
 24  Integration             — full learn_el_terminology on test_minimal.ttl
 """
 
@@ -132,6 +135,12 @@ def mq(reasoner_oracle):
         return False
 
     return _structural
+
+
+@pytest.fixture
+def h_mq():
+    """H_MQ for tests where H = ∅ — nothing is entailed by the hypothesis."""
+    return lambda gci: False
 
 
 @pytest.fixture
@@ -377,30 +386,86 @@ def test_20_left_essential_existential_lhs(mq):
 # ===========================================================================
 
 
-def test_21_normalise_atomic_lhs(mq):
+def test_21_normalise_atomic_lhs(mq, h_mq):
     ce = GCI(A, rC)
-    assert normalise_counterexample(ce, SIG, mq) == ce
+    assert normalise_counterexample(ce, SIG, mq, h_mq) == ce
 
 
-def test_22_normalise_atomic_rhs(mq):
+def test_22_normalise_atomic_rhs(mq, h_mq):
     ce = GCI(AB, E)
-    assert normalise_counterexample(ce, SIG, mq) == ce
+    assert normalise_counterexample(ce, SIG, mq, h_mq) == ce
 
 
-def test_23a_normalise_compound_rhs_atomic(mq):
+def test_23a_normalise_compound_rhs_atomic(mq, h_mq):
     # LHS = A⊓B (non-atomic), RHS = E⊓F (two atoms).
     # normalise_counterexample must split the RHS to one atom entailed by O.
     rhs = ELConcept(atoms=frozenset({"E", "F"}))
-    result = normalise_counterexample(GCI(AB, rhs), SIG, mq)
+    result = normalise_counterexample(GCI(AB, rhs), SIG, mq, h_mq)
     assert len(result.rhs.atoms) == 1
     assert not result.rhs.existentials
 
 
-def test_23b_normalise_compound_rhs_valid_atom(mq):
-    # Both O |= A⊓B ⊑ E (GCI 4) and O |= A⊓B ⊑ F (via A⊑∃r.C⊑F) hold.
+def test_23b_normalise_compound_rhs_valid_atom(mq, h_mq):
+    # The function searches all of Σ_O for an atomic RHS that is a positive
+    # counterexample (O-entailed, H-not-entailed).  The result atom need not
+    # come from the original RHS — any A ∈ Σ_O with O |= A⊓B ⊑ A qualifies.
     rhs = ELConcept(atoms=frozenset({"E", "F"}))
-    result = normalise_counterexample(GCI(AB, rhs), SIG, mq)
-    assert next(iter(result.rhs.atoms)) in {"E", "F"}
+    result = normalise_counterexample(GCI(AB, rhs), SIG, mq, h_mq)
+    assert len(result.rhs.atoms) == 1
+    assert not result.rhs.existentials
+    atom = next(iter(result.rhs.atoms))
+    assert atom in SIG
+    assert mq(result)
+    assert not h_mq(result)
+
+
+def test_23c_normalise_case_b_hmq_filter(mq):
+    # H already entails C ⊑ A and C ⊑ B (trivially true conjuncts); the
+    # function must skip those and find E instead (O |= A⊓B ⊑ E, GCI 4).
+    blocked = {A, B}
+    h_mq_partial = lambda gci: ELConcept(atoms=gci.rhs.atoms) in blocked and not gci.rhs.existentials
+    result = normalise_counterexample(GCI(AB, E), SIG, mq, h_mq_partial)
+    assert result.rhs not in blocked
+    assert len(result.rhs.atoms) == 1
+    assert not result.rhs.existentials
+    assert mq(result)
+
+
+def test_23d_normalise_case1_recursive(h_mq):
+    # Case 1: C = ∃r.A, D = ∃r.B.  Case (b) finds nothing (∃r.A ⊑ atom never
+    # holds).  C has conjunct ∃r.A matching role r of D; O |= A ⊑ B (sub-CE).
+    # The function recurses on A ⊑ B, which is already normalised (lhs atomic).
+    rB = ELConcept(existentials=frozenset({("r", B)}))
+    ce = GCI(rA, rB)
+
+    def mock_mq(gci):
+        if gci == GCI(rA, rB):   # CE itself is valid
+            return True
+        if gci == GCI(A, B):     # sub-CE for Case 1 recursion
+            return True
+        return False              # case (b) finds nothing
+
+    result = normalise_counterexample(ce, SIG, mock_mq, h_mq)
+    assert result == GCI(A, B)
+
+
+def test_23e_normalise_case2_atomic_lhs(h_mq):
+    # Case 2: C = ∃r.D, D = ∃r.C.  Case (b) finds nothing.  C has conjunct
+    # ∃r.D but O ⊭ D ⊑ C (Case 1 skipped).  O |= A ⊑ ∃r.C (GCI 2), so
+    # Case 2 returns the atomic-LHS CE A ⊑ ∃r.C.
+    ce = GCI(rD, rC)
+
+    def mock_mq(gci):
+        if gci == GCI(rD, rC):   # CE itself is valid
+            return True
+        if gci == GCI(A, rC):    # Case 2: A ⊑ ∃r.C (GCI 2 analogue)
+            return True
+        return False              # case (b) and Case 1 find nothing
+
+    result = normalise_counterexample(ce, SIG, mock_mq, h_mq)
+    assert result == GCI(A, rC)
+    assert len(result.lhs.atoms) == 1
+    assert not result.lhs.existentials
 
 
 # ===========================================================================

@@ -649,25 +649,30 @@ def compute_left_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI],
 # Normalise a counterexample into C' ⊑ D' with C' or D' atomic
 # ---------------------------------------------------------------------------
 
-def normalise_counterexample(counterexample: GCI, signature: set[str], MQ: Callable[[GCI], bool]) -> GCI:
+def normalise_counterexample(
+    counterexample: GCI,
+    signature: set[str],
+    MQ: Callable[[GCI], bool],
+    H_MQ: Callable[[GCI], bool],
+) -> GCI:
     """
     Given a positive counterexample  C ⊑ D  (entailed by O, not by H),
     produce a *normalised* GCI  C' ⊑ D'  such that either:
       - C' ∈ Σ_O ∩ N_C  (C' is an atomic concept in the oracle's signature), or
       - D' ∈ Σ_O ∩ N_C  (D' is an atomic concept in the oracle's signature).
 
-    This corresponds to line 4 of Algorithm 1.
+    This corresponds to line 4 of Algorithm 1 (Lemma 4 in the paper).
 
-    Strategy
-    --------
-    In a well-formed counterexample from the oracle, either the LHS or the RHS
-    (or both) will already be atomic concepts in Σ_O.  We check that and return
-    the GCI unchanged if the condition is already met.
-
-    If neither side is atomic (e.g. both are conjunctions), we attempt to find
-    a sub-GCI by:
-      1. Trying each atomic part of rhs as a stand-alone rhs.
-      2. Trying each atomic part of lhs as a stand-alone lhs.
+    Strategy (Lemma 4)
+    ------------------
+    Case (a): if C is already atomic, or D is already atomic, return as-is.
+    Case (b): search Σ_O for A such that C ⊑ A is a positive CE (atomic RHS).
+    Case 1:   if (b) fails, property (‡) holds so D has an existential conjunct
+              ∃r.F that is a positive CE.  If C also has a conjunct ∃r.F' with
+              O |= F' ⊑ F, then F' ⊑ F is a strictly smaller positive CE —
+              recurse on it.  This is the step that grounds termination.
+    Case 2:   if Case 1 does not apply, by Lemma 3 there exists A ∈ Σ_O such
+              that A ⊑ ∃r.F is a positive CE (atomic LHS).
     """
     # Already normalised?
     lhs_atomic = (
@@ -684,24 +689,41 @@ def normalise_counterexample(counterexample: GCI, signature: set[str], MQ: Calla
     if lhs_atomic or rhs_atomic:
         return counterexample
 
-    # Try to find an atomic rhs that is still entailed
-    for atom in counterexample.rhs.atoms:
-        if atom in signature:
-            candidate = GCI(
-                lhs=counterexample.lhs,
-                rhs=ELConcept(atoms=frozenset({atom})),
-            )
-            if MQ(candidate):
-                return candidate
+    # Search all of Σ_O for an atomic rhs that gives a positive counterexample
+    # (Lemma 4 case b: A ∈ Σ_O s.t. C ⊑ A is entailed by O but not by H)
+    for atom in signature:
+        candidate = GCI(
+            lhs=counterexample.lhs,
+            rhs=ELConcept(atoms=frozenset({atom})),
+        )
+        if MQ(candidate) and not H_MQ(candidate):
+            return candidate
 
-    # Try to find an atomic lhs
-    for atom in counterexample.lhs.atoms:
-        if atom in signature:
+    # Lemma 4 cases 1 and 2: the first loop failed, so property (‡) holds and D
+    # must have an existential conjunct ∃r.F that is a positive CE.
+    for role, filler in counterexample.rhs.existentials:
+        existential = ELConcept(existentials=frozenset({(role, filler)}))
+        ce_existential = GCI(lhs=counterexample.lhs, rhs=existential)
+        if not (MQ(ce_existential) and not H_MQ(ce_existential)):
+            continue
+
+        # Case 1: if C has a conjunct ∃r.F' with O |= F' ⊑ F, then F' ⊑ F is
+        # a strictly smaller positive CE — recurse on it.  This is the step
+        # that grounds the termination argument in the paper.
+        for r_prime, filler_prime in counterexample.lhs.existentials:
+            if r_prime == role:
+                sub_ce = GCI(lhs=filler_prime, rhs=filler)
+                if MQ(sub_ce) and not H_MQ(sub_ce):
+                    return normalise_counterexample(sub_ce, signature, MQ, H_MQ)
+
+        # Case 2: by Lemma 3, there exists A ∈ Σ_O such that A ⊑ ∃r.F is a
+        # positive CE (atomic LHS).
+        for atom in signature:
             candidate = GCI(
                 lhs=ELConcept(atoms=frozenset({atom})),
-                rhs=counterexample.rhs,
+                rhs=existential,
             )
-            if MQ(candidate):
+            if MQ(candidate) and not H_MQ(candidate):
                 return candidate
 
     # Fall back: return original (may already be normalisable by the caller)
@@ -802,7 +824,8 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
         normalised = normalise_counterexample(
             counterexample=counterexample,
             signature=oracle.signature,
-            MQ=oracle.MQ
+            MQ=oracle.MQ,
+            H_MQ=H_MQ,
         )
         logger.info("  Normalised:  %s", normalised)
 
