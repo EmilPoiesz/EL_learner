@@ -30,12 +30,18 @@ class HypothesisReasoner:
             callback_server_parameters=None,
         )
         self._owl = self._gw.entry_point
+        self._true_cache: set[GCI] = set()
 
     def add(self, gci: GCI) -> None:
         self._owl.add_gci(encode(gci.lhs), encode(gci.rhs))
 
     def entails(self, gci: GCI) -> bool:
-        return self._owl.entails(encode(gci.lhs), encode(gci.rhs))
+        if gci in self._true_cache:
+            return True
+        result = self._owl.entails(encode(gci.lhs), encode(gci.rhs))
+        if result:
+            self._true_cache.add(gci)
+        return result
 
     def __call__(self, gci: GCI) -> bool:
         return self.entails(gci)

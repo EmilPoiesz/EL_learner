@@ -74,29 +74,6 @@ class GCI:
 
 
 # ---------------------------------------------------------------------------
-# Signature helpers
-# ---------------------------------------------------------------------------
-
-def signature(terminology: set[GCI]) -> set[str]:
-    """
-    Return Σ_H – the set of all atomic concept names appearing in a terminology.
-    """
-    names: set[str] = set()
-    for gci in terminology:
-        names |= _concept_atoms(gci.lhs)
-        names |= _concept_atoms(gci.rhs)
-    return names
-
-
-def _concept_atoms(concept: ELConcept) -> set[str]:
-    """Recursively collect all atomic concept names in an EL concept."""
-    atoms = set(concept.atoms)
-    for _, filler in concept.existentials:
-        atoms |= _concept_atoms(filler)
-    return atoms
-
-
-# ---------------------------------------------------------------------------
 # Oracle abstract base class
 # ---------------------------------------------------------------------------
 

@@ -92,6 +92,7 @@ class ReasonerOracle(Oracle):
 
         # Start a second gateway for H-entailment
         self._h_reasoner = HypothesisReasoner(classpath, self._reasoner_type)
+        self._mq_cache: dict[GCI, bool] = {}
 
         # oracle_skills: map skill name → probability in [0, 1].
         # Supported skills: "saturate_left", "unsaturate_right",
@@ -138,7 +139,9 @@ class ReasonerOracle(Oracle):
 
     def _MQ(self, gci: GCI) -> bool:
         """Membership query via HermiT: O |= lhs ⊑ rhs?"""
-        return self._owl.entails(encode(gci.lhs), encode(gci.rhs))
+        if gci not in self._mq_cache:
+            self._mq_cache[gci] = self._owl.entails(encode(gci.lhs), encode(gci.rhs))
+        return self._mq_cache[gci]
 
     # ------------------------------------------------------------------
     # Oracle skills — structural transformations of counterexamples

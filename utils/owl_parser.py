@@ -12,18 +12,11 @@ def extract_ontology(path: str) -> tuple[set[str], set[GCI]]:
     g.parse(path)
 
     sig: set[str] = set()
-    for clause in g.subjects(RDF.type, OWL.Class):
-        if isinstance(clause, URIRef):
-            sig.add(local_name(clause))
-
     gcis: set[GCI] = set()
     for subj, _, obj in g.triples((None, RDFS.subClassOf, None)):
-        for node in (subj, obj):
-            if isinstance(node, URIRef):
-                sig.add(local_name(node))
         try:
-            lhs = parse_concept(g, subj)
-            rhs = parse_concept(g, obj)
+            lhs = parse_concept(g, subj, sig)
+            rhs = parse_concept(g, obj, sig)
             gcis.add(GCI(lhs=lhs, rhs=rhs))
         except ValueError as exc:
             logger.warning("Skipping unrecognised SubClassOf triple: %s", exc)
@@ -38,11 +31,14 @@ def local_name(uri: URIRef) -> str:
     return uri_str.split("/")[-1]
 
 
-def parse_concept(g: Graph, node) -> ELConcept:
+def parse_concept(g: Graph, node, sig: set[str] | None = None) -> ELConcept:
     if isinstance(node, URIRef):
         if node == OWL.Thing:
             return ELConcept()
-        return ELConcept(atoms=frozenset({local_name(node)}))
+        name = local_name(node)
+        if sig is not None:
+            sig.add(name)
+        return ELConcept(atoms=frozenset({name}))
 
     if not isinstance(node, BNode):
         raise ValueError(f"Unexpected node type: {type(node)} for {node}")
@@ -53,7 +49,7 @@ def parse_concept(g: Graph, node) -> ELConcept:
         if role_node is None or filler_node is None:
             raise ValueError(f"Malformed owl:Restriction at {node}")
         role   = local_name(role_node)
-        filler = parse_concept(g, filler_node)
+        filler = parse_concept(g, filler_node, sig)
         return ELConcept(existentials=frozenset({(role, filler)}))
 
     list_head = g.value(node, OWL.intersectionOf)
@@ -62,7 +58,7 @@ def parse_concept(g: Graph, node) -> ELConcept:
         combined_atoms: set[str] = set()
         combined_existentials: set[tuple] = set()
         for member in members:
-            part = parse_concept(g, member)
+            part = parse_concept(g, member, sig)
             combined_atoms        |= part.atoms
             combined_existentials |= part.existentials
         return ELConcept(

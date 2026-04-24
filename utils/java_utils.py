@@ -26,6 +26,7 @@ import queue
 import subprocess
 import sys
 import threading
+from functools import cache
 
 import owlready2
 
@@ -36,6 +37,7 @@ from learner.el_algorithm import ELConcept
 # Concept encoding
 # ---------------------------------------------------------------------------
 
+@cache
 def encode(concept: ELConcept) -> str:
     """
     Serialise an ELConcept to the OWLGateway wire format.
