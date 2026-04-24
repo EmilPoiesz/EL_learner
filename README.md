@@ -51,7 +51,12 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 │   ├── el_algorithm.py          # Core learning algorithm, EL concept data structures, Oracle ABC
 │   ├── hypothesis_reasoner.py   # HypothesisReasoner — shared H-entailment component
 │   ├── reasoner_oracle.py       # ReasonerOracle — O-oracle backed by OWL API + ELK/HermiT
-│   └── llm_oracle.py            # LLMOracle — O-oracle backed by a local HuggingFace model
+│   ├── llm_oracle.py            # LLMOracle — O-oracle backed by a local HuggingFace model
+│   └── cache/
+│       ├── __init__.py          # Exports PATH (package directory used as default DB location)
+│       ├── hashing.py           # stable_hash() — deterministic SHA-256 key generation
+│       ├── backend.py           # SQLiteCacheBackend — persistent SQLite storage
+│       └── cache.py             # LLMCache — two-level cache (in-memory + SQLite)
 ├── utils/
 │   ├── java_utils.py            # Jar discovery and gateway lifecycle utilities
 │   └── owl_parser.py            # OWL/Turtle ontology parser (rdflib-based)
@@ -61,7 +66,8 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 │   └── java_env.bash            # Helper script to recompile OWLGateway.java
 ├── tests/
 │   ├── conftest.py              # Pytest fixtures and --reasoner CLI option
-│   └── test_el_algorithm.py     # Unit and integration tests
+│   ├── test_el_algorithm.py     # Unit and integration tests
+│   └── test_cache.py            # Unit tests for the LLMCache layer
 ├── ontologies/
 │   ├── medical.ttl              # Example medical ontology
 │   └── test_minimal.ttl         # Minimal ontology used by the test suite
@@ -143,6 +149,47 @@ The core of the learner is `learn_el_terminology` in `el_algorithm.py`.  When a 
 - **H-reasoner** (`HypothesisReasoner`) — holds the current hypothesis H, used during EQ
 
 Concepts are serialised as strings when passed over the py4j bridge (see [Concept encoding](#concept-encoding-python--java) below).
+
+---
+
+## Caching
+
+### LLMOracle — two-level response cache
+
+`LLMOracle` automatically caches model responses to avoid redundant inference across runs. The cache is keyed on a deterministic SHA-256 hash of the model name and the full message list, so identical prompts always resolve to the same key regardless of run order.
+
+Two storage layers are consulted in order:
+
+| Layer | Implementation | Scope |
+|---|---|---|
+| **Memory** | `dict[str, str]` | Current process only |
+| **Disk** | SQLite (`llm_cache.db`) | Persistent across runs |
+
+A cache hit on the memory layer requires no disk I/O. A miss falls through to SQLite and promotes the value to memory. The disk cache is never invalidated automatically — delete the `.db` file to start fresh.
+
+The cache is controlled by three environment variables:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LLM_CACHE_ENABLED` | `1` | Set to `0` to disable all caching |
+| `LLM_CACHE_DB` | `llm_cache.db` | Path to the SQLite database file |
+| `LLM_CACHE_STORE_PROMPTS` | `0` | Set to `1` to also store the raw prompt string alongside the response (useful for debugging) |
+
+Example — run with a custom DB path and prompt logging:
+
+```bash
+LLM_CACHE_DB=/tmp/my_cache.db LLM_CACHE_STORE_PROMPTS=1 python demo.py --oracle llm
+```
+
+Example — disable caching entirely:
+
+```bash
+LLM_CACHE_ENABLED=0 python demo.py --oracle llm
+```
+
+### ReasonerOracle — in-memory MQ cache
+
+`ReasonerOracle` maintains a lightweight in-memory `dict[GCI, bool]` that memoises the result of every membership query against the target ontology O. Repeated MQ calls for the same GCI within a single learning run skip the Java/py4j round-trip entirely. This cache lives only for the lifetime of the oracle instance and is not persisted to disk.
 
 ---
 
