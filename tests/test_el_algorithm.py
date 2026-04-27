@@ -207,21 +207,21 @@ def test_04_sibling_merge_single_branch(mq):
 
 def test_05_decompose_rhs_case_a(mq):
     # Case (a): inner node has {B, ∃s.F}; O |= B ⊑ ∃s.F; H empty → emit B ⊑ ∃s.F.
-    result = decompose_rhs(A, rBsF, rBsF, set(), mq)
+    result = decompose_rhs(A, rBsF, rBsF, set(), mq, lambda _: False)
     assert result == GCI(B, sF)
 
 
 def test_06_decompose_rhs_case_b(mq):
     # Case (b): H already knows B ⊑ ∃s.F → strip ∃s.F subtree, return A ⊑ ∃r.B.
     H: set[GCI] = {GCI(B, sF)}
-    result = decompose_rhs(A, rBsF, rBsF, H, mq)
+    result = decompose_rhs(A, rBsF, rBsF, H, mq, lambda gci: gci in H)
     expected = GCI(A, ELConcept(existentials=frozenset({("r", B)})))
     assert result == expected
 
 
 def test_07_decompose_rhs_no_mixed_node(mq):
     # ∃r.C: root has only existential, filler C has only atom → no mixed node.
-    result = decompose_rhs(A, rC, rC, set(), mq)
+    result = decompose_rhs(A, rC, rC, set(), mq, lambda _: False)
     assert result is None
 
 
@@ -232,7 +232,8 @@ def test_07_decompose_rhs_no_mixed_node(mq):
 
 def test_08_saturate_left():
     # H contains A ⊑ B; saturating {A} via H should add B.
-    result = saturate_left(A, {GCI(A, B)}, SIG)
+    H = {GCI(A, B)}
+    result = saturate_left(A, H, SIG, lambda gci: gci in H)
     assert result.atoms == frozenset({"A", "B"})
 
 
@@ -244,19 +245,19 @@ def test_08_saturate_left():
 def test_09_decompose_left_redundant_existential(req, mq):
     # LHS = A ⊓ B ⊓ ∃r.C, RHS = E.  O |= A ⊓ B ⊑ E, so ∃r.C is redundant.
     lhs = ELConcept(atoms=frozenset({"A", "B"}), existentials=frozenset({("r", C)}))
-    result = decompose_left(lhs, E, set(), mq)
+    result = decompose_left(lhs, E, set(), mq, lambda _: False)
     assert result == GCI(AB, E)
 
 
 def test_10_decompose_left_both_atoms_essential(mq):
     # O ⊭ A ⊑ E and O ⊭ B ⊑ E alone; both atoms are essential.
-    result = decompose_left(AB, E, set(), mq)
+    result = decompose_left(AB, E, set(), mq, lambda _: False)
     assert result.lhs.atoms == frozenset({"A", "B"})
 
 
 def test_11_decompose_left_existential_only(mq):
     # ∃r.C is the only component; it is essential.
-    result = decompose_left(rC, F, set(), mq)
+    result = decompose_left(rC, F, set(), mq, lambda _: False)
     assert result == GCI(rC, F)
 
 
@@ -266,7 +267,7 @@ def test_11b_decompose_left_case1_new_rhs(req, mq):
     # fire.  With the new check against all of ΣO, Case 1 fires with A′ = E and
     # the result is GCI(G, E) — not GCI(∃r.G, F) and not GCI(G, F).
     rG = ELConcept(existentials=frozenset({("r", G)}))
-    result = decompose_left(rG, F, set(), mq, signature=SIG)
+    result = decompose_left(rG, F, set(), mq, lambda _: False, signature=SIG)
     assert result == GCI(G, E)
 
 
@@ -333,7 +334,7 @@ def test_16_right_essential_simple(mq):
     # B, E, F to the root (O ⊨ A ⊑ B, E, F) and D to the filler C
     # (O ⊨ A ⊑ ∃r.(C⊓D) via A ⊑ B ⊑ ∃r.(C⊓D)).  No decomposition fires
     # because the original RHS has no root atoms to pivot on.
-    result = compute_right_essential(A, rC, set(), mq, SIG)
+    result = compute_right_essential(A, rC, set(), mq, SIG, lambda _: False)
     expected_rhs = ELConcept(
         atoms=frozenset({"A", "B", "E", "F"}),
         existentials=frozenset({("r", ELConcept(atoms=frozenset({"C", "D"})))}),
@@ -344,7 +345,7 @@ def test_16_right_essential_simple(mq):
 def test_17_right_essential_sibling_merge(req, mq):
     # GCI 3: H has B ⊑ ∃r.C; new CE is B ⊑ ∃r.D → merge → ∃r.(C⊓D).
     H: set[GCI] = {GCI(B, rC)}
-    result = compute_right_essential(B, rD, H, mq, SIG)
+    result = compute_right_essential(B, rD, H, mq, SIG, lambda gci: gci in H)
     r, filler = next(iter(result.rhs.existentials))
     assert len(result.rhs.existentials) == 1
     assert r == "r"
@@ -353,7 +354,7 @@ def test_17_right_essential_sibling_merge(req, mq):
 
 def test_18_right_essential_decompose_rhs_case_a(mq):
     # GCI 7: A ⊑ ∃r.(B⊓∃s.F); decompose_rhs case (a) fires → returns B ⊑ ∃s.F.
-    result = compute_right_essential(A, rBsF, set(), mq, SIG)
+    result = compute_right_essential(A, rBsF, set(), mq, SIG, lambda _: False)
     assert result == GCI(B, sF)
 
 
@@ -366,18 +367,18 @@ def test_19a_left_essential_conjunctive_lhs_atoms(mq):
     # GCI 4: A ⊓ B ⊑ E.  O contains A ⊑ B (GCI 1), so A alone already forces E
     # (A ⊑ B makes the LHS A ⊓ B collapse to A under O).  The desaturation step
     # removes B, leaving just A as the minimal sufficient precondition.
-    result = compute_left_essential(AB, E, set(), mq, SIG)
+    result = compute_left_essential(AB, E, set(), mq, SIG, lambda _: False)
     assert result.lhs.atoms == frozenset({"A"})
 
 
 def test_19b_left_essential_conjunctive_lhs_rhs(mq):
-    result = compute_left_essential(AB, E, set(), mq, SIG)
+    result = compute_left_essential(AB, E, set(), mq, SIG, lambda _: False)
     assert result.rhs == E
 
 
 def test_20_left_essential_existential_lhs(mq):
     # GCI 5: ∃r.C ⊑ F; existential-only LHS returned unchanged.
-    result = compute_left_essential(rC, F, set(), mq, SIG)
+    result = compute_left_essential(rC, F, set(), mq, SIG, lambda _: False)
     assert result == GCI(rC, F)
 
 

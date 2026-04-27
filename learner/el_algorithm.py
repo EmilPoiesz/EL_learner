@@ -308,41 +308,6 @@ def sibling_merge(concept: ELConcept, lhs: ELConcept, MQ: Callable) -> ELConcept
         current = new
     return current
 
-def is_subsumed_by(c1: ELConcept, c2: ELConcept, H: set[GCI]) -> bool:
-    """Checks if c1 ⊑ c2 given the current H."""
-    # 1. Trivial case: Top concept
-    if not c2.atoms and not c2.existentials:
-        return True
-
-    # 2. Check Atoms: All atoms in c2 must be present in c1
-    # (Note: This is a basic check; a full version would check H for atom-to-atom matches)
-    if not c2.atoms.issubset(c1.atoms):
-        # Even if not a subset, H might say Atom1 ⊑ Atom2
-        # For now, let's ensure at least basic subset logic works
-        return False
-
-    # 3. Check Existentials: For every ∃r.D in c2, there must be an ∃r.E in c1 such that E ⊑ D
-    for r_c2, D in c2.existentials:
-        found_match = False
-        for r_c1, E in c1.existentials:
-            if r_c1 == r_c2 and is_subsumed_by(E, D, H):
-                found_match = True
-                break
-        if not found_match:
-            return False
-
-    return True
-
-def entails_in_H(gci_query: GCI, H: set[GCI]) -> bool:
-    """Returns True if H |= gci_query.lhs ⊑ gci_query.rhs"""
-    # Check if any GCI in our hypothesis makes this true
-    for learned_gci in H:
-        # If (query.lhs ⊑ learned.lhs) and (learned.rhs ⊑ query.rhs)
-        # then H entails (query.lhs ⊑ query.rhs)
-        if is_subsumed_by(gci_query.lhs, learned_gci.lhs, H):
-            if is_subsumed_by(learned_gci.rhs, gci_query.rhs, H):
-                return True
-    return False
 
 def remove_subtree(root, target_node, role, sub_to_remove):
     if root is target_node:
@@ -359,15 +324,11 @@ def remove_subtree(root, target_node, role, sub_to_remove):
 
     return ELConcept(root.atoms, new_existentials)
 
-def decompose_rhs(lhs, concept, original_concept, hypothesis, MQ, H_MQ=None):
+def decompose_rhs(lhs, concept, original_concept, hypothesis, MQ, H_MQ):
     """
     Returns a new GCI after applying ONE decomposition step,
     or None if no decomposition applies.
     """
-    if H_MQ is None:
-        def H_MQ(gci):
-            return entails_in_H(gci, hypothesis)
-
     # Traverse nodes (DFS)
     stack = [(None, None, concept)]
     # (parent, role_from_parent, current_node)
@@ -384,8 +345,7 @@ def decompose_rhs(lhs, concept, original_concept, hypothesis, MQ, H_MQ=None):
             valid_atoms = node.atoms
 
         for A_prime in valid_atoms:
-        # Check decomposition condition at this node
-        #for A_prime in node.atoms:
+            
             for r, sub in node.existentials:
 
                 candidate_rhs = ELConcept(set(), {(r, sub)})
@@ -409,15 +369,11 @@ def decompose_rhs(lhs, concept, original_concept, hypothesis, MQ, H_MQ=None):
 
     return None
 
-def saturate_left(lhs: ELConcept, hypothesis: set[GCI], signature: set[str], H_MQ=None) -> ELConcept:
+def saturate_left(lhs: ELConcept, hypothesis: set[GCI], signature: set[str], H_MQ: Callable[[GCI], bool]) -> ELConcept:
     """
     If H |= concept ⊑ A', then add A' to the atoms of the concept.
     This must be done recursively for all nested concepts in existentials.
     """
-    if H_MQ is None:
-        def H_MQ(gci):
-            return entails_in_H(gci, hypothesis)
-
     # 1. Saturate the nested concepts first (bottom-up)
     new_exs = []
     for role, nested_concept in lhs.existentials:
@@ -505,11 +461,7 @@ def unsaturate_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool]) -
     return _unsaturate_node(lhs, rhs, MQ, rebuild=lambda x: x)
 
 
-def decompose_left(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], H_MQ=None, signature: set[str] = None) -> GCI:
-    if H_MQ is None:
-        def H_MQ(gci):
-            return entails_in_H(gci, hypothesis)
-
+def decompose_left(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], H_MQ: Callable[[GCI], bool], signature: set[str] = None) -> GCI:
     def _find_undiscovered_atom(concept: ELConcept) -> Optional[ELConcept]:
         """Return A′ ∈ ΣO s.t. O ⊨ concept ⊑ A′ and H ⊭ concept ⊑ A′, or None."""
         if signature is not None:
@@ -550,7 +502,7 @@ def decompose_left(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Cal
 # O-essential GCI computation  (the core of the algorithm)
 # ---------------------------------------------------------------------------
 
-def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], signature: set[str], H_MQ=None) -> GCI:
+def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], signature: set[str], H_MQ: Callable[[GCI], bool]) -> GCI:
     """
     Compute a *right O-essential* α from the GCI  lhs ⊑ rhs
     (used in line 6 of Algorithm 1, when lhs ∈ Σ_O ∩ N_C).
@@ -627,7 +579,7 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
     return GCI(lhs=lhs, rhs=rhs_merged)
 
 
-def compute_left_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], signature: set[str], H_MQ=None) -> GCI:
+def compute_left_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], signature: set[str], H_MQ: Callable[[GCI], bool]) -> GCI:
     """
     Compute a *left O-essential* α from the GCI  lhs ⊑ rhs
     (used in line 8 of Algorithm 1, when rhs ∈ Σ_O ∩ N_C but lhs is not atomic).
