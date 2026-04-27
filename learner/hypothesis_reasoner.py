@@ -20,7 +20,7 @@ class HypothesisReasoner:
 
     def __init__(self, classpath: str, reasoner: str = "elk"):
         self._java_proc = subprocess.Popen(
-            ["java", "-cp", classpath, "OWLGateway", "0", reasoner],
+            ["java", "-cp", classpath, "OWLGateway", "0", reasoner],  # "0" → OS assigns a free port
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         port = start_gateway(self._java_proc)
@@ -30,17 +30,20 @@ class HypothesisReasoner:
             callback_server_parameters=None,
         )
         self._owl = self._gw.entry_point
-        self._true_cache: set[GCI] = set()
+        # Positive-only cache: EL entailment is monotone, so a GCI entailed by H
+        # remains entailed after any further axiom is added — cached True values
+        # never go stale.
+        self._entailed_cache: set[GCI] = set()
 
     def add(self, gci: GCI) -> None:
         self._owl.add_gci(encode(gci.lhs), encode(gci.rhs))
 
     def entails(self, gci: GCI) -> bool:
-        if gci in self._true_cache:
+        if gci in self._entailed_cache:
             return True
         result = self._owl.entails(encode(gci.lhs), encode(gci.rhs))
         if result:
-            self._true_cache.add(gci)
+            self._entailed_cache.add(gci)
         return result
 
     def __call__(self, gci: GCI) -> bool:
@@ -57,8 +60,8 @@ class HypothesisReasoner:
         except Exception:
             logger.debug("Error terminating Java process", exc_info=True)
 
-    def __enter__(self):
+    def __enter__(self) -> "HypothesisReasoner":
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args) -> None:
         self.close()

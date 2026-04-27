@@ -707,7 +707,7 @@ def normalise_counterexample(
         for r_prime, filler_prime in counterexample.lhs.existentials:
             if r_prime == role:
                 sub_ce = GCI(lhs=filler_prime, rhs=filler)
-                if MQ(sub_ce) and not H_MQ(sub_ce):
+                if MQ(sub_ce): # not H_MQ(sub_ce) is logically redundant per the paper's proof of Lemma 4
                     return normalise_counterexample(sub_ce, signature, MQ, H_MQ)
 
         # Case 2: by Lemma 3, there exists A ∈ Σ_O such that A ⊑ ∃r.F is a
@@ -795,6 +795,7 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
             if oracle.MQ(gci):
                 logger.debug("  Adding atomic subsumption: %s", gci)
                 H.add(gci)
+                oracle.on_H_add(gci)
 
     logger.info("  |H| after atomic init = %d", len(H))
 
@@ -826,12 +827,24 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
         C_prime = normalised.lhs
         D_prime = normalised.rhs
 
-        # Determine whether C' is atomic (∈ Σ_O ∩ N_C)
+        # Determine whether C' or D' is atomic (∈ Σ_O ∩ N_C)
         C_prime_is_atomic = (
             len(C_prime.atoms) == 1
             and not C_prime.existentials
             and next(iter(C_prime.atoms)) in oracle.signature
         )
+        D_prime_is_atomic = (
+            len(D_prime.atoms) == 1
+            and not D_prime.existentials
+            and next(iter(D_prime.atoms)) in oracle.signature
+        )
+
+        if not C_prime_is_atomic and not D_prime_is_atomic:
+            raise RuntimeError(
+                f"Normalisation failed: neither side of {normalised!r} is atomic. "
+                "This is a bug in normalise_counterexample or a violated algorithm "
+                "invariant (the input may not be a valid EL terminology)."
+            )
 
         if C_prime_is_atomic:
 
