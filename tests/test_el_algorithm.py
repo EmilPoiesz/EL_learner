@@ -227,7 +227,7 @@ def test_04_sibling_merge_single_branch(mq):
 
 def test_05_decompose_rhs_case_a(mq):
     # Case (a): inner node has {B, ∃s.F}; O |= B ⊑ ∃s.F; H empty → emit B ⊑ ∃s.F.
-    result = decompose_rhs(A, rBsF, set(), mq, lambda _: False)
+    result = decompose_rhs(A, rBsF, mq, lambda _: False)
     assert result == GCI(B, sF)
 
 
@@ -244,7 +244,7 @@ def test_05b_decompose_rhs_root_atom_not_o_equiv(mq):
         # confirming B ≢_O A.
         return gci == GCI(B, rC)
 
-    result = decompose_rhs(A, B_rC, set(), mock_mq, lambda _: False)
+    result = decompose_rhs(A, B_rC, mock_mq, lambda _: False)
     assert result == GCI(B, rC)
 
 
@@ -263,7 +263,7 @@ def test_05c_decompose_rhs_root_atom_o_equiv_excluded():
             return True
         return False
 
-    result = decompose_rhs(A, B_rC, set(), mock_mq, lambda _: False)
+    result = decompose_rhs(A, B_rC, mock_mq, lambda _: False)
     # B is excluded at the root; no other mixed nodes → None.
     assert result is None
 
@@ -271,14 +271,14 @@ def test_05c_decompose_rhs_root_atom_o_equiv_excluded():
 def test_06_decompose_rhs_case_b(mq):
     # Case (b): H already knows B ⊑ ∃s.F → strip ∃s.F subtree, return A ⊑ ∃r.B.
     H: set[GCI] = {GCI(B, sF)}
-    result = decompose_rhs(A, rBsF, H, mq, lambda gci: gci in H)
+    result = decompose_rhs(A, rBsF, mq, lambda gci: gci in H)
     expected = GCI(A, ELConcept(existentials=frozenset({("r", B)})))
     assert result == expected
 
 
 def test_07_decompose_rhs_no_mixed_node(mq):
     # ∃r.C: root has only existential, filler C has only atom → no mixed node.
-    result = decompose_rhs(A, rC, set(), mq, lambda _: False)
+    result = decompose_rhs(A, rC, mq, lambda _: False)
     assert result is None
 
 
@@ -387,12 +387,16 @@ def test_15_unsaturate_left_real_mq_b_dropped(mq):
 
 def test_16_right_essential_simple(mq):
     # GCI 2: A ⊑ ∃r.C as counterexample with lhs = A.
-    # Concept saturation adds B, E, F to the root (O ⊨ A ⊑ B, E, F) and D
-    # to the filler (O ⊨ A ⊑ ∃r.(C⊓D) via GCI 1 + 3).  Decomposition then
-    # fires at the root: B ≢_O A and O ⊨ B ⊑ ∃r.(C⊓D) (GCI 3), so case (a)
-    # returns GCI 3 directly.
+    # Saturation adds B, E, F to the root and D to the filler → A⊓B⊓E⊓F⊓∃r.(C⊓D).
+    # Decomposition fires: B ≢_O A and O ⊨ B ⊑ ∃r.(C⊓D) (GCI 3) → lhs becomes B.
+    # Exhaustive loop: re-saturate ∃r.(C⊓D) with lhs=B → adds B (trivial) and F
+    # (O ⊨ B ⊑ F via GCI 3 + GCI 5).  No further decomposition fires.
     result = compute_right_essential(A, rC, set(), mq, SIG, lambda _: False)
-    assert result == GCI(B, rCD)
+    expected_rhs = ELConcept(
+        atoms=frozenset({"B", "F"}),
+        existentials=frozenset({("r", ELConcept(atoms=frozenset({"C", "D"})))}),
+    )
+    assert result == GCI(B, expected_rhs)
 
 
 def test_17_right_essential_sibling_merge(req, mq):
@@ -406,9 +410,17 @@ def test_17_right_essential_sibling_merge(req, mq):
 
 
 def test_18_right_essential_decompose_rhs_case_a(mq):
-    # GCI 7: A ⊑ ∃r.(B⊓∃s.F); decompose_rhs case (a) fires → returns B ⊑ ∃s.F.
+    # GCI 7: A ⊑ ∃r.(B⊓∃s.F).
+    # After saturation, decomposition fires at the inner node: B ≢_O A and
+    # O ⊨ B ⊑ ∃s.F (GCI 8) → lhs becomes B, rhs becomes ∃s.F.
+    # Exhaustive loop: re-saturate ∃s.F with lhs=B → adds B (trivial) and F
+    # (O ⊨ B ⊑ F via GCI 3 + GCI 5).  No further decomposition fires.
     result = compute_right_essential(A, rBsF, set(), mq, SIG, lambda _: False)
-    assert result == GCI(B, sF)
+    expected_rhs = ELConcept(
+        atoms=frozenset({"B", "F"}),
+        existentials=frozenset({("s", F)}),
+    )
+    assert result == GCI(B, expected_rhs)
 
 
 # ===========================================================================

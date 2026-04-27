@@ -326,17 +326,19 @@ def remove_subtree(root, target_node, role, sub_to_remove):
 
     return ELConcept(root.atoms, new_existentials)
 
-def decompose_rhs(lhs, concept, hypothesis, MQ, H_MQ):
+def decompose_rhs(lhs, concept, MQ, H_MQ):
     """
-    Returns a new GCI after applying ONE decomposition step,
-    or None if no decomposition applies.
+    Apply ONE step of "Decomposition on the right for O" and return the
+    resulting GCI, or None if no decomposition rule fires.
 
-    Implements "Decomposition on the right for O" rule:
-      If d' is an r-successor of d in C, A' is in the node label of d,
-      and O |= A' ⊑ ∃r.C_d'  (plus A' ≢_O lhs if d is the root), then:
-        (a) return A' ⊑ ∃r.C_d'   if H ⊭ A' ⊑ ∃r.C_d'
-        (b) return lhs ⊑ C|⁻_d'↓  otherwise
-      Lemma 5 guarantees that when (b) applies, H ⊭ lhs ⊑ C|⁻_d'↓.
+    Call repeatedly (with re-saturation and re-merging between steps) to
+    apply exhaustively, as required by Lemma 5 of the paper.
+
+    Rule: if d' is an r-successor of d in C, A' is in the node label of d,
+    and O |= A' ⊑ ∃r.C_d'  (plus A' ≢_O lhs if d is the root), then:
+      (a) return A' ⊑ ∃r.C_d'   if H ⊭ A' ⊑ ∃r.C_d'
+      (b) return lhs ⊑ C|⁻_d'↓  otherwise
+    Lemma 5 guarantees that when (b) applies, H ⊭ lhs ⊑ C|⁻_d'↓.
     """
     stack = [(None, None, concept)]
 
@@ -565,24 +567,39 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
     logger.info(f"saturated {rhs_saturated}")
     logger.info(f"merged {rhs_merged}")
 
-    # 3) Decomposition
-    candidate = decompose_rhs(lhs, rhs_merged, hypothesis, MQ, H_MQ)
+    # 3) Decomposition — applied exhaustively per Lemma 5.
+    # Each step can change the LHS (case a) or shrink the RHS (case b).
+    # After each step we re-saturate and re-merge before trying again.
+    current_lhs = lhs
+    current_rhs = rhs_merged
 
-    if candidate is not None:
-        # By EL monotonicity, stripping a subtree from an O-entailed concept
-        # preserves O-entailment, so MQ(candidate) should always hold here.
-        # The check is kept as a safety net against implementation bugs.
-        if MQ(candidate):
-            logger.info(f"decomposed {candidate}")
-            return candidate
-        else:
+    while True:
+        candidate = decompose_rhs(current_lhs, current_rhs, MQ, H_MQ)
+        if candidate is None:
+            break
+        # By EL monotonicity the result is always O-entailed; safety-net check.
+        if not MQ(candidate):
             logger.debug(
-                "Decomposed candidate %s not confirmed by O; "
-                "skipping decomposition and continuing to merged form.",
-                candidate,
+                "Decomposed candidate %s not confirmed by O; stopping.", candidate
             )
+            break
+        logger.info(f"decomposed {candidate}")
+        current_lhs = candidate.lhs
+        current_rhs = candidate.rhs
+        
+        # Re-saturate anchored to the new LHS. Case (a) decomposition replaces
+        # the whole working GCI with a minimal A' ⊑ ∃r.C_d', discarding all root
+        # atoms from the previous concept. The root atoms visible before
+        # decomposition were entailed from the old LHS (e.g. O ⊨ A ⊑ B). After
+        # decomposition shifts the LHS to A', saturation recomputes which atoms
+        # are entailed from A' — a strictly smaller set, because A' may not
+        # inherit every chain that the old LHS had (e.g. O ⊨ A ⊑ E via A⊓B ⊑ E
+        # does not carry over to A' = B alone).
+        current_rhs = saturate_concept_rhs(current_rhs, signature, MQ, lhs=current_lhs)
+        current_rhs = sibling_merge(current_rhs, lhs=current_lhs, MQ=MQ)
+        logger.info(f"re-saturated/merged: {current_lhs} ⊑ {current_rhs}")
 
-    return GCI(lhs=lhs, rhs=rhs_merged)
+    return GCI(lhs=current_lhs, rhs=current_rhs)
 
 
 def compute_left_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], signature: set[str], H_MQ: Callable[[GCI], bool]) -> GCI:
