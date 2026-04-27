@@ -20,9 +20,13 @@ Test catalogue
 --------------
  1  saturate_concept_rhs   — atoms propagated transitively via MQ (lhs = A)
  2  saturate_concept_rhs   — filler of ∃r.C gets D added because O ⊨ B ⊑ ∃r.(C⊓D)
- 3  sibling_merge — two same-role branches merged into ∃r.(C⊓D)
+ 3a sibling_merge — two same-role branches merged; result has one existential
+ 3b sibling_merge — merged filler carries both atoms C and D
+ 3c sibling_merge — pairwise merge within three siblings; all-at-once merge rejected
  4  sibling_merge — single ∃r.C branch left unchanged
  5  decompose_rhs case (a) — inner node fires, emits B ⊑ ∃s.F
+ 5b decompose_rhs root atom — root atom B ≢_O A included; decomposition fires
+ 5c decompose_rhs root atom — root atom B ≡_O A excluded; returns None
  6  decompose_rhs case (b) — ∃s.F already in H; subtree stripped from filler
  7  decompose_rhs          — no atom+existential node → returns None
  8  saturate_left          — H: A⊑B adds B to the LHS of concept A
@@ -33,7 +37,7 @@ Test catalogue
 13  unsaturate_left        — mock: one atom redundant; removed from LHS
 14  unsaturate_left        — mock: nested atom in existential filler removed
 15  unsaturate_left        — real MQ: B dropped from A⊓B (A⊑B in O collapses LHS)
-16  compute_right_essential — simple ∃r.C (GCI 2 scenario)
+16  compute_right_essential — ∃r.C: saturation adds B to root, decomposition fires → GCI 3
 17  compute_right_essential — sibling merge fires; two ∃r. → ∃r.(C⊓D) (GCI 3)
 18  compute_right_essential — decompose_rhs case (a) inside right-essential
 19  compute_left_essential  — A⊓B ⊑ E: B dropped because A⊑B in O (GCI 4)
@@ -223,21 +227,58 @@ def test_04_sibling_merge_single_branch(mq):
 
 def test_05_decompose_rhs_case_a(mq):
     # Case (a): inner node has {B, ∃s.F}; O |= B ⊑ ∃s.F; H empty → emit B ⊑ ∃s.F.
-    result = decompose_rhs(A, rBsF, rBsF, set(), mq, lambda _: False)
+    result = decompose_rhs(A, rBsF, set(), mq, lambda _: False)
     assert result == GCI(B, sF)
+
+
+def test_05b_decompose_rhs_root_atom_not_o_equiv(mq):
+    # Root has atom B (e.g. added by prior saturation) and existential ∃r.C.
+    # B ≢_O A (O ⊭ B ⊑ A), so the paper allows A'=B at the root.
+    # Old code filtered root atoms to original_concept.atoms and would have
+    # missed this decomposition if B was absent from the original.
+    B_rC = ELConcept(atoms=frozenset({"B"}), existentials=frozenset({("r", C)}))
+
+    def mock_mq(gci: GCI) -> bool:
+        # O |= B ⊑ ∃r.C  (triggers case (a) with A'=B at root)
+        # All other queries (including B ⊑ A and A ⊑ B) return False,
+        # confirming B ≢_O A.
+        return gci == GCI(B, rC)
+
+    result = decompose_rhs(A, B_rC, set(), mock_mq, lambda _: False)
+    assert result == GCI(B, rC)
+
+
+def test_05c_decompose_rhs_root_atom_o_equiv_excluded():
+    # Root has atom B where B ≡_O A (O |= B ⊑ A and O |= A ⊑ B).
+    # The paper excludes such A' at the root — decomposing with an O-equivalent
+    # atom would not make progress toward a smaller counterexample.
+    B_rC = ELConcept(atoms=frozenset({"B"}), existentials=frozenset({("r", C)}))
+
+    def mock_mq(gci: GCI) -> bool:
+        # B ≡_O A: both directions of subsumption hold.
+        if gci == GCI(B, A) or gci == GCI(A, B):
+            return True
+        # O |= B ⊑ ∃r.C — would fire if B were not excluded.
+        if gci == GCI(B, rC):
+            return True
+        return False
+
+    result = decompose_rhs(A, B_rC, set(), mock_mq, lambda _: False)
+    # B is excluded at the root; no other mixed nodes → None.
+    assert result is None
 
 
 def test_06_decompose_rhs_case_b(mq):
     # Case (b): H already knows B ⊑ ∃s.F → strip ∃s.F subtree, return A ⊑ ∃r.B.
     H: set[GCI] = {GCI(B, sF)}
-    result = decompose_rhs(A, rBsF, rBsF, H, mq, lambda gci: gci in H)
+    result = decompose_rhs(A, rBsF, H, mq, lambda gci: gci in H)
     expected = GCI(A, ELConcept(existentials=frozenset({("r", B)})))
     assert result == expected
 
 
 def test_07_decompose_rhs_no_mixed_node(mq):
     # ∃r.C: root has only existential, filler C has only atom → no mixed node.
-    result = decompose_rhs(A, rC, rC, set(), mq, lambda _: False)
+    result = decompose_rhs(A, rC, set(), mq, lambda _: False)
     assert result is None
 
 
@@ -346,16 +387,12 @@ def test_15_unsaturate_left_real_mq_b_dropped(mq):
 
 def test_16_right_essential_simple(mq):
     # GCI 2: A ⊑ ∃r.C as counterexample with lhs = A.
-    # Concept saturation (paper rule) uses A as the LHS oracle, so it adds
-    # B, E, F to the root (O ⊨ A ⊑ B, E, F) and D to the filler C
-    # (O ⊨ A ⊑ ∃r.(C⊓D) via A ⊑ B ⊑ ∃r.(C⊓D)).  No decomposition fires
-    # because the original RHS has no root atoms to pivot on.
+    # Concept saturation adds B, E, F to the root (O ⊨ A ⊑ B, E, F) and D
+    # to the filler (O ⊨ A ⊑ ∃r.(C⊓D) via GCI 1 + 3).  Decomposition then
+    # fires at the root: B ≢_O A and O ⊨ B ⊑ ∃r.(C⊓D) (GCI 3), so case (a)
+    # returns GCI 3 directly.
     result = compute_right_essential(A, rC, set(), mq, SIG, lambda _: False)
-    expected_rhs = ELConcept(
-        atoms=frozenset({"A", "B", "E", "F"}),
-        existentials=frozenset({("r", ELConcept(atoms=frozenset({"C", "D"})))}),
-    )
-    assert result == GCI(A, expected_rhs)
+    assert result == GCI(B, rCD)
 
 
 def test_17_right_essential_sibling_merge(req, mq):

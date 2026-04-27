@@ -326,46 +326,51 @@ def remove_subtree(root, target_node, role, sub_to_remove):
 
     return ELConcept(root.atoms, new_existentials)
 
-def decompose_rhs(lhs, concept, original_concept, hypothesis, MQ, H_MQ):
+def decompose_rhs(lhs, concept, hypothesis, MQ, H_MQ):
     """
     Returns a new GCI after applying ONE decomposition step,
     or None if no decomposition applies.
+
+    Implements "Decomposition on the right for O" rule:
+      If d' is an r-successor of d in C, A' is in the node label of d,
+      and O |= A' ⊑ ∃r.C_d'  (plus A' ≢_O lhs if d is the root), then:
+        (a) return A' ⊑ ∃r.C_d'   if H ⊭ A' ⊑ ∃r.C_d'
+        (b) return lhs ⊑ C|⁻_d'↓  otherwise
+      Lemma 5 guarantees that when (b) applies, H ⊭ lhs ⊑ C|⁻_d'↓.
     """
-    # Traverse nodes (DFS)
     stack = [(None, None, concept)]
-    # (parent, role_from_parent, current_node)
 
     while stack:
         parent, role, node = stack.pop()
 
-
         is_root = (parent is None)
-        # Restrict atoms at root to original RHS atoms only
+
         if is_root:
-            valid_atoms = node.atoms & original_concept.atoms
+            # Exclude A' where A' ≡_O lhs (would not make progress).
+            # O-equivalence: O |= A' ⊑ lhs  AND  O |= lhs ⊑ A'.
+            valid_atoms = frozenset(
+                A_prime for A_prime in node.atoms
+                if not (
+                    MQ(GCI(ELConcept(frozenset({A_prime})), lhs)) and
+                    MQ(GCI(lhs, ELConcept(frozenset({A_prime}))))
+                )
+            )
         else:
             valid_atoms = node.atoms
 
         for A_prime in valid_atoms:
-            
+            A_prime_concept = ELConcept(frozenset({A_prime}))
             for r, sub in node.existentials:
-
-                candidate_rhs = ELConcept(set(), {(r, sub)})
-
-                A_prime_concept = ELConcept(frozenset({A_prime}))
+                candidate_rhs = ELConcept(frozenset(), frozenset({(r, sub)}))
                 if MQ(GCI(A_prime_concept, candidate_rhs)):
-                    # --- CASE (a): learn new inclusion ---
                     if not H_MQ(GCI(A_prime_concept, candidate_rhs)):
+                        # Case (a): novel inclusion A' ⊑ ∃r.C_d'
                         return GCI(A_prime_concept, candidate_rhs)
-
-                    # --- CASE (b): remove subtree (only if result is novel) ---
                     else:
+                        # Case (b): strip the subtree; Lemma 5 guarantees H ⊭ result
                         new_concept = remove_subtree(concept, node, r, sub)
-                        candidate = GCI(lhs, new_concept)
-                        if not H_MQ(candidate):
-                            return candidate
+                        return GCI(lhs, new_concept)
 
-        # Continue traversal
         for r, sub in node.existentials:
             stack.append((node, r, sub))
 
@@ -561,13 +566,12 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
     logger.info(f"merged {rhs_merged}")
 
     # 3) Decomposition
-    candidate = decompose_rhs(lhs, rhs_merged, rhs, hypothesis, MQ, H_MQ)
+    candidate = decompose_rhs(lhs, rhs_merged, hypothesis, MQ, H_MQ)
 
     if candidate is not None:
-        # Validate the decomposed candidate is actually entailed by O.
-        # decompose_rhs can produce a subtree-stripped GCI that over-extends
-        # the rhs by carrying saturated atoms that O does not actually entail
-        # from the given lhs.
+        # By EL monotonicity, stripping a subtree from an O-entailed concept
+        # preserves O-entailment, so MQ(candidate) should always hold here.
+        # The check is kept as a safety net against implementation bugs.
         if MQ(candidate):
             logger.info(f"decomposed {candidate}")
             return candidate
