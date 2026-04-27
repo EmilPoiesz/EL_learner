@@ -196,6 +196,22 @@ def test_03b_sibling_merge_two_branches_filler_atoms(mq):
     assert filler.atoms == frozenset({"C", "D"})
 
 
+def test_03c_sibling_merge_pairwise_within_three():
+    # Three same-role siblings: ∃r.A, ∃r.B, ∃r.C.
+    # O entails merging A with B (leaving C separate) but NOT the 3-way merge A⊓B⊓C.
+    three_siblings = ELConcept(existentials=frozenset({("r", A), ("r", B), ("r", C)}))
+    after_merge    = ELConcept(existentials=frozenset({("r", AB), ("r", C)}))
+
+    def mock_mq(gci):
+        return gci.rhs == after_merge
+
+    result = sibling_merge(three_siblings, lhs=A, MQ=mock_mq)
+    assert len(result.existentials) == 2
+    fillers = {f for _, f in result.existentials}
+    assert AB in fillers
+    assert C in fillers
+
+
 def test_04_sibling_merge_single_branch(mq):
     assert sibling_merge(rC, lhs=A, MQ=mq) == rC
 

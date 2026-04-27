@@ -256,25 +256,27 @@ def _try_merge_in_concept(lhs: ELConcept, MQ: Callable, node: ELConcept, rebuild
     Returns (new_full_rhs, True) when a valid merge is found, or
     (rebuild(node), False) when none exists.
     """
-    # --- try merging at this node ---
+    # --- try merging exactly two same-role siblings at this node ---
     role_map: dict = {}
     for role, sub in node.existentials:
         role_map.setdefault(role, []).append(sub)
 
     for role, subs in role_map.items():
-        if len(subs) >= 2:
-            merged_sub = ELConcept(
-                atoms=frozenset().union(*(s.atoms for s in subs)),
-                existentials=frozenset().union(*(s.existentials for s in subs)),
-            )
-            new_node_exs = frozenset(
-                {(r, s) for r, s in node.existentials if r != role}
-                | {(role, merged_sub)}
-            )
-            candidate_node = ELConcept(node.atoms, new_node_exs)
-            candidate_root = rebuild(candidate_node)
-            if MQ(GCI(lhs=lhs, rhs=candidate_root)):
-                return candidate_root, True
+        for i in range(len(subs)):
+            for j in range(i + 1, len(subs)):
+                sub1, sub2 = subs[i], subs[j]
+                merged_sub = ELConcept(
+                    atoms=sub1.atoms | sub2.atoms,
+                    existentials=sub1.existentials | sub2.existentials,
+                )
+                new_node_exs = frozenset(
+                    {(r, s) for r, s in node.existentials if not (r == role and s in (sub1, sub2))}
+                    | {(role, merged_sub)}
+                )
+                candidate_node = ELConcept(node.atoms, new_node_exs)
+                candidate_root = rebuild(candidate_node)
+                if MQ(GCI(lhs=lhs, rhs=candidate_root)):
+                    return candidate_root, True
 
     # --- recurse into children ---
     for target_role, target_sub in node.existentials:
