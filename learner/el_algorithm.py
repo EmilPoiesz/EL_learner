@@ -470,41 +470,50 @@ def unsaturate_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool]) -
     return _unsaturate_node(lhs, rhs, MQ, rebuild=lambda x: x)
 
 
-def decompose_left(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], H_MQ: Callable[[GCI], bool], signature: set[str] = None) -> GCI:
-    def _find_undiscovered_atom(concept: ELConcept) -> Optional[ELConcept]:
-        """Return A′ ∈ ΣO s.t. O ⊨ concept ⊑ A′ and H ⊭ concept ⊑ A′, or None."""
-        if signature is not None:
-            for A in signature:
-                if A in concept.atoms:
-                    continue  # trivially entailed; not informative
-                A_concept = ELConcept(frozenset({A}), frozenset())
-                if MQ(GCI(concept, A_concept)) and not H_MQ(GCI(concept, A_concept)):
-                    return A_concept
-            return None
-        # Fallback: check only against rhs (original behaviour when no signature given)
-        if MQ(GCI(concept, rhs)) and not H_MQ(GCI(concept, rhs)):
-            return rhs
-        return None
+def decompose_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool], H_MQ: Callable[[GCI], bool], signature: set[str]) -> Optional[GCI]:
+    """
+    Apply ONE step of "Decomposition on the left for O" and return the
+    resulting GCI, or None if no decomposition rule fires.
 
-    # Case 1: Try subtrees (Cd) — non-root nodes only (existential fillers).
-    # Per the paper: if O ⊨ Cd ⊑ A′ and H ⊭ Cd ⊑ A′ for some A′ ∈ ΣO,
-    # replace C ⊑ A by Cd ⊑ A′.  A′ need not equal the original rhs.
-    for role, sub_concept in lhs.existentials:
-        a_prime = _find_undiscovered_atom(sub_concept)
-        if a_prime is not None:
-            return decompose_left(sub_concept, a_prime, hypothesis, MQ, H_MQ, signature)
+    Call repeatedly (with H-saturation between steps) to apply exhaustively,
+    as required by Lemma 6 of the paper.
 
-    # Case 2: Try pruning (C \ d)
-    # Try removing one existential at a time from the top level
-    for ex in lhs.existentials:
-        reduced_exs = frozenset([e for e in lhs.existentials if e != ex])
-        lhs_minus_sub_concept = ELConcept(lhs.atoms, reduced_exs)
+    Note: the paper (page 3) contains a typo — both cases of the rule list
+    the same consequence Cd ⊑ A'.  The proof of Lemma 6 clarifies the intent:
+      Case 1 (prune):   if O ⊨ lhs|⁻_d↓ ⊑ rhs, return lhs|⁻_d↓ ⊑ rhs.
+                        No H-check needed — since ⊨ lhs ⊑ lhs|⁻_d↓ (EL
+                        monotonicity), H |= lhs|⁻_d↓ ⊑ rhs would imply
+                        H |= lhs ⊑ rhs, contradicting lhs ⊑ rhs being a CE.
+      Case 2 (subtree): if O ⊨ lhs_d ⊑ A' and H ⊭ lhs_d ⊑ A' for some
+                        A' ∈ ΣO (skipping atoms already in lhs_d.atoms),
+                        return lhs_d ⊑ A'.
+    """
+    # Stack entries: (parent_node_in_lhs, role, child_node)
+    stack = [(lhs, r, sub) for r, sub in lhs.existentials]
 
-        if MQ(GCI(lhs_minus_sub_concept, rhs)) and not H_MQ(GCI(lhs_minus_sub_concept, rhs)):
-            return decompose_left(lhs_minus_sub_concept, rhs, hypothesis, MQ, H_MQ, signature)
+    while stack:
+        parent, role, node = stack.pop()
 
-    # If no further decomposition is possible, C is O-essential
-    return GCI(lhs, rhs)
+        # Case 1 (prune): remove the subtree rooted at node from lhs;
+        # if the result still forces rhs under O, return it immediately.
+        pruned = remove_subtree(lhs, parent, role, node)
+        if MQ(GCI(pruned, rhs)):
+            return GCI(pruned, rhs)
+
+        # Case 2 (subtree zoom): find A' ∈ ΣO that the subtree implies
+        # under O but H does not yet entail.
+        for A_prime in signature:
+            if A_prime in node.atoms:
+                continue  # trivially entailed; not informative
+            A_prime_concept = ELConcept(frozenset({A_prime}))
+            if MQ(GCI(node, A_prime_concept)) and not H_MQ(GCI(node, A_prime_concept)):
+                return GCI(node, A_prime_concept)
+
+        # Descend into deeper nodes.
+        for r, sub in node.existentials:
+            stack.append((node, r, sub))
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -586,15 +595,7 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
         logger.info(f"decomposed {candidate}")
         current_lhs = candidate.lhs
         current_rhs = candidate.rhs
-        
-        # Re-saturate anchored to the new LHS. Case (a) decomposition replaces
-        # the whole working GCI with a minimal A' ⊑ ∃r.C_d', discarding all root
-        # atoms from the previous concept. The root atoms visible before
-        # decomposition were entailed from the old LHS (e.g. O ⊨ A ⊑ B). After
-        # decomposition shifts the LHS to A', saturation recomputes which atoms
-        # are entailed from A' — a strictly smaller set, because A' may not
-        # inherit every chain that the old LHS had (e.g. O ⊨ A ⊑ E via A⊓B ⊑ E
-        # does not carry over to A' = B alone).
+
         current_rhs = saturate_concept_rhs(current_rhs, signature, MQ, lhs=current_lhs)
         current_rhs = sibling_merge(current_rhs, lhs=current_lhs, MQ=MQ)
         logger.info(f"re-saturated/merged: {current_lhs} ⊑ {current_rhs}")
@@ -613,11 +614,29 @@ def compute_left_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI],
     remains entailed by O and cannot be derived from H alone.
     """
 
-    lhs_saturated = saturate_left(lhs, hypothesis, signature, H_MQ)
-    decomposed = decompose_left(lhs_saturated, rhs, hypothesis, MQ, H_MQ, signature)
-    lhs_essential = unsaturate_left(decomposed.lhs, decomposed.rhs, MQ)
+    # Step 1: H-saturate the LHS before starting decomposition.
+    current_lhs = saturate_left(lhs, hypothesis, signature, H_MQ)
+    current_rhs = rhs
 
-    return GCI(lhs=lhs_essential, rhs=decomposed.rhs)
+    # Step 2: Exhaustive decomposition — applied per Lemma 6 of the paper.
+    # Each step can shrink the LHS (Case 1 prune) or replace the whole GCI
+    # with a smaller subtree (Case 2 zoom).  H-saturation is reapplied after
+    # each step: the smaller LHS may expose new H-entailments that enable a
+    # further decomposition (see paper example: ∃hasChild.∃hasParent.> ⊑ Human
+    # can only be decomposed after H-saturation adds Human to ∃hasParent.>).
+    while True:
+        candidate = decompose_left(current_lhs, current_rhs, MQ, H_MQ, signature)
+        if candidate is None:
+            break
+        logger.info(f"decomposed left: {candidate}")
+        current_lhs = candidate.lhs
+        current_rhs = candidate.rhs
+        current_lhs = saturate_left(current_lhs, hypothesis, signature, H_MQ)
+        logger.info(f"re-saturated left: {current_lhs} ⊑ {current_rhs}")
+
+    # Step 3: Desaturate — remove atoms from the LHS that are redundant under O.
+    lhs_essential = unsaturate_left(current_lhs, current_rhs, MQ)
+    return GCI(lhs=lhs_essential, rhs=current_rhs)
 
 
 # ---------------------------------------------------------------------------

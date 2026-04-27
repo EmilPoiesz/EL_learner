@@ -30,9 +30,9 @@ Test catalogue
  6  decompose_rhs case (b) — ∃s.F already in H; subtree stripped from filler
  7  decompose_rhs          — no atom+existential node → returns None
  8  saturate_left          — H: A⊑B adds B to the LHS of concept A
- 9  decompose_left         — redundant ∃r.C stripped; essential {A,B} kept
-10  decompose_left         — both atoms essential; {A,B} ⊑ E returned intact
-11  decompose_left         — existential-only LHS kept intact
+ 9  decompose_left case 1   — prune ∃r.C; A⊓B still forces E → returns A⊓B ⊑ E
+10  decompose_left          — no existentials to prune or zoom; returns None
+11  decompose_left          — pruned=⊤ fails; C implies no new A' → returns None
 12  unsaturate_left        — mock: both atoms essential; LHS unchanged
 13  unsaturate_left        — mock: one atom redundant; removed from LHS
 14  unsaturate_left        — mock: nested atom in existential filler removed
@@ -300,31 +300,31 @@ def test_08_saturate_left():
 
 
 def test_09_decompose_left_redundant_existential(req, mq):
-    # LHS = A ⊓ B ⊓ ∃r.C, RHS = E.  O |= A ⊓ B ⊑ E, so ∃r.C is redundant.
+    # LHS = A ⊓ B ⊓ ∃r.C, RHS = E.
+    # Case 1 (prune): remove ∃r.C → pruned = A⊓B. O |= A⊓B ⊑ E (GCI 4) → fires.
     lhs = ELConcept(atoms=frozenset({"A", "B"}), existentials=frozenset({("r", C)}))
-    result = decompose_left(lhs, E, set(), mq, lambda _: False)
+    result = decompose_left(lhs, E, mq, lambda _: False, SIG)
     assert result == GCI(AB, E)
 
 
 def test_10_decompose_left_both_atoms_essential(mq):
-    # O ⊭ A ⊑ E and O ⊭ B ⊑ E alone; both atoms are essential.
-    result = decompose_left(AB, E, set(), mq, lambda _: False)
-    assert result.lhs.atoms == frozenset({"A", "B"})
+    # LHS = A⊓B has no existentials — no non-root node to prune or zoom into.
+    result = decompose_left(AB, E, mq, lambda _: False, SIG)
+    assert result is None
 
 
 def test_11_decompose_left_existential_only(mq):
-    # ∃r.C is the only component; it is essential.
-    result = decompose_left(rC, F, set(), mq, lambda _: False)
-    assert result == GCI(rC, F)
+    # LHS = ∃r.C. Case 1: pruned = ⊤; O ⊭ ⊤ ⊑ F. Case 2: O ⊭ C ⊑ A' for
+    # any A' ∈ SIG (GCI 5 says ∃r.C ⊑ F, not C ⊑ F). Both cases fail → None.
+    result = decompose_left(rC, F, mq, lambda _: False, SIG)
+    assert result is None
 
 
-def test_11b_decompose_left_case1_new_rhs(req, mq):
-    # lhs = ∃r.G, rhs = F.
-    # O |= G ⊑ E (GCI 6a) but O ⊭ G ⊑ F, so the old rhs-only check would not
-    # fire.  With the new check against all of ΣO, Case 1 fires with A′ = E and
-    # the result is GCI(G, E) — not GCI(∃r.G, F) and not GCI(G, F).
+def test_11b_decompose_left_case2_subtree_zoom(req, mq):
+    # LHS = ∃r.G, RHS = F. Case 1: pruned = ⊤; O ⊭ ⊤ ⊑ F.
+    # Case 2: O |= G ⊑ E (GCI 6a) and H ⊭ G ⊑ E → fires, returning G ⊑ E.
     rG = ELConcept(existentials=frozenset({("r", G)}))
-    result = decompose_left(rG, F, set(), mq, lambda _: False, signature=SIG)
+    result = decompose_left(rG, F, mq, lambda _: False, SIG)
     assert result == GCI(G, E)
 
 
