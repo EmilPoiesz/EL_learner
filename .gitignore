@@ -1,4 +1,5 @@
 learner/cache/*.db
+*.db
 
 .idea
 .DS_Store

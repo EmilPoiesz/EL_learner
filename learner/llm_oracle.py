@@ -222,12 +222,14 @@ class LLMOracle(Oracle):
         if ontology_path is not None:
             from utils.owl_parser import extract_ontology
             self._sig, self._O = extract_ontology(ontology_path)
-            self._system_msg = self._build_grounded_system_message(self._sig, self._O)
+            self._roles: set[str] = self._extract_roles(self._O)
+            self._system_msg = self._build_grounded_system_message(self._sig, self._roles, self._O)
         else:
             if signature is None:
                 raise ValueError("Either 'signature' or 'ontology_path' must be provided.")
             self._sig = signature
             self._O: set[GCI] | None = None
+            self._roles = set()
             self._system_msg = (
                 "You are a precise ontology reasoning assistant. "
                 "Follow the output format exactly as specified. "
@@ -239,13 +241,28 @@ class LLMOracle(Oracle):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_grounded_system_message(sig: set[str], gcis: set[GCI]) -> str:
-        sig_str  = ", ".join(sorted(sig))
-        gcis_str = "\n".join(f"  {gci_to_manchester(g)}" for g in sorted(gcis, key=str))
+    def _extract_roles(gcis: set[GCI]) -> set[str]:
+        """Collect every role name that appears in any existential in the GCI set."""
+        roles: set[str] = set()
+        def _walk(concept: ELConcept) -> None:
+            for role, filler in concept.existentials:
+                roles.add(role)
+                _walk(filler)
+        for gci in gcis:
+            _walk(gci.lhs)
+            _walk(gci.rhs)
+        return roles
+
+    @staticmethod
+    def _build_grounded_system_message(sig: set[str], roles: set[str], gcis: set[GCI]) -> str:
+        sig_str   = ", ".join(sorted(sig))
+        roles_str = ", ".join(sorted(roles)) if roles else "(none)"
+        gcis_str  = "\n".join(f"  {gci_to_manchester(g)}" for g in sorted(gcis, key=str))
         return (
             "You are a precise ontology reasoning assistant.\n"
             "You have been given the following ontology O in Manchester syntax.\n\n"
-            f"Concept names: {sig_str}\n\n"
+            f"Concept names: {sig_str}\n"
+            f"Object properties: {roles_str}\n\n"
             "Axioms:\n"
             f"{gcis_str}\n\n"
             "Answer questions about what O entails. "
@@ -283,21 +300,25 @@ class LLMOracle(Oracle):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_mq_prompt(sig: set[str], gci: GCI) -> str:
-        sig_str = ", ".join(sorted(sig))
+    def _build_mq_prompt(sig: set[str], roles: set[str], gci: GCI) -> str:
+        sig_str   = ", ".join(sorted(sig))
+        roles_str = ", ".join(sorted(roles)) if roles else "(none)"
         return (
             f"Concept names in scope: {sig_str}.\n"
+            f"Object properties in scope: {roles_str}.\n"
             "Does the target ontology O entail the following GCI?\n"
             f"  {gci_to_manchester(gci)}\n"
             "Reply with exactly one word: yes or no."
         )
 
     @staticmethod
-    def _build_eq_judge_prompt(sig: set[str], H: set[GCI]) -> str:
-        sig_str = ", ".join(sorted(sig))
+    def _build_eq_judge_prompt(sig: set[str], roles: set[str], H: set[GCI]) -> str:
+        sig_str   = ", ".join(sorted(sig))
+        roles_str = ", ".join(sorted(roles)) if roles else "(none)"
         h_str = hypothesis_to_manchester(H)
         return (
-            f"Concept names in scope: {sig_str}.\n\n"
+            f"Concept names in scope: {sig_str}.\n"
+            f"Object properties in scope: {roles_str}.\n\n"
             "Hypothesis H:\n"
             f"{h_str}\n\n"
             "Does H capture all subsumptions entailed by the target ontology O?\n"
@@ -305,11 +326,13 @@ class LLMOracle(Oracle):
         )
 
     @staticmethod
-    def _build_eq_counterexample_prompt(sig: set[str], H: set[GCI]) -> str:
-        sig_str = ", ".join(sorted(sig))
+    def _build_eq_counterexample_prompt(sig: set[str], roles: set[str], H: set[GCI]) -> str:
+        sig_str   = ", ".join(sorted(sig))
+        roles_str = ", ".join(sorted(roles)) if roles else "(none)"
         h_str = hypothesis_to_manchester(H)
         return (
-            f"Concept names in scope: {sig_str}.\n\n"
+            f"Concept names in scope: {sig_str}.\n"
+            f"Object properties in scope: {roles_str}.\n\n"
             "Hypothesis H:\n"
             f"{h_str}\n\n"
             "Name one GCI that is entailed by target ontology O but is NOT entailed by H.\n"
@@ -359,6 +382,18 @@ class LLMOracle(Oracle):
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _extract_last_line(response: str) -> str:
+        """Return the last non-empty line of *response*.
+
+        Reasoning models emit chain-of-thought before the final answer line,
+        so we discard everything above and return only the conclusion.
+        """
+        lines = [ln.strip() for ln in response.splitlines() if ln.strip()]
+        if not lines:
+            raise ValueError(f"Empty response: {response!r}")
+        return lines[-1]
+
+    @staticmethod
     def _extract_yes_no(response: str) -> str | None:
         """Return 'yes' or 'no' based on the last occurrence in *response*.
 
@@ -380,7 +415,7 @@ class LLMOracle(Oracle):
         The LLM is prompted for a yes/no answer in Manchester syntax.
         Raises ValueError if the response cannot be parsed as yes or no.
         """
-        response = self._query(self._build_mq_prompt(self._sig, gci), label="MQ")
+        response = self._query(self._build_mq_prompt(self._sig, self._roles, gci), label="MQ")
         answer = self._extract_yes_no(response)
         if answer == "yes":
             return True
@@ -401,14 +436,15 @@ class LLMOracle(Oracle):
         returns the counterexample GCI.
         Raises ValueError if either response cannot be parsed.
         """
-        judge_raw = self._query(self._build_eq_judge_prompt(self._sig, hypothesis), label="EQ (judge)")
+        judge_raw = self._query(self._build_eq_judge_prompt(self._sig, self._roles, hypothesis), label="EQ (judge)")
         judge = self._extract_yes_no(judge_raw)
         if judge == "yes":
             return None
         if judge != "no":
             raise ValueError(f"Unparseable EQ judge response: {judge_raw!r}")
-        ce = self._query(self._build_eq_counterexample_prompt(self._sig, hypothesis), label="EQ (counterexample)")
-        return parse_manchester_gci(ce.strip())
+        ce_raw = self._query(self._build_eq_counterexample_prompt(self._sig, self._roles, hypothesis), label="EQ (counterexample)")
+        ce_line = self._extract_last_line(ce_raw)
+        return parse_manchester_gci(ce_line)
 
     # ------------------------------------------------------------------
     # Cleanup
