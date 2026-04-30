@@ -264,12 +264,18 @@ class ReasonerOracle(Oracle):
                 "compose_right":    0.6,
             }
         """
+        # Direction 1: O ⊄ H — find a GCI in O not entailed by H
         base = None
         for o_gci in self._O:
             if not self._h_reasoner.entails(o_gci):
                 base = o_gci
                 break
+
+        # Direction 2: H ⊄ O — find a GCI in H not entailed by O
         if base is None:
+            for h_gci in hypothesis:
+                if not self._owl.entails(encode(h_gci.lhs), encode(h_gci.rhs)):
+                    return h_gci
             return None
 
         ce = base

@@ -46,6 +46,7 @@ def _run_reasoner_demo(
     ontology: str,
     reasoner: str,
     verbose: bool,
+    output: str | None = None,
 ) -> None:
     from learner.reasoner_oracle import ReasonerOracle
 
@@ -68,12 +69,12 @@ def _run_reasoner_demo(
                 "compose_right":    0.6,
             },
         ) as oracle:
-            _run_and_report(oracle, verbose=verbose)
+            _run_and_report(oracle, verbose=verbose, output=output)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
 
 
-def _run_and_report(oracle: Oracle, verbose: bool) -> None:
+def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None) -> None:
     """Run the learner and print a comparison report against oracle.axioms."""
     if not verbose:
         logging.disable(logging.INFO)
@@ -105,12 +106,17 @@ def _run_and_report(oracle: Oracle, verbose: bool) -> None:
 
     print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
 
+    if output:
+        from utils.owl_parser import save_ontology
+        save_ontology(H, output)
+        print(f"\n  Saved learned ontology to: {output}")
+
 
 # ---------------------------------------------------------------------------
 # Grounded (taught) LLMOracle demo
 # ---------------------------------------------------------------------------
 
-def _run_taught_llm_demo(ontology: str, model: str, device: str, verbose: bool) -> None:
+def _run_taught_llm_demo(ontology: str, model: str, device: str, verbose: bool, output: str | None = None) -> None:
     from utils.java_utils import build_classpath
     from learner.hypothesis_reasoner import HypothesisReasoner
     from learner.llm_oracle import LLMOracle
@@ -139,7 +145,7 @@ def _run_taught_llm_demo(ontology: str, model: str, device: str, verbose: bool) 
         ) as oracle:
             print("  Model loaded.")
             print(f"  Σ = {sorted(oracle.signature)}\n")
-            _run_and_report(oracle, verbose=verbose)
+            _run_and_report(oracle, verbose=verbose, output=output)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
 
@@ -194,7 +200,7 @@ def _llm_dry_run() -> None:
     print(LLMOracle._build_eq_counterexample_prompt(_LLM_SIGNATURE, _PREVIEW_HYPOTHESIS))
 
 
-def _run_llm_demo(model: str, device: str, verbose: bool) -> None:
+def _run_llm_demo(model: str, device: str, verbose: bool, output: str | None = None) -> None:
     from utils.java_utils import build_classpath
     from learner.hypothesis_reasoner import HypothesisReasoner
     from learner.llm_oracle import LLMOracle, gci_to_manchester
@@ -236,6 +242,11 @@ def _run_llm_demo(model: str, device: str, verbose: bool) -> None:
         for gci in sorted(H, key=str):
             print(f"    {gci_to_manchester(gci)}")
         print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
+
+        if output:
+            from utils.owl_parser import save_ontology
+            save_ontology(H, output)
+            print(f"\n  Saved learned ontology to: {output}")
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +292,10 @@ if __name__ == "__main__":
 
     # --- Shared ---
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument(
+        "--output", default=None, metavar="FILE",
+        help="Save the learned ontology to FILE (.ttl for Turtle, .owl/.xml for RDF/XML).",
+    )
 
     args = parser.parse_args()
 
@@ -289,6 +304,7 @@ if __name__ == "__main__":
             ontology=args.ontology,
             reasoner=args.reasoner,
             verbose=args.verbose,
+            output=args.output,
         )
     elif args.oracle == "taught":
         _run_taught_llm_demo(
@@ -296,6 +312,7 @@ if __name__ == "__main__":
             model=args.model,
             device=args.device,
             verbose=args.verbose,
+            output=args.output,
         )
     else:
         if args.dry_run:
@@ -305,4 +322,5 @@ if __name__ == "__main__":
                 model=args.model,
                 device=args.device,
                 verbose=args.verbose,
+                output=args.output,
             )
