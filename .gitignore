@@ -1,4 +1,5 @@
 learner/cache/*.db
+ontologies/learned
 *.db
 
 .idea

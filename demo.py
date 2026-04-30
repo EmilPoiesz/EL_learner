@@ -299,6 +299,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    if args.output and os.sep not in args.output and "/" not in args.output:
+        args.output = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "ontologies", "learned", args.output,
+        )
+
     if args.oracle == "reasoner":
         _run_reasoner_demo(
             ontology=args.ontology,

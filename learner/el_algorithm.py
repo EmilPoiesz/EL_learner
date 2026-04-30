@@ -600,6 +600,16 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
         current_rhs = sibling_merge(current_rhs, lhs=current_lhs, MQ=MQ)
         logger.info(f"re-saturated/merged: {current_lhs} ⊑ {current_rhs}")
 
+    # Strip the LHS atom from the RHS — A ⊑ A is always trivially true and adds
+    # no information.  compute_right_essential is only called with an atomic LHS,
+    # so current_lhs.atoms has exactly one element.
+    lhs_atom = next(iter(current_lhs.atoms))
+    if lhs_atom in current_rhs.atoms:
+        current_rhs = ELConcept(
+            atoms=current_rhs.atoms - frozenset({lhs_atom}),
+            existentials=current_rhs.existentials,
+        )
+
     return GCI(lhs=current_lhs, rhs=current_rhs)
 
 
@@ -892,5 +902,22 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
             max_iterations,
         )
 
-    # Line 12: Return H
+    # Line 12: Minimise and return H.
+    # Remove any GCI whose RHS is structurally subsumed by another GCI in H
+    # with the same LHS.  A GCI  A ⊑ B  is redundant when H also contains
+    # A ⊑ B ⊓ C ⊓ ...  because the stronger GCI entails the weaker one by
+    # conjunction elimination.  This prunes GCIs accumulated across iterations
+    # (e.g. atomic subsumptions from phase 1 that become absorbed by richer
+    # GCIs added during refinement).
+    def _subsumed(g: GCI) -> bool:
+        for other in H:
+            if other == g:
+                continue
+            if (other.lhs == g.lhs
+                    and g.rhs.atoms <= other.rhs.atoms
+                    and g.rhs.existentials <= other.rhs.existentials):
+                return True
+        return False
+
+    H = {g for g in H if not _subsumed(g)}
     return H

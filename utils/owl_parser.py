@@ -4,6 +4,21 @@ from rdflib import OWL, RDF, RDFS, Graph, Namespace, URIRef, BNode
 from rdflib.collection import Collection
 from learner.el_algorithm import ELConcept, GCI
 
+
+def _rdf_list(g: Graph, items: list) -> URIRef | BNode:
+    """Build an RDF list using only rdf:first/rdf:rest, without rdf:type rdf:List.
+
+    Collection() adds rdf:type rdf:List to each list-head BNode, which triggers
+    a UserWarning in rdflib's pretty-xml serializer.  Building the list manually
+    avoids that while still producing rdf:parseType="Collection" in the output.
+    """
+    if not items:
+        return RDF.nil
+    head = BNode()
+    g.add((head, RDF.first, items[0]))
+    g.add((head, RDF.rest, _rdf_list(g, items[1:])))
+    return head
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,9 +116,7 @@ def _concept_to_rdf(g: Graph, concept: ELConcept, ns: Namespace):
 
     intersection = BNode()
     g.add((intersection, RDF.type, OWL.Class))
-    list_head = BNode()
-    Collection(g, list_head, parts)
-    g.add((intersection, OWL.intersectionOf, list_head))
+    g.add((intersection, OWL.intersectionOf, _rdf_list(g, parts)))
     return intersection
 
 
@@ -112,16 +125,69 @@ def save_ontology(
     path: str,
     namespace: str = "http://example.org/learned#",
 ) -> None:
-    """Serialize a set of GCIs to an OWL file (.ttl or .owl/.xml)."""
+    """Serialize a set of GCIs to an OWL file (.ttl for Turtle, .owl/.xml for OWL/XML)."""
+    if path.endswith((".owl", ".xml", ".rdf")):
+        _save_owl_xml(gcis, path, namespace)
+    else:
+        _save_turtle(gcis, path, namespace)
+    logger.info("Saved %d GCI(s) to %s", len(gcis), path)
+
+
+def _save_turtle(gcis: set[GCI], path: str, namespace: str) -> None:
     g = Graph()
     ns = Namespace(namespace)
     g.bind("ont", ns)
-
     for gci in gcis:
         lhs_node = _concept_to_rdf(g, gci.lhs, ns)
         rhs_node = _concept_to_rdf(g, gci.rhs, ns)
         g.add((lhs_node, RDFS.subClassOf, rhs_node))
+    g.serialize(destination=path, format="turtle")
 
-    fmt = "xml" if path.endswith((".owl", ".xml", ".rdf")) else "turtle"
-    g.serialize(destination=path, format=fmt)
-    logger.info("Saved %d GCI(s) to %s", len(gcis), path)
+
+def _save_owl_xml(gcis: set[GCI], path: str, namespace: str) -> None:
+    """
+    Serialize GCIs to OWL/XML via owlready2, which produces clean output:
+    short #Name URIs, rdf:parseType="Collection", no random BNode IDs.
+    """
+    import owlready2 as owl2
+
+    base = namespace.rstrip("#")
+    onto = owl2.get_ontology(base)
+
+    concept_names: set[str] = set()
+    role_names: set[str] = set()
+
+    def _collect(c: ELConcept) -> None:
+        concept_names.update(c.atoms)
+        for r, f in c.existentials:
+            role_names.add(r)
+            _collect(f)
+
+    for gci in gcis:
+        _collect(gci.lhs)
+        _collect(gci.rhs)
+
+    with onto:
+        classes = {n: owl2.types.new_class(n, (owl2.Thing,)) for n in sorted(concept_names)}
+        for cls in classes.values():
+            cls.is_a.remove(owl2.Thing)
+        roles = {r: owl2.types.new_class(r, (owl2.ObjectProperty,)) for r in sorted(role_names)}
+
+        def _expr(c: ELConcept):
+            parts = [classes[a] for a in sorted(c.atoms)]
+            for role, filler in sorted(c.existentials, key=lambda x: (x[0], str(x[1]))):
+                parts.append(roles[role].some(_expr(filler)))
+            if not parts:
+                return owl2.Thing
+            return parts[0] if len(parts) == 1 else owl2.And(parts)
+
+        for gci in sorted(gcis, key=str):
+            lhs_e = _expr(gci.lhs)
+            rhs_e = _expr(gci.rhs)
+            if isinstance(lhs_e, owl2.ThingClass):
+                lhs_e.is_a.append(rhs_e)
+            else:
+                gca = owl2.GeneralClassAxiom(lhs_e)
+                gca.is_a.append(rhs_e)
+
+    onto.save(file=path, format="rdfxml")
