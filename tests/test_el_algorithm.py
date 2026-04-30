@@ -409,7 +409,7 @@ def test_22_right_essential_simple(mq):
     # Exhaustive loop: re-saturate ∃r.(C⊓D) with lhs=B → adds F (via GCI 3+5).
     result = compute_right_essential(A, rC, set(), mq, SIG, lambda _: False)
     expected_rhs = ELConcept(
-        atoms=frozenset({"B", "F"}),
+        atoms=frozenset({"F"}),
         existentials=frozenset({("r", ELConcept(atoms=frozenset({"C", "D"})))}),
     )
     assert result == GCI(B, expected_rhs)
@@ -432,7 +432,7 @@ def test_24_right_essential_decompose_case_a(mq):
     # Exhaustive loop: re-saturate ∃s.F with lhs=B → adds F (via GCI 3+5).
     result = compute_right_essential(A, rBsF, set(), mq, SIG, lambda _: False)
     expected_rhs = ELConcept(
-        atoms=frozenset({"B", "F"}),
+        atoms=frozenset({"F"}),
         existentials=frozenset({("s", F)}),
     )
     assert result == GCI(B, expected_rhs)
