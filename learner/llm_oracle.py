@@ -175,8 +175,9 @@ class LLMOracle(Oracle):
         A running HypothesisReasoner instance that will be kept in sync
         with H and used to answer H-entailment queries.
     max_new_tokens : int
-        Maximum tokens the LLM may generate per query.  64 is sufficient
-        for yes/no MQ answers; EQ responses may need more.
+        Maximum tokens the LLM may generate per query.  Reasoning models
+        may produce long chain-of-thought before the final yes/no; 1024 is
+        a safe default.  Set lower for non-reasoning models to save time.
     device : str | int
         Device for the HuggingFace pipeline, e.g. "cpu", "cuda", or a
         CUDA device index.
@@ -194,7 +195,7 @@ class LLMOracle(Oracle):
         model_name_or_path: str,
         signature: set[str] | None,
         h_reasoner: HypothesisReasoner,
-        max_new_tokens: int = 128,
+        max_new_tokens: int = 1024,
         device: str | int = "cpu",
         verbose: bool = False,
         ontology_path: str | None = None,
@@ -354,6 +355,21 @@ class LLMOracle(Oracle):
         return response
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_yes_no(response: str) -> str | None:
+        """Return 'yes' or 'no' based on the last occurrence in *response*.
+
+        Reasoning models produce chain-of-thought before their final answer,
+        so we scan the entire text and take the last match rather than only
+        checking the first word.
+        """
+        matches = re.findall(r'\b(yes|no)\b', response.lower())
+        return matches[-1] if matches else None
+
+    # ------------------------------------------------------------------
     # Oracle interface — O-entailment via LLM
     # ------------------------------------------------------------------
 
@@ -365,10 +381,10 @@ class LLMOracle(Oracle):
         Raises ValueError if the response cannot be parsed as yes or no.
         """
         response = self._query(self._build_mq_prompt(self._sig, gci), label="MQ")
-        lower = response.lower()
-        if lower.startswith("yes"):
+        answer = self._extract_yes_no(response)
+        if answer == "yes":
             return True
-        if lower.startswith("no"):
+        if answer == "no":
             return False
         raise ValueError(
             f"Unparseable MQ response for '{gci_to_manchester(gci)}': {response!r}"
@@ -385,11 +401,12 @@ class LLMOracle(Oracle):
         returns the counterexample GCI.
         Raises ValueError if either response cannot be parsed.
         """
-        judge = self._query(self._build_eq_judge_prompt(self._sig, hypothesis), label="EQ (judge)").lower()
-        if judge.startswith("yes"):
+        judge_raw = self._query(self._build_eq_judge_prompt(self._sig, hypothesis), label="EQ (judge)")
+        judge = self._extract_yes_no(judge_raw)
+        if judge == "yes":
             return None
-        if not judge.startswith("no"):
-            raise ValueError(f"Unparseable EQ judge response: {judge!r}")
+        if judge != "no":
+            raise ValueError(f"Unparseable EQ judge response: {judge_raw!r}")
         ce = self._query(self._build_eq_counterexample_prompt(self._sig, hypothesis), label="EQ (counterexample)")
         return parse_manchester_gci(ce.strip())
 

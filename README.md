@@ -70,7 +70,8 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 │   └── test_cache.py            # Unit tests for the LLMCache layer
 ├── ontologies/
 │   ├── medical.ttl              # Example medical ontology
-│   └── test_minimal.ttl         # Minimal ontology used by the test suite
+│   ├── test_minimal.ttl         # Minimal ontology used by the test suite
+│   └── animals.owl              # Small Animal ontology 
 ├── .github/workflows/
 │   └── check.yml                # CI workflow — runs tests with coverage on every push
 ├── demo.py                      # Unified demo entry point
