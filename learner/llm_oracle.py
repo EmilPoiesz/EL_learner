@@ -168,8 +168,9 @@ class LLMOracle(Oracle):
     model_name_or_path : str
         HuggingFace model identifier or local path,
         e.g. "meta-llama/Llama-3.2-1B-Instruct".
-    signature : set[str]
+    signature : set[str] | None
         Σ_O — the set of atomic concept names in the target ontology.
+        Required when ``ontology_path`` is not given; ignored otherwise.
     h_reasoner : HypothesisReasoner
         A running HypothesisReasoner instance that will be kept in sync
         with H and used to answer H-entailment queries.
@@ -179,19 +180,26 @@ class LLMOracle(Oracle):
     device : str | int
         Device for the HuggingFace pipeline, e.g. "cpu", "cuda", or a
         CUDA device index.
+    ontology_path : str | None
+        Optional path to a target ontology file (.ttl or .owl).  When
+        provided the oracle operates in *grounded* mode: the full set of
+        parsed GCIs is placed in the system prompt so the LLM reasons
+        from the given axioms rather than from parametric knowledge.
+        The signature is also derived from the file, overriding
+        ``signature``.
     """
 
     def __init__(
         self,
         model_name_or_path: str,
-        signature: set[str],
+        signature: set[str] | None,
         h_reasoner: HypothesisReasoner,
         max_new_tokens: int = 128,
         device: str | int = "cpu",
         verbose: bool = False,
+        ontology_path: str | None = None,
     ):
         super().__init__()
-        self._sig = signature
         self._h_reasoner = h_reasoner
         self._max_new_tokens = max_new_tokens
         self._verbose = verbose
@@ -210,9 +218,50 @@ class LLMOracle(Oracle):
             store_prompts=store_prompts,
         )
 
+        if ontology_path is not None:
+            from utils.owl_parser import extract_ontology
+            self._sig, self._O = extract_ontology(ontology_path)
+            self._system_msg = self._build_grounded_system_message(self._sig, self._O)
+        else:
+            if signature is None:
+                raise ValueError("Either 'signature' or 'ontology_path' must be provided.")
+            self._sig = signature
+            self._O: set[GCI] | None = None
+            self._system_msg = (
+                "You are a precise ontology reasoning assistant. "
+                "Follow the output format exactly as specified. "
+                "Do not add any explanation, preamble, or punctuation beyond what is asked."
+            )
+
     # ------------------------------------------------------------------
-    # Oracle.signature
+    # Grounded system message (teaching step)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_grounded_system_message(sig: set[str], gcis: set[GCI]) -> str:
+        sig_str  = ", ".join(sorted(sig))
+        gcis_str = "\n".join(f"  {gci_to_manchester(g)}" for g in sorted(gcis, key=str))
+        return (
+            "You are a precise ontology reasoning assistant.\n"
+            "You have been given the following ontology O in Manchester syntax.\n\n"
+            f"Concept names: {sig_str}\n\n"
+            "Axioms:\n"
+            f"{gcis_str}\n\n"
+            "Answer questions about what O entails. "
+            "Follow the output format exactly as specified. "
+            "Do not add explanation, preamble, or punctuation beyond what is asked."
+        )
+
+    # ------------------------------------------------------------------
+    # Oracle.signature / Oracle.axioms
+    # ------------------------------------------------------------------
+
+    @property
+    def axioms(self) -> set[GCI]:
+        """The parsed target axioms — only available in grounded mode."""
+        if self._O is None:
+            raise AttributeError("axioms is only available when ontology_path was provided.")
+        return self._O
 
     @property
     def signature(self) -> set[str]:
@@ -273,15 +322,8 @@ class LLMOracle(Oracle):
 
     def _query(self, prompt: str, label: str = "QUERY") -> str:
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a precise ontology reasoning assistant. "
-                    "Follow the output format exactly as specified. "
-                    "Do not add any explanation, preamble, or punctuation beyond what is asked."
-                ),
-            },
-            {"role": "user", "content": prompt},
+            {"role": "system", "content": self._system_msg},
+            {"role": "user",   "content": prompt},
         ]
 
         # Cache lookup

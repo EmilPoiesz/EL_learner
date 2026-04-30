@@ -9,11 +9,15 @@ Usage
   python demo.py --ontology ontologies/medical.ttl
   python demo.py -v
 
-  # LLMOracle
+  # LLMOracle (parametric — uses the model's training knowledge)
   python demo.py --oracle llm
   python demo.py --oracle llm --device mps
   python demo.py --oracle llm --dry-run
   python demo.py --oracle llm -v
+
+  # LLMOracle in grounded mode (taught — ontology placed in system prompt)
+  python demo.py --oracle taught --ontology ontologies/medical.ttl
+  python demo.py --oracle taught --ontology ontologies/medical.owl --model <hf-model> --device mps
 """
 
 from __future__ import annotations
@@ -45,8 +49,8 @@ def _run_reasoner_demo(
 ) -> None:
     from learner.reasoner_oracle import ReasonerOracle
 
-    ttl_path    = os.path.join(os.path.dirname(os.path.abspath(__file__)), ontology)
-    project_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
+    ontology_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ontology)
+    project_dir   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
 
     _section("EL Learner — ReasonerOracle")
     print(f"\n  Ontology : {ontology}")
@@ -54,7 +58,7 @@ def _run_reasoner_demo(
 
     try:
         with ReasonerOracle(
-            path=ttl_path,
+            path=ontology_path,
             gateway_jar_dir=project_dir,
             reasoner=reasoner,
             oracle_skills={
@@ -100,6 +104,44 @@ def _run_and_report(oracle: Oracle, verbose: bool) -> None:
         print("  ✗  H ≢ O")
 
     print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
+
+
+# ---------------------------------------------------------------------------
+# Grounded (taught) LLMOracle demo
+# ---------------------------------------------------------------------------
+
+def _run_taught_llm_demo(ontology: str, model: str, device: str, verbose: bool) -> None:
+    from utils.java_utils import build_classpath
+    from learner.hypothesis_reasoner import HypothesisReasoner
+    from learner.llm_oracle import LLMOracle
+
+    ontology_path   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ontology)
+    gateway_jar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
+
+    _section(f"EL Learner — LLMOracle (grounded / taught)  ({model})")
+    print(f"\n  Ontology : {ontology}")
+    print(f"  Device   : {device}")
+
+    classpath = build_classpath(gateway_jar_dir)
+    print("\n  Starting ELK H-reasoner …")
+    h_reasoner = HypothesisReasoner(classpath, "elk")
+    print("  H-reasoner ready.")
+
+    print(f"\n  Loading model '{model}' …")
+    try:
+        with LLMOracle(
+            model_name_or_path=model,
+            signature=None,
+            h_reasoner=h_reasoner,
+            ontology_path=ontology_path,
+            device=device,
+            verbose=verbose,
+        ) as oracle:
+            print("  Model loaded.")
+            print(f"  Σ = {sorted(oracle.signature)}\n")
+            _run_and_report(oracle, verbose=verbose)
+    except Exception as exc:
+        print(f"\n  ✗  Failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +248,9 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--oracle", choices=["reasoner", "llm"], default="reasoner",
-        help="Oracle backend to use.",
+        "--oracle", choices=["reasoner", "llm", "taught"], default="reasoner",
+        help="Oracle backend: 'reasoner' (Java/ELK), 'llm' (parametric LLM), "
+             "'taught' (LLM grounded on the ontology file).",
     )
 
     # --- ReasonerOracle options ---
@@ -217,8 +260,8 @@ if __name__ == "__main__":
         help="DL reasoner (only used with --oracle reasoner).",
     )
     reasoner_grp.add_argument(
-        "--ontology", default="ontologies/medical.ttl",
-        help="Path to the target ontology Turtle file.",
+        "--ontology", default="ontologies/animals.owl",
+        help="Path to the target ontology file (.ttl Turtle or .owl RDF/XML).",
     )
 
     # --- LLMOracle options ---
@@ -245,6 +288,13 @@ if __name__ == "__main__":
         _run_reasoner_demo(
             ontology=args.ontology,
             reasoner=args.reasoner,
+            verbose=args.verbose,
+        )
+    elif args.oracle == "taught":
+        _run_taught_llm_demo(
+            ontology=args.ontology,
+            model=args.model,
+            device=args.device,
             verbose=args.verbose,
         )
     else:
