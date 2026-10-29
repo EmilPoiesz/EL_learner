@@ -1,22 +1,25 @@
+import itertools
 import logging
+import warnings
+from typing import Callable
 
 from rdflib import OWL, RDF, RDFS, Graph, Namespace, URIRef, BNode
 from rdflib.collection import Collection
 from learner.el_algorithm import ELConcept, GCI
 
 
-def _rdf_list(g: Graph, items: list) -> URIRef | BNode:
+def _rdf_list(g: Graph, items: list, new_bnode: Callable[[], BNode] = BNode) -> URIRef | BNode:
     """Build an RDF list using only rdf:first/rdf:rest, without rdf:type rdf:List.
 
-    Collection() adds rdf:type rdf:List to each list-head BNode, which triggers
-    a UserWarning in rdflib's pretty-xml serializer.  Building the list manually
-    avoids that while still producing rdf:parseType="Collection" in the output.
+    Collection() adds rdf:type rdf:List to each list node, an assertion rdflib's
+    pretty-xml serializer drops when it writes the list as
+    rdf:parseType="Collection".  With only rdf:first/rdf:rest nothing is dropped.
     """
     if not items:
         return RDF.nil
-    head = BNode()
+    head = new_bnode()
     g.add((head, RDF.first, items[0]))
-    g.add((head, RDF.rest, _rdf_list(g, items[1:])))
+    g.add((head, RDF.rest, _rdf_list(g, items[1:], new_bnode)))
     return head
 
 logger = logging.getLogger(__name__)
@@ -153,7 +156,8 @@ def parse_concept(g: Graph, node, sig: set[str] | None = None) -> ELConcept:
     raise ValueError(f"Unrecognised BNode structure at {node}")
 
 
-def _concept_to_rdf(g: Graph, concept: ELConcept, ns: Namespace):
+def _concept_to_rdf(g: Graph, concept: ELConcept, ns: Namespace,
+                    new_bnode: Callable[[], BNode] = BNode):
     if not concept.atoms and not concept.existentials:
         return OWL.Thing
 
@@ -161,19 +165,19 @@ def _concept_to_rdf(g: Graph, concept: ELConcept, ns: Namespace):
     for atom in sorted(concept.atoms):
         parts.append(ns[atom])
     for role, filler in sorted(concept.existentials, key=lambda x: (x[0], str(x[1]))):
-        restriction = BNode()
+        restriction = new_bnode()
         g.add((restriction, RDF.type, OWL.Restriction))
         g.add((restriction, OWL.onProperty, ns[role]))
-        filler_node = _concept_to_rdf(g, filler, ns)
+        filler_node = _concept_to_rdf(g, filler, ns, new_bnode)
         g.add((restriction, OWL.someValuesFrom, filler_node))
         parts.append(restriction)
 
     if len(parts) == 1:
         return parts[0]
 
-    intersection = BNode()
+    intersection = new_bnode()
     g.add((intersection, RDF.type, OWL.Class))
-    g.add((intersection, OWL.intersectionOf, _rdf_list(g, parts)))
+    g.add((intersection, OWL.intersectionOf, _rdf_list(g, parts, new_bnode)))
     return intersection
 
 
@@ -182,34 +186,37 @@ def save_ontology(
     path: str,
     namespace: str = "http://example.org/learned#",
 ) -> None:
-    """Serialize a set of GCIs to an OWL file (.ttl for Turtle, .owl/.xml for OWL/XML)."""
+    """
+    Serialize a set of GCIs to an OWL file: RDF/XML for .owl/.xml/.rdf, else Turtle.
+
+    Both formats hold the same graph (``_ontology_graph``): an ontology header,
+    a declaration of every class and object property, and the GCIs, ⊤ on either
+    side included.  Saving the same GCIs again gives the same file.
+    """
+    g = _ontology_graph(gcis, namespace)
     if path.endswith((".owl", ".xml", ".rdf")):
-        _save_owl_xml(gcis, path, namespace)
+        with warnings.catch_warnings():
+            # rdflib warns on every list it writes as a Collection that assertions
+            # other than rdf:first/rdf:rest are dropped; _rdf_list makes none.
+            warnings.filterwarnings("ignore", message="Assertions on .* other than RDF.first")
+            # base: names are written as #Name relative to the ontology IRI.
+            g.serialize(destination=path, format="pretty-xml", base=namespace.rstrip("#"))
     else:
-        _save_turtle(gcis, path, namespace)
+        g.serialize(destination=path, format="turtle")
     logger.info("Saved %d GCI(s) to %s", len(gcis), path)
 
 
-def _save_turtle(gcis: set[GCI], path: str, namespace: str) -> None:
-    g = Graph()
+def _ontology_graph(gcis: set[GCI], namespace: str) -> Graph:
+    """
+    The RDF graph of an OWL ontology holding *gcis*: an owl:Ontology header, an
+    owl:Class for every concept name and an owl:ObjectProperty for every role,
+    then one rdfs:subClassOf per GCI.  Blank nodes are numbered b1, b2, … in
+    the order of the sorted GCIs, so the output does not change between saves.
+    """
     ns = Namespace(namespace)
+    g = Graph()
     g.bind("ont", ns)
-    for gci in gcis:
-        lhs_node = _concept_to_rdf(g, gci.lhs, ns)
-        rhs_node = _concept_to_rdf(g, gci.rhs, ns)
-        g.add((lhs_node, RDFS.subClassOf, rhs_node))
-    g.serialize(destination=path, format="turtle")
-
-
-def _save_owl_xml(gcis: set[GCI], path: str, namespace: str) -> None:
-    """
-    Serialize GCIs to OWL/XML via owlready2, which produces clean output:
-    short #Name URIs, rdf:parseType="Collection", no random BNode IDs.
-    """
-    import owlready2 as owl2
-
-    base = namespace.rstrip("#")
-    onto = owl2.get_ontology(base)
+    g.add((URIRef(namespace.rstrip("#")), RDF.type, OWL.Ontology))
 
     concept_names: set[str] = set()
     role_names: set[str] = set()
@@ -223,28 +230,15 @@ def _save_owl_xml(gcis: set[GCI], path: str, namespace: str) -> None:
     for gci in gcis:
         _collect(gci.lhs)
         _collect(gci.rhs)
+    for name in sorted(concept_names):
+        g.add((ns[name], RDF.type, OWL.Class))
+    for role in sorted(role_names):
+        g.add((ns[role], RDF.type, OWL.ObjectProperty))
 
-    with onto:
-        classes = {n: owl2.types.new_class(n, (owl2.Thing,)) for n in sorted(concept_names)}
-        for cls in classes.values():
-            cls.is_a.remove(owl2.Thing)
-        roles = {r: owl2.types.new_class(r, (owl2.ObjectProperty,)) for r in sorted(role_names)}
-
-        def _expr(c: ELConcept):
-            parts = [classes[a] for a in sorted(c.atoms)]
-            for role, filler in sorted(c.existentials, key=lambda x: (x[0], str(x[1]))):
-                parts.append(roles[role].some(_expr(filler)))
-            if not parts:
-                return owl2.Thing
-            return parts[0] if len(parts) == 1 else owl2.And(parts)
-
-        for gci in sorted(gcis, key=str):
-            lhs_e = _expr(gci.lhs)
-            rhs_e = _expr(gci.rhs)
-            if isinstance(lhs_e, owl2.ThingClass):
-                lhs_e.is_a.append(rhs_e)
-            else:
-                gca = owl2.GeneralClassAxiom(lhs_e)
-                gca.is_a.append(rhs_e)
-
-    onto.save(file=path, format="rdfxml")
+    counter = itertools.count(1)
+    new_bnode = lambda: BNode(f"b{next(counter)}")
+    for gci in sorted(gcis, key=str):
+        lhs = _concept_to_rdf(g, gci.lhs, ns, new_bnode)
+        rhs = _concept_to_rdf(g, gci.rhs, ns, new_bnode)
+        g.add((lhs, RDFS.subClassOf, rhs))
+    return g

@@ -60,8 +60,8 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 │       ├── backend.py           # SQLiteCacheBackend — persistent SQLite storage
 │       └── cache.py             # LLMCache — two-level cache (in-memory + SQLite)
 ├── utils/
-│   ├── java_utils.py            # Jar discovery and gateway lifecycle utilities
-│   └── owl_parser.py            # OWL/Turtle ontology parser (rdflib-based)
+│   ├── java_utils.py            # Java and jar discovery, gateway lifecycle, load_ontology (OWL API read)
+│   └── owl_parser.py            # OWL/Turtle ontology parser and writer (rdflib-based)
 ├── java/
 │   ├── OWLGateway.java          # Java gateway process exposing load_file, add_gci, entails, clear over py4j
 │   ├── OWLGateway.class         # Compiled gateway (generated, git-ignored)
@@ -69,7 +69,12 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 ├── tests/
 │   ├── conftest.py              # Pytest fixtures and --reasoner CLI option
 │   ├── test_el_algorithm.py     # Unit and integration tests
-│   └── test_cache.py            # Unit tests for the LLMCache layer
+│   ├── test_cache.py            # Unit tests for the LLMCache layer
+│   ├── test_llm_oracle.py       # LLMOracle prompts, answer parsing and caching, without a model
+│   ├── test_pac.py              # PAC sampling and the paper prompt style
+│   ├── test_evaluation.py       # The paper's score, the OWL API read, upstream's counts
+│   ├── test_java_utils.py       # Gateway start-up, pipe draining, find_java
+│   └── test_owl_parser.py       # save_ontology round trip in both formats
 ├── ontologies/
 │   ├── medical.ttl              # Example medical ontology
 │   ├── test_minimal.ttl         # Minimal ontology used by the test suite
