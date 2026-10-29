@@ -50,8 +50,10 @@ class PACSampler:
       3. ∃r.A ⊑ B
 
     Three indices are drawn over concept names + roles; an index triple that
-    fits none of the shapes is redrawn.  Sample i uses ``random.Random(seed + i)``,
-    so the sequence is reproducible and does not depend on how many EQs drew it.
+    fits none of the shapes is redrawn.  ``top`` adds ⊤ (owl:Thing) as one
+    more concept name, as upstream does when the ontology mentions it.  Sample
+    i uses ``random.Random(seed + i)``, so the sequence is reproducible and
+    does not depend on how many EQs drew it.
     Python's generator differs from Java's, so the statements are not the same
     ones upstream draws, only drawn the same way.
     """
@@ -64,8 +66,10 @@ class PACSampler:
         delta: float = 0.1,
         hypothesis_size: int = 1,
         seed: int = 0,
+        top: bool = False,
     ):
-        self.classes = [ELConcept({c}) for c in sorted(classes)]
+        # ⊤ is the empty conjunction, so A ⊓ ⊤ is A and ∃r.⊤ needs no special case.
+        self.classes = [ELConcept({c}) for c in sorted(classes)] + ([ELConcept()] if top else [])
         self.roles = sorted(roles)
         self.epsilon = epsilon
         self.delta = delta
@@ -121,13 +125,17 @@ class PACOracle(Oracle):
     inner : Oracle
         The oracle answering MQs (an LLMOracle, or a ReasonerOracle for testing).
     roles : set[str]
-        Role names to sample with; ``None`` takes those in ``inner.axioms``.
+        Role names to sample with; ``None`` takes ``inner.roles`` when the inner
+        oracle has them (ReasonerOracle), else those in ``inner.axioms``.
     epsilon, delta : float
         PAC accuracy and confidence; upstream defaults 0.2 and 0.1.
     hypothesis_size : int | None
         h in the budget; ``None`` takes the number of GCIs in ``inner.axioms``.
+        Upstream's h counts an equivalence once (``OntologyInfo.size``).
     seed : int
         Seed of the statement sequence (upstream: 0).
+    top : bool
+        Sample with ⊤ as one more concept name (``OntologyInfo.top``).
     """
 
     def __init__(
@@ -138,14 +146,15 @@ class PACOracle(Oracle):
         delta: float = 0.1,
         hypothesis_size: Optional[int] = None,
         seed: int = 0,
+        top: bool = False,
     ):
         super().__init__()
         self.inner = inner
         if roles is None:
-            roles = role_names(inner.axioms)
+            roles = getattr(inner, "roles", None) or role_names(inner.axioms)
         if hypothesis_size is None:
             hypothesis_size = len(inner.axioms)
-        self.sampler = PACSampler(inner.signature, roles, epsilon, delta, hypothesis_size, seed)
+        self.sampler = PACSampler(inner.signature, roles, epsilon, delta, hypothesis_size, seed, top)
         self.sample_mq_count = 0
         self._H_MQ: Optional[Callable[[GCI], bool]] = None
         logger.info(

@@ -17,6 +17,7 @@ find_java()                   — a java executable new enough for OWLGateway (J
 Gateway lifecycle
 -----------------
 start_gateway(proc)           — block until the gateway prints READY:<port>, return the port
+load_ontology(owl, path)      — load an ontology file into a gateway, return its OntologyInfo
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from functools import cache
 
 import owlready2
@@ -255,4 +257,37 @@ def start_gateway(proc: subprocess.Popen, timeout: float = 10.0) -> int:
     raise RuntimeError(
         "OWLGateway failed to start."
         + (f"\nJava stderr:\n{stderr_str}" if stderr_str else "")
+    )
+
+
+@dataclass(frozen=True)
+class OntologyInfo:
+    """
+    An ontology file as the OWL API reads it (``load_ontology``), which is how the
+    original ExactLearner-LLM reads it.
+
+    classes : concept names (local names), without owl:Thing
+    roles   : object property names
+    top     : the file mentions owl:Thing, so upstream counts it among the classes
+    size    : upstream's ontology size, the h of its PAC budget (an equivalence counts once)
+    """
+    classes: frozenset[str]
+    roles: frozenset[str]
+    top: bool
+    size: int
+
+
+def load_ontology(owl, path: str) -> OntologyInfo:
+    """
+    Load the ontology file at *path* into the gateway *owl* (a py4j entry point)
+    as its whole ontology, and return what the OWL API sees in it.  Afterwards the
+    gateway's ``entails`` reasons over every axiom of the file that its reasoner
+    supports, including those our EL parser skips (e.g. nominals in generations.owl).
+    """
+    owl.load_file(os.path.abspath(path))
+    return OntologyInfo(
+        classes=frozenset(owl.class_names()),
+        roles=frozenset(owl.role_names()),
+        top=bool(owl.mentions_thing()),
+        size=int(owl.ontology_size()),
     )

@@ -12,6 +12,7 @@ of LLMOracle, without a reasoner or a model.
 6  paper_is_true is upstream's isStrictlyTrue
 7  paper MQ: H-entailed GCI answered without the model
 8  paper MQ: right-hand conjunction asked per conjunct, skipping those H entails
+9  top: ⊤ (owl:Thing) is one more concept name, in |X| and in the statements
 """
 
 from __future__ import annotations
@@ -177,3 +178,18 @@ def test_8_paper_mq_splits_conjunction(tmp_path):
     assert oracle.MQ(GCI(lhs, rhs)) is False
     assert oracle._pipe.prompts == ["A SubClassOf C", "A SubClassOf (r some D)"]
 
+
+def test_9_top_is_one_more_concept_name():
+    s = PACSampler(CLASSES, ROLES, hypothesis_size=40, top=True)
+    cn, rn = len(CLASSES) + 1, len(ROLES)
+    assert s.instance_space_size == cn * cn * (cn - 1) + 2 * cn * cn * rn
+    top = ELConcept()
+    statements = [g for g in iter(s.next_statement, None)]
+    concepts = {g.lhs for g in statements} | {g.rhs for g in statements}
+    concepts |= {f for g in statements for _, f in g.lhs.existentials | g.rhs.existentials}
+    assert top in concepts                                    # ⊤ ⊑ C, A ⊑ ⊤, ∃r.⊤, ...
+    for g in statements:                                      # A ⊓ ⊤ is just A
+        assert g.lhs.atoms <= CLASSES and g.rhs.atoms <= CLASSES
+    # Without top the same seed never draws ⊤.
+    plain = PACSampler(CLASSES, ROLES, hypothesis_size=40)
+    assert all(top not in (g.lhs, g.rhs) for g in iter(plain.next_statement, None))

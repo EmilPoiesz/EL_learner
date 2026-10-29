@@ -4,7 +4,7 @@ import subprocess
 from py4j.java_gateway import JavaGateway, GatewayParameters
 
 from learner.el_algorithm import GCI
-from utils.java_utils import encode, find_java, start_gateway
+from utils.java_utils import OntologyInfo, encode, find_java, load_ontology, start_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,11 @@ class HypothesisReasoner:
         # remains entailed after any further axiom is added — cached True values
         # never go stale.
         self._entailed_cache: set[GCI] = set()
+
+    def load_ontology(self, path: str) -> OntologyInfo:
+        """Reason over the ontology file at *path* (read by the OWL API) instead of H."""
+        self._entailed_cache.clear()
+        return load_ontology(self._owl, path)
 
     def add(self, gci: GCI) -> None:
         self._owl.add_gci(encode(gci.lhs), encode(gci.rhs))

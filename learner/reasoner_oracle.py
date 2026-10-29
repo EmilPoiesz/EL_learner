@@ -8,7 +8,9 @@ from py4j.java_gateway import JavaGateway, GatewayParameters
 from learner.el_algorithm import Oracle, ELConcept, GCI
 from typing import Optional
 
-from utils.java_utils import encode, find_elk_jar, find_java, find_log4j_jars, find_owlapi_jar, find_py4j_jar, start_gateway
+from utils.java_utils import (OntologyInfo, encode, find_elk_jar, find_java, find_log4j_jars,
+                              find_owlapi_jar, find_py4j_jar, load_ontology, start_gateway)
+from learner.evaluation import all_statements
 from learner.hypothesis_reasoner import HypothesisReasoner
 from utils.owl_parser import extract_ontology
 
@@ -24,10 +26,17 @@ class ReasonerOracle(Oracle):
     An Oracle backed by the OWL API and a configurable DL reasoner via a py4j gateway.
 
     The gateway is a small Java process (OWLGateway.java) that wraps
-    OWL API + the chosen reasoner and exposes three methods over py4j:
+    OWL API + the chosen reasoner and exposes these methods over py4j:
+      - load_file(path)            — load the target ontology file
       - add_gci(lhs_str, rhs_str)  — load an axiom
       - entails(lhs_str, rhs_str)  — subsumption query
       - clear()                    — reset the ontology
+
+    MQs are answered on the file as the OWL API reads it, so they also use the
+    axioms our EL parser skips (e.g. the nominals of generations.owl); the
+    signature, ``roles``, ``top`` and ``ontology_size`` come from the same read
+    (``info``).  ``axioms`` stays the parsed EL GCIs, which the EQ and the oracle
+    skills need as GCIs.
 
     Parameters
     ----------
@@ -56,7 +65,10 @@ class ReasonerOracle(Oracle):
         seed: int | None = 0,
     ):
         super().__init__()
-        self._sig, self._O = extract_ontology(path)
+        # Axioms of the file the parsed GCIs leave out (not EL GCIs); O-reasoning
+        # still uses them, since the O-reasoner reads the file itself.
+        self.skipped_axioms: list[str] = []
+        self._sig, self._O = extract_ontology(path, self.skipped_axioms)
         # O in a fixed order: set iteration order changes per process, and the
         # first unentailed axiom of O is the base counterexample.
         self._O_sorted: list[GCI] = sorted(self._O, key=str)
@@ -95,9 +107,9 @@ class ReasonerOracle(Oracle):
             )
             self._owl = self._gw.entry_point
 
-            # Load all O-axioms into the O-reasoner
-            for gci in self._O:
-                self._owl.add_gci(encode(gci.lhs), encode(gci.rhs))
+            # The O-reasoner reasons over the file itself; Σ is the OWL API's class signature.
+            self.info: OntologyInfo = load_ontology(self._owl, path)
+            self._sig = set(self.info.classes)
 
             # Start a second gateway for H-entailment
             self._h_reasoner = HypothesisReasoner(classpath, self._reasoner_type)
@@ -147,6 +159,11 @@ class ReasonerOracle(Oracle):
     def axioms(self) -> set[GCI]:
         """The set of GCIs parsed from the target ontology file."""
         return self._O
+
+    @property
+    def roles(self) -> set[str]:
+        """The file's object property names (OWL API)."""
+        return set(self.info.roles)
 
     def make_H_MQ(self, H):
         """Return the H-reasoner as the H-entailment callable."""
@@ -269,9 +286,13 @@ class ReasonerOracle(Oracle):
         or None if H ≡ O.
 
         A base counterexample is first found by scanning O for a GCI not yet
-        entailed by H.  Then each enabled oracle skill is applied with its
-        configured probability, potentially producing a structurally different
-        GCI that is still valid (O-entailed, H-not-entailed).
+        entailed by H.  When the file has axioms the parsed GCIs leave out
+        (``skipped_axioms``, e.g. generations.owl's nominal definitions), O
+        entails more than those GCIs, so once H entails all of them the scan
+        continues over the paper's statements (``learner.evaluation.all_statements``)
+        for one that O entails and H does not.  Then each enabled oracle skill is
+        applied with its configured probability, potentially producing a
+        structurally different GCI that is still valid (O-entailed, H-not-entailed).
 
         Oracle skills are configured via the ``oracle_skills`` constructor
         parameter, e.g.::
@@ -289,6 +310,12 @@ class ReasonerOracle(Oracle):
             if not self._h_reasoner.entails(o_gci):
                 base = o_gci
                 break
+        if base is None and self.skipped_axioms:
+            # The parsed GCIs are not all of O: look for what else O entails.
+            for statement in all_statements(self.info.classes, self.info.roles, self.info.top):
+                if self._MQ(statement) and not self._h_reasoner.entails(statement):
+                    base = statement
+                    break
 
         # Direction 2: H ⊄ O — find a GCI in H not entailed by O
         if base is None:

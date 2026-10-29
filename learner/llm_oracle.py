@@ -236,7 +236,7 @@ class LLMOracle(Oracle):
     signature : set[str] | None
         Σ_O — the set of atomic concept names in the target ontology.
         Required when ``ontology_path`` is not given; when both are given,
-        ``signature`` wins.
+        ``signature`` wins (e.g. the OWL API's, ``utils.java_utils.load_ontology``).
     h_reasoner : HypothesisReasoner
         A running HypothesisReasoner instance that will be kept in sync
         with H and used to answer H-entailment queries.
@@ -316,7 +316,9 @@ class LLMOracle(Oracle):
 
         if ontology_path is not None:
             from utils.owl_parser import extract_ontology
-            parsed_sig, self._O = extract_ontology(ontology_path)
+            # Axioms the parsed GCIs leave out; the taught prompt does not show them.
+            self.skipped_axioms: list[str] = []
+            parsed_sig, self._O = extract_ontology(ontology_path, self.skipped_axioms)
             self._sig = set(signature) if signature is not None else parsed_sig
             self._roles: set[str] = set(roles) if roles is not None else self._extract_roles(self._O)
             if include_axioms:

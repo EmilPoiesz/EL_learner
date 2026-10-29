@@ -31,9 +31,12 @@ import argparse
 import logging
 import os
 import sys
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from learner.el_algorithm import ELConcept, GCI, Oracle, learn_el_terminology
+
+if TYPE_CHECKING:
+    from utils.java_utils import OntologyInfo
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -45,15 +48,20 @@ def _section(title: str) -> None:
     print("=" * 60)
 
 
-def _with_eq(oracle: Oracle, eq: str, epsilon: float, delta: float, seed: int | None) -> Oracle:
-    """Wrap *oracle* in PAC-sampling equivalence queries when ``eq == "pac"``."""
+def _with_eq(oracle: Oracle, eq: str, epsilon: float, delta: float, seed: int | None,
+             info: OntologyInfo) -> Oracle:
+    """Wrap *oracle* in PAC-sampling equivalence queries when ``eq == "pac"``, over
+    the ontology as the OWL API reads it (*info*): its roles, owl:Thing as a concept
+    name when the file mentions it, and upstream's h."""
     if eq != "pac":
         return oracle
     from learner.pac import PACOracle
-    pac = PACOracle(oracle, epsilon=epsilon, delta=delta, seed=seed or 0)
+    pac = PACOracle(oracle, roles=set(info.roles), epsilon=epsilon, delta=delta,
+                    hypothesis_size=info.size, seed=seed or 0, top=info.top)
     s = pac.sampler
     print(f"  EQ       : PAC sampling, ε={epsilon} δ={delta} seed={s.seed}, "
-          f"|X|={s.instance_space_size}, budget {s.budget} statements")
+          f"|X|={s.instance_space_size}, budget {s.budget} statements (h={info.size})"
+          + (", owl:Thing among the concept names" if info.top else ""))
     return pac
 
 
@@ -93,15 +101,19 @@ def _run_reasoner_demo(
                 "compose_right":    0.6,
             },
         ) as oracle:
-            _run_and_report(_with_eq(oracle, eq, epsilon, delta, seed), verbose=verbose, output=output)
+            _run_and_report(_with_eq(oracle, eq, epsilon, delta, seed, oracle.info), verbose=verbose,
+                            output=output, info=oracle.info)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
     return True
 
 
-def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, judge: Callable[[GCI], bool] | None = None) -> None:
-    """Run the learner and print a comparison report against oracle.axioms."""
+def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, judge: Callable[[GCI], bool] | None = None,
+                    info: OntologyInfo | None = None) -> None:
+    """Run the learner and print a comparison report against oracle.axioms.
+    ``info``: the ontology as the OWL API reads it, whose classes (with owl:Thing
+    when the file mentions it) and roles the paper metric is computed over."""
     # With PAC sampling the sample budget bounds the run; every counterexample is
     # one iteration, so a cap of 50 would cut a yes-biased LLM's run short.
     max_iterations = 100_000 if getattr(oracle, "sampler", None) is not None else 50
@@ -135,13 +147,25 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
     # The original ExactLearner-LLM's score: H vs O on every statement of four shapes.
     from learner.evaluation import score_ontology
     from learner.pac import role_names
-    score = score_ontology(O_MQ, H_MQ, oracle.signature, role_names(target_O))
+    if info is not None:
+        score = score_ontology(O_MQ, H_MQ, info.classes, info.roles, info.top)
+    else:
+        score = score_ontology(O_MQ, H_MQ, oracle.signature, role_names(target_O))
 
-    if not missing and not extra:
+    # The parsed GCIs (target_O) are the file's EL GCIs only; O reasons over the
+    # whole file.  Completeness then also needs H to entail every statement O does.
+    skipped = getattr(getattr(oracle, "inner", oracle), "skipped_axioms", [])
+    if skipped:
+        print(f"\n  Note: {len(skipped)} axiom(s) of the file are not EL GCIs and not among the "
+              f"parsed axioms (|O| = {len(target_O)}); O-reasoning uses them. Completeness is "
+              "checked on the parsed axioms and on the paper's statements.")
+    if not missing and not extra and not score.fn:
         print("  ✓  H ≡ O")
     else:
         print("  ✗  H ≢ O")
         for g in missing: print(f"      missing: {g}")
+        if score.fn:
+            print(f"      missing: {score.fn} of the paper's statements that O entails")
         for g in extra:   print(f"      extra:   {g}")
 
     print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
@@ -206,27 +230,29 @@ def _run_grounded_llm_demo(
 
     print(f"\n  Loading model '{model}' …")
     try:
-        with LLMOracle(
-            model_name_or_path=model,
-            signature=None,
-            h_reasoner=h_reasoner,
-            ontology_path=ontology_path,
-            include_axioms=include_axioms,
-            prompt_style=prompt_style,
-            device=device,
-            verbose=verbose,
-            # None keeps LLMOracle's default budget.
-            **({} if max_new_tokens is None else {"max_new_tokens": max_new_tokens}),
-        ) as oracle:
-            print("  Model loaded.")
-            print(f"  Σ = {sorted(oracle.signature)}")
-            learner_oracle = _with_eq(oracle, eq, epsilon, delta, seed)
-            print()
-            # Soundness is judged by ELK on O's axioms, not by the model's own MQs.
-            with HypothesisReasoner(classpath, "elk") as judge:
-                for gci in oracle.axioms:
-                    judge.add(gci)
-                _run_and_report(learner_oracle, verbose=verbose, output=output, judge=judge)
+        # The judge reasons over the ontology file as the OWL API reads it, which is
+        # also where the signature, the roles and the PAC budget's h come from.
+        with HypothesisReasoner(classpath, "elk") as judge:
+            info = judge.load_ontology(ontology_path)
+            with LLMOracle(
+                model_name_or_path=model,
+                signature=set(info.classes),
+                roles=set(info.roles),
+                h_reasoner=h_reasoner,
+                ontology_path=ontology_path,
+                include_axioms=include_axioms,
+                prompt_style=prompt_style,
+                device=device,
+                verbose=verbose,
+                # None keeps LLMOracle's default budget.
+                **({} if max_new_tokens is None else {"max_new_tokens": max_new_tokens}),
+            ) as oracle:
+                print("  Model loaded.")
+                print(f"  Σ = {sorted(oracle.signature)}")
+                print(f"  Roles = {sorted(info.roles)}")
+                learner_oracle = _with_eq(oracle, eq, epsilon, delta, seed, info)
+                print()
+                _run_and_report(learner_oracle, verbose=verbose, output=output, judge=judge, info=info)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False

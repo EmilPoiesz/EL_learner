@@ -22,9 +22,30 @@ def _rdf_list(g: Graph, items: list) -> URIRef | BNode:
 logger = logging.getLogger(__name__)
 
 
-def extract_ontology(path: str) -> tuple[set[str], set[GCI]]:
+# Role axioms the parsed GCIs cannot hold.  The reasoners read them from the file
+# (ELK uses ranges and role inclusions, for instance), so O may entail more than
+# the parsed GCIs do.
+_ROLE_AXIOM_PREDICATES = (RDFS.domain, RDFS.range, RDFS.subPropertyOf, OWL.inverseOf,
+                          OWL.equivalentProperty, OWL.propertyChainAxiom)
+_ROLE_CHARACTERISTICS = (OWL.FunctionalProperty, OWL.InverseFunctionalProperty, OWL.TransitiveProperty,
+                         OWL.SymmetricProperty, OWL.AsymmetricProperty, OWL.ReflexiveProperty,
+                         OWL.IrreflexiveProperty)
+
+
+def extract_ontology(path: str, skipped: list[str] | None = None) -> tuple[set[str], set[GCI]]:
+    """
+    The signature and the EL GCIs of the ontology file at *path*.
+
+    Axioms that are not EL GCIs (e.g. definitions with owl:hasValue nominals,
+    role domains and ranges) are left out, with a warning; when *skipped* is a
+    list, a short description of each is appended to it.  Raises ValueError when
+    two IRIs share a local name, since names are identified by local name.
+    """
     g = Graph()
     g.parse(path)
+    _check_local_names(g, path)
+    if skipped is None:
+        skipped = []
 
     sig: set[str] = set()
     gcis: set[GCI] = set()
@@ -36,7 +57,9 @@ def extract_ontology(path: str) -> tuple[set[str], set[GCI]]:
             rhs = parse_concept(g, obj, sig)
             gcis.add(GCI(lhs=lhs, rhs=rhs))
         except ValueError as exc:
-            logger.warning("Skipping unrecognised SubClassOf triple: %s", exc)
+            skipped.append(f"SubClassOf of {_describe(subj)}: {exc}")
+            logger.warning("SubClassOf axiom outside EL, left out of the parsed GCIs "
+                           "(the reasoners still read it from the file): %s", exc)
 
     # owl:equivalentClass expands to two GCIs in both directions
     for subj, _, obj in g.triples((None, OWL.equivalentClass, None)):
@@ -46,9 +69,43 @@ def extract_ontology(path: str) -> tuple[set[str], set[GCI]]:
             gcis.add(GCI(lhs=a, rhs=b))
             gcis.add(GCI(lhs=b, rhs=a))
         except ValueError as exc:
-            logger.warning("Skipping unrecognised EquivalentClass triple: %s", exc)
+            skipped.append(f"EquivalentClasses of {_describe(subj)}: {exc}")
+            logger.warning("EquivalentClass axiom outside EL, left out of the parsed GCIs "
+                           "(the reasoners still read it from the file): %s", exc)
+
+    role_axioms = [f"{local_name(p)} of {_describe(s)}"
+                   for p in _ROLE_AXIOM_PREDICATES for s in g.subjects(p, None)]
+    role_axioms += [f"{local_name(t)} {_describe(s)}"
+                    for t in _ROLE_CHARACTERISTICS for s in g.subjects(RDF.type, t)]
+    if role_axioms:
+        skipped.extend(sorted(role_axioms))
+        logger.warning("%d role axiom(s) left out of the parsed GCIs (the reasoners still "
+                       "read them from the file): %s", len(role_axioms), ", ".join(sorted(role_axioms)))
 
     return sig, gcis
+
+
+def _describe(node) -> str:
+    return local_name(node) if isinstance(node, URIRef) else "an anonymous class"
+
+
+def _check_local_names(g: Graph, path: str) -> None:
+    """
+    Raise ValueError when two IRIs of *g* share a local name.  Concept and role
+    names are identified by local name (here and in the Java gateway), so two
+    such IRIs would silently become one name.  The W3C vocabularies are not names.
+    """
+    iris: dict[str, set[str]] = {}
+    for triple in g:
+        for node in triple:
+            if isinstance(node, URIRef) and not str(node).startswith("http://www.w3.org/"):
+                iris.setdefault(local_name(node), set()).add(str(node))
+    clashes = {name: sorted(found) for name, found in iris.items() if len(found) > 1 and name}
+    if clashes:
+        raise ValueError(
+            f"{path}: IRIs share a local name, which would merge them into one name: "
+            + "; ".join(f"{name}: {', '.join(found)}" for name, found in sorted(clashes.items()))
+        )
 
 
 def local_name(uri: URIRef) -> str:

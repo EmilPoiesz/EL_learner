@@ -63,8 +63,8 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 │   ├── java_utils.py            # Jar discovery and gateway lifecycle utilities
 │   └── owl_parser.py            # OWL/Turtle ontology parser (rdflib-based)
 ├── java/
-│   ├── OWLGateway.java          # Java gateway process exposing add_gci, entails, clear over py4j
-│   ├── OWLGateway.class         # Compiled gateway (Java 11)
+│   ├── OWLGateway.java          # Java gateway process exposing load_file, add_gci, entails, clear over py4j
+│   ├── OWLGateway.class         # Compiled gateway (generated, git-ignored)
 │   └── java_env.bash            # Helper script to recompile OWLGateway.java
 ├── tests/
 │   ├── conftest.py              # Pytest fixtures and --reasoner CLI option
@@ -144,16 +144,17 @@ The core of the learner is `learn_el_terminology` in `el_algorithm.py`.  When a 
 
 ### Java gateway (ReasonerOracle only)
 
-`ReasonerOracle` relies on Java reasoners (ELK and HermiT) which have no Python bindings. Communication happens via **py4j**, which runs a small Java process (`OWLGateway`) that listens on a local TCP port and exposes three methods to Python:
+`ReasonerOracle` relies on Java reasoners (ELK and HermiT) which have no Python bindings. Communication happens via **py4j**, which runs a small Java process (`OWLGateway`) that listens on a local TCP port and exposes these methods to Python:
 
+- `load_file(path)` — load an ontology file through the OWL API, replacing the ontology; `class_names()`, `role_names()`, `mentions_thing()` and `ontology_size()` then describe it
 - `add_gci(lhs, rhs)` — load an axiom into the reasoner
 - `entails(lhs, rhs)` — subsumption query
 - `clear()` — reset the ontology
 
 `ReasonerOracle` starts two separate gateway processes:
 
-- **O-reasoner** — holds the target ontology O, used to answer MQ
-- **H-reasoner** (`HypothesisReasoner`) — holds the current hypothesis H, used during EQ
+- **O-reasoner** — holds the target ontology file as the OWL API reads it, used to answer MQ
+- **H-reasoner** (`HypothesisReasoner`) — holds the current hypothesis H, answers every H-entailment check (`H_MQ`) made by the learner (counterexample normalisation, decomposition, left saturation) and by the oracle's EQ
 
 Concepts are serialised as strings when passed over the py4j bridge (see [Concept encoding](#concept-encoding-python--java) below).
 
@@ -449,9 +450,16 @@ python demo.py --oracle parametric --ontology ontologies/animals.owl \
 python demo.py --eq pac                              # PAC sampling with ELK as the oracle
 ```
 
-**PAC sampling.** An equivalence query draws random statements of the shapes `A ⊓ B ⊑ C`, `B ⊑ ∃r.A` and `∃r.A ⊑ B` over the signature and roles. It returns the first statement that H does not entail and the oracle's MQ does. If no such statement turns up within the budget `round((h·ln|X| − ln δ)/ε)` (|X| = cn²(cn−1) + 2·cn²·rn; h = the number of GCIs in the ontology; defaults ε = 0.2, δ = 0.1, seed 0, as upstream), H is accepted. The budget is shared by all equivalence queries of a run. Sample *i* is drawn from `random.Random(seed + i)`, so the sequence is reproducible, though not the same statements as upstream's Java generator draws. The run report adds `PAC samples: used of budget | MQs while sampling`; these MQs are not counted in `MQ calls`.
+**Reading the ontology.** As upstream, the ontology file is read through the OWL API (`utils.java_utils.load_ontology`, which returns an `OntologyInfo`). The signature, the roles and the ontology size come from that read, and the O-reasoner and the soundness judge reason over the whole file. ELK uses what it supports of it, including the single-individual nominals of `generations.owl` (`Female ≡ ∃hasSex.{FemaleSex}`), which plain EL cannot express. Our EL parser leaves such axioms out of the parsed GCIs (`oracle.axioms`), with a warning, and lists them in `oracle.skipped_axioms`: for `generations.owl`, the 13 nominal definitions and 4 role axioms (a range, an inverse, a functional and a symmetric role). Where the parsed GCIs are used, this is accounted for:
+- `ReasonerOracle`'s own equivalence query (`--eq oracle`) does not stop when H entails every parsed GCI: if the file has skipped axioms, it then looks for a statement of the paper's four shapes that O entails and H does not, and returns that as the counterexample. With ELK on `generations.owl`, H then entails all 1159 statements, not 88% of them.
+- The demo's completeness check also requires H to entail every such statement, and notes how many axioms were left out.
+- **Limitation:** the taught prompt (`--oracle taught`) lists only the parsed GCIs, so the model is not shown the skipped axioms.
 
-PAC learning guarantees only that H agrees with O on most randomly drawn statements, not that H ≡ O. Even with ELK as the oracle, axioms that are rarely drawn are usually missed. On `animals.owl` (|X| = 6936, budget 675) the learner finds 1 counterexample and misses 9 of the 15 axioms.
+Names are identified by their local name (the part after `#`, or after the last `/`). A file in which two IRIs share a local name is refused, by the parser and by the gateway, rather than merging them. When the file mentions `owl:Thing`, upstream counts it among the classes; so do the PAC sampler and the score here (football, generations).
+
+**PAC sampling.** An equivalence query draws random statements of the shapes `A ⊓ B ⊑ C`, `B ⊑ ∃r.A` and `∃r.A ⊑ B` over the signature and roles. It returns the first statement that H does not entail and the oracle's MQ does. If no such statement turns up within the budget `round((h·ln|X| − ln δ)/ε)` (|X| = cn²(cn−1) + 2·cn²·rn; h = upstream's ontology size, its SubClassOf, EquivalentClasses and a few other axioms with an equivalence counted once; defaults ε = 0.2, δ = 0.1, seed 0, as upstream), H is accepted. The budget is shared by all equivalence queries of a run. Sample *i* is drawn from `random.Random(seed + i)`, so the sequence is reproducible, though not the same statements as upstream's Java generator draws. The run report adds `PAC samples: used of budget | MQs while sampling`; these MQs are not counted in `MQ calls`.
+
+PAC learning guarantees only that H agrees with O on most randomly drawn statements, not that H ≡ O. Even with ELK as the oracle, axioms that are rarely drawn are usually missed. On `animals.owl` (|X| = 6936, h = 12, budget 542) the learner finds 1 counterexample and misses 9 of the 15 axioms.
 
 ---
 

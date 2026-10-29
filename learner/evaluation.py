@@ -14,6 +14,13 @@ it" as the positive class:
 
 For animals.owl (17 concept names, 4 roles) that is 4624 statements, 272 of
 them entailed by O; the paper's Mistral recall of 271/272 = 0.99632 fits.
+
+Upstream takes the names from the OWL API's class signature, which holds
+owl:Thing whenever the file mentions it (football.owl: ``Game ⊑ owl:Thing``).
+``top`` adds ⊤ as one more name to match: football then has 1050 statements,
+163 entailed, as upstream counts.  Pass the names of ``OntologyInfo`` and an
+O-entailment over the raw file (``load_ontology``) to get upstream's counts
+for generations.owl too (7000 statements, 1159 entailed).
 """
 
 from __future__ import annotations
@@ -25,9 +32,10 @@ from typing import Callable, Iterable, Iterator
 from learner.el_algorithm import ELConcept, GCI
 
 
-def all_statements(classes: Iterable[str], roles: Iterable[str]) -> Iterator[GCI]:
-    """The four statement shapes over the given names, in a fixed order."""
-    cs = [ELConcept({c}) for c in sorted(classes)]
+def all_statements(classes: Iterable[str], roles: Iterable[str], top: bool = False) -> Iterator[GCI]:
+    """The four statement shapes over the given names (and ⊤ with ``top``), in a fixed order."""
+    # ⊤ is the empty conjunction: ⊤ ⊓ B is B, and ∃r.⊤ is an ordinary existential.
+    cs = [ELConcept({c}) for c in sorted(classes)] + ([ELConcept()] if top else [])
     rs = sorted(roles)
     for a in cs:
         for b in cs:
@@ -81,10 +89,11 @@ def score_ontology(
     H_entails: Callable[[GCI], bool],
     classes: Iterable[str],
     roles: Iterable[str],
+    top: bool = False,
 ) -> OntologyScore:
     """Compare H with O on every statement of ``all_statements``."""
     score = OntologyScore()
-    for gci in all_statements(classes, roles):
+    for gci in all_statements(classes, roles, top):
         o, h = O_entails(gci), H_entails(gci)
         if o and h:
             score.tp += 1
