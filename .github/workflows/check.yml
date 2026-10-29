@@ -46,7 +46,7 @@ jobs:
 
       - name: Restore Python dependencies
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Download ELK reasoner jar
         run: |
@@ -60,22 +60,21 @@ jobs:
           sys.path.insert(0, '.')
           from utils.java_utils import build_classpath
           cp = build_classpath('java')
-          subprocess.run(['javac', '-cp', cp, 'java/OWLGateway.java'], check=True)
+          subprocess.run(['javac', '--release', '11', '-cp', cp, 'java/OWLGateway.java'], check=True)
           "
         shell: bash
 
-      - name: Generate coverage report
+      - name: Run tests with coverage
+        # Both reasoners, as locally; the second run adds to the first one's coverage.
         run: |
-          pip install pytest
-          pip install pytest-cov
-          pytest --cov=./ --cov-report=xml --ignore=tests --cov-config=.coveragerc
-          pytest --cov-append --cov=./ --cov-report=xml tests --cov-config=.coveragerc
+          pytest --cov=learner --cov=utils --cov-report=xml
+          pytest --cov=learner --cov=utils --cov-append --cov-report=xml --reasoner=hermit
+        shell: bash
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          directory: ./coverage/reports/
           env_vars: OS,PYTHON
           fail_ci_if_error: true
           files: ./coverage.xml

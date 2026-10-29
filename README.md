@@ -21,7 +21,7 @@ The algorithm is described in:
 
 ## Prerequisites
 
-- **Python 3.10+**
+- **Python 3.12+**
 - **Java 11**
 - **ELK jar** — `elk-owlapi-standalone-0.4.2-bin.jar` from [Maven Central](https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/), renamed to `elk-owlapi-standalone-0.4.2.jar` and placed in the `java/` directory (or pointed to via the `ELK_JAR` environment variable).
 
@@ -30,16 +30,17 @@ The algorithm is described in:
 Install Python dependencies:
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt            # the learner and both oracles
+pip install -r requirements-dev.txt        # + pytest, pytest-cov
 ```
 
 Alternatively, if you use [Poetry](https://python-poetry.org/):
 
 ```bash
-poetry install
+poetry install                     # runtime + dev (tests)
 ```
 
-The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`, which are included in `requirements.txt`.
+The `LLMOracle` needs `transformers`, `accelerate` and `torch`, which are runtime dependencies.
 
 ---
 
@@ -87,6 +88,7 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 │   └── check.yml                # CI workflow — runs tests with coverage on every push
 ├── demo.py                      # Unified demo entry point
 ├── requirements.txt             # Pinned dependencies
+├── requirements-dev.txt         # + test dependencies
 └── pyproject.toml               # Poetry project config
 ```
 

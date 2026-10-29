@@ -1,6 +1,7 @@
 learner/cache/*.db
 ontologies/learned
 *.db
+analysis
 
 .idea
 .DS_Store
