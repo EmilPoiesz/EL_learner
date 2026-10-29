@@ -23,12 +23,13 @@ def concept_to_manchester(concept: ELConcept) -> str:
     parts: list[str] = []
     for atom in sorted(concept.atoms):
         parts.append(atom)
-    for role, filler in sorted(concept.existentials, key=lambda x: x[0]):
+    
+    # x here is the existential ∃r.A, where the x[0] is r and x[1] is A. We sort
+    # alphabetically by relation r, then alphabetically by concept name.
+    for role, filler in sorted(concept.existentials, key=lambda x: (x[0], str(x[1]))):
         filler_str = concept_to_manchester(filler)
-        if (len(filler.atoms) + len(filler.existentials)) > 1:
-            parts.append(f"({role} some ({filler_str}))")
-        else:
-            parts.append(f"({role} some {filler_str})")
+        if (len(filler.atoms) + len(filler.existentials)) > 1: filler_str = "(" + filler_str + ")"
+        parts.append(f"({role} some {filler_str})")
     if not parts:
         return "owl:Thing"
     return " and ".join(parts)

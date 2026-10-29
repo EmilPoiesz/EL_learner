@@ -42,6 +42,9 @@ class ReasonerOracle(Oracle):
         profile the learner targets.  HermiT is a full OWL 2 DL reasoner.
         When using ELK the ``elk-owlapi-standalone-*.jar`` must be on the
         classpath (place it in the java/ directory or set ELK_JAR).
+    seed : int | None, optional
+        Seed for the random choices of the oracle skills (default 0), so a run
+        is reproducible.  ``None`` draws a fresh seed each time.
     """
 
     def __init__(
@@ -50,9 +53,14 @@ class ReasonerOracle(Oracle):
         gateway_jar_dir: str | None = None,
         oracle_skills: dict[str, float] | None = None,
         reasoner: str = "elk",
+        seed: int | None = 0,
     ):
         super().__init__()
         self._sig, self._O = extract_ontology(path)
+        # O in a fixed order: set iteration order changes per process, and the
+        # first unentailed axiom of O is the base counterexample.
+        self._O_sorted: list[GCI] = sorted(self._O, key=str)
+        self._rng = random.Random(seed)
         self._reasoner_type = reasoner.lower()
 
         # Default gateway_jar_dir: same directory as this source file,
@@ -211,7 +219,7 @@ class ReasonerOracle(Oracle):
         more specific LHS that is still O-entailed (by transitivity).
         """
         current = gci
-        for o_ax in self._O:
+        for o_ax in self._O_sorted:
             # Pattern: single named class  B ⊑ A
             if (len(o_ax.lhs.atoms) == 1 and not o_ax.lhs.existentials
                     and len(o_ax.rhs.atoms) == 1 and not o_ax.rhs.existentials):
@@ -237,7 +245,7 @@ class ReasonerOracle(Oracle):
         Produces a weaker consequent that is still O-entailed by transitivity.
         """
         current = gci
-        for o_ax in self._O:
+        for o_ax in self._O_sorted:
             if (len(o_ax.lhs.atoms) == 1 and not o_ax.lhs.existentials
                     and len(o_ax.rhs.atoms) == 1 and not o_ax.rhs.existentials):
                 b = next(iter(o_ax.lhs.atoms))
@@ -277,14 +285,14 @@ class ReasonerOracle(Oracle):
         """
         # Direction 1: O ⊄ H — find a GCI in O not entailed by H
         base = None
-        for o_gci in self._O:
+        for o_gci in self._O_sorted:
             if not self._h_reasoner.entails(o_gci):
                 base = o_gci
                 break
 
         # Direction 2: H ⊄ O — find a GCI in H not entailed by O
         if base is None:
-            for h_gci in hypothesis:
+            for h_gci in sorted(hypothesis, key=str):
                 if not self._owl.entails(encode(h_gci.lhs), encode(h_gci.rhs)):
                     return h_gci
             return None
@@ -298,7 +306,7 @@ class ReasonerOracle(Oracle):
         ]
         for name, fn in skill_map:
             prob = self._oracle_skills.get(name, 0.0)
-            if prob > 0.0 and random.random() < prob:
+            if prob > 0.0 and self._rng.random() < prob:
                 ce = fn(ce)
 
         return ce

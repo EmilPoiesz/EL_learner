@@ -47,7 +47,7 @@ class ELConcept:
     # ------------------------------------------------------------------
     def __str__(self) -> str:
         parts = sorted(self.atoms)
-        for role, filler in sorted(self.existentials, key=lambda x: (x[0], str(x[1]))):
+        for role, filler in sorted(self.existentials, key=existential_key):
             parts.append(f"∃{role}.({filler})")
         if not parts:
             return "⊤"
@@ -55,6 +55,19 @@ class ELConcept:
 
     def __repr__(self) -> str:
         return f"ELConcept({str(self)})"
+
+
+def existential_key(existential: Tuple[str, ELConcept]) -> Tuple[str, str]:
+    """
+    Sort key for (role, filler) pairs: role, then the filler's canonical string.
+
+    Sets of strings iterate in an order that changes per process (hash
+    randomisation), and so do frozensets of existentials.  Every loop whose
+    order decides which queries are asked iterates ``sorted(...)`` with this
+    key (and ``sorted(signature)`` for concept names), so a run's queries,
+    query counts and result are the same in every process.
+    """
+    return existential[0], str(existential[1])
 
 
 @dataclass(frozen=True)
@@ -81,8 +94,8 @@ class Oracle(ABC):
     """
     Abstract base class defining the interface that any oracle must implement.
     In the learning framework, the oracle represents the "teacher" that knows
-    the target terminology O.  The learner interacts with it through four
-    abstract members:
+    the target terminology O.  The learner interacts with it through five
+    members:
 
       1. signature        – Σ_O, the set of atomic concept names in O.
       2. MQ(gci)          – membership query: does O entail this GCI?
@@ -92,6 +105,10 @@ class Oracle(ABC):
       4. make_H_MQ(H)     – return a callable that answers H-entailment queries.
       5. on_H_add(gci)    – called after each GCI is added to H; use this to
                             keep any external H-reasoner in sync with H.
+
+    Subclasses implement ``signature``, ``make_H_MQ`` and ``on_H_add`` directly,
+    and MQ/EQ through ``_MQ`` / ``_EQ``; the public ``MQ`` / ``EQ`` wrappers
+    count the calls and delegate.
 
     Call counts are tracked automatically.  After learning, inspect
     ``oracle.mq_count`` and ``oracle.eq_count``, or call ``reset_counts()``
@@ -216,7 +233,7 @@ def saturate_concept_rhs(
         changed = False
 
         new_atoms = set(atoms)
-        for atom_prime in signature:
+        for atom_prime in sorted(signature):
             if atom_prime in new_atoms:
                 continue
             # New RHS concept with atom_prime added at this node; the rest of the tree is unchanged.
@@ -228,7 +245,7 @@ def saturate_concept_rhs(
         atoms = new_atoms
 
         new_existentials = set()
-        for role, filler in existentials:
+        for role, filler in sorted(existentials, key=existential_key):
             # Create a rebuild function for this specific existential so that recursive saturation of the filler can reconstruct the full RHS correctly.
             filler_rebuild = _make_filler_rebuild(
                 role, filler, frozenset(atoms), frozenset(existentials), _rebuild
@@ -258,7 +275,7 @@ def _try_merge_in_concept(lhs: ELConcept, MQ: Callable, node: ELConcept, rebuild
     """
     # --- try merging exactly two same-role siblings at this node ---
     role_map: dict = {}
-    for role, sub in node.existentials:
+    for role, sub in sorted(node.existentials, key=existential_key):
         role_map.setdefault(role, []).append(sub)
 
     for role, subs in role_map.items():
@@ -279,7 +296,7 @@ def _try_merge_in_concept(lhs: ELConcept, MQ: Callable, node: ELConcept, rebuild
                     return candidate_root, True
 
     # --- recurse into children ---
-    for target_role, target_sub in node.existentials:
+    for target_role, target_sub in sorted(node.existentials, key=existential_key):
         def child_rebuild(new_sub, *, r=target_role, s=target_sub):
             new_exs = frozenset(
                 {(r2, s2) for r2, s2 in node.existentials if not (r2 == r and s2 == s)}
@@ -351,7 +368,7 @@ def decompose_rhs(lhs, concept, MQ, H_MQ):
             # Exclude A' where A' ≡_O lhs (would not make progress).
             # O-equivalence: O |= A' ⊑ lhs  AND  O |= lhs ⊑ A'.
             valid_atoms = frozenset(
-                A_prime for A_prime in node.atoms
+                A_prime for A_prime in sorted(node.atoms)
                 if not (
                     MQ(GCI(ELConcept(frozenset({A_prime})), lhs)) and
                     MQ(GCI(lhs, ELConcept(frozenset({A_prime}))))
@@ -360,9 +377,9 @@ def decompose_rhs(lhs, concept, MQ, H_MQ):
         else:
             valid_atoms = node.atoms
 
-        for A_prime in valid_atoms:
+        for A_prime in sorted(valid_atoms):
             A_prime_concept = ELConcept(frozenset({A_prime}))
-            for r, sub in node.existentials:
+            for r, sub in sorted(node.existentials, key=existential_key):
                 candidate_rhs = ELConcept(frozenset(), frozenset({(r, sub)}))
                 if MQ(GCI(A_prime_concept, candidate_rhs)):
                     if not H_MQ(GCI(A_prime_concept, candidate_rhs)):
@@ -373,7 +390,7 @@ def decompose_rhs(lhs, concept, MQ, H_MQ):
                         new_concept = remove_subtree(concept, node, r, sub)
                         return GCI(lhs, new_concept)
 
-        for r, sub in node.existentials:
+        for r, sub in sorted(node.existentials, key=existential_key):
             stack.append((node, r, sub))
 
     return None
@@ -385,7 +402,7 @@ def saturate_left(lhs: ELConcept, hypothesis: set[GCI], signature: set[str], H_M
     """
     # 1. Saturate the nested concepts first (bottom-up)
     new_exs = []
-    for role, nested_concept in lhs.existentials:
+    for role, nested_concept in sorted(lhs.existentials, key=existential_key):
         new_exs.append((role, saturate_left(nested_concept, hypothesis, signature, H_MQ)))
 
     # Create a temporary concept with saturated children to check the current node
@@ -393,7 +410,7 @@ def saturate_left(lhs: ELConcept, hypothesis: set[GCI], signature: set[str], H_M
 
     # 2. Add any concept name from the vocabulary that is implied by H
     new_atoms = set(intermediate_C.atoms)
-    for A_prime in signature:
+    for A_prime in sorted(signature):
         if H_MQ(GCI(intermediate_C, ELConcept(frozenset({A_prime})))):
             new_atoms.add(A_prime)
 
@@ -415,7 +432,7 @@ def _unsaturate_node(
     """
     # --- Try dropping atoms at this level ---
     current_node = node
-    for atom in list(node.atoms):
+    for atom in sorted(node.atoms):
         candidate = ELConcept(
             atoms=frozenset(current_node.atoms - {atom}),
             existentials=current_node.existentials,
@@ -425,7 +442,7 @@ def _unsaturate_node(
 
     # --- Recurse into existential fillers ---
     new_exs: list[tuple[str, ELConcept]] = []
-    for role, sub in list(current_node.existentials):
+    for role, sub in sorted(current_node.existentials, key=existential_key):
         # Capture current_node by value via default arg so each child's rebuild
         # reflects all prior sibling modifications.
         def child_rebuild(
@@ -489,7 +506,7 @@ def decompose_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool], H_
                         return lhs_d ⊑ A'.
     """
     # Stack entries: (parent_node_in_lhs, role, child_node)
-    stack = [(lhs, r, sub) for r, sub in lhs.existentials]
+    stack = [(lhs, r, sub) for r, sub in sorted(lhs.existentials, key=existential_key)]
 
     while stack:
         parent, role, node = stack.pop()
@@ -502,7 +519,7 @@ def decompose_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool], H_
 
         # Case 2 (subtree zoom): find A' ∈ ΣO that the subtree implies
         # under O but H does not yet entail.
-        for A_prime in signature:
+        for A_prime in sorted(signature):
             if A_prime in node.atoms:
                 continue  # trivially entailed; not informative
             A_prime_concept = ELConcept(frozenset({A_prime}))
@@ -510,7 +527,7 @@ def decompose_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool], H_
                 return GCI(node, A_prime_concept)
 
         # Descend into deeper nodes.
-        for r, sub in node.existentials:
+        for r, sub in sorted(node.existentials, key=existential_key):
             stack.append((node, r, sub))
 
     return None
@@ -695,7 +712,7 @@ def normalise_counterexample(
 
     # Search all of Σ_O for an atomic rhs that gives a positive counterexample
     # (Lemma 4 case b: A ∈ Σ_O s.t. C ⊑ A is entailed by O but not by H)
-    for atom in signature:
+    for atom in sorted(signature):
         candidate = GCI(
             lhs=counterexample.lhs,
             rhs=ELConcept(atoms=frozenset({atom})),
@@ -705,7 +722,7 @@ def normalise_counterexample(
 
     # Lemma 4 cases 1 and 2: the first loop failed, so property (‡) holds and D
     # must have an existential conjunct ∃r.F that is a positive CE.
-    for role, filler in counterexample.rhs.existentials:
+    for role, filler in sorted(counterexample.rhs.existentials, key=existential_key):
         existential = ELConcept(existentials=frozenset({(role, filler)}))
         ce_existential = GCI(lhs=counterexample.lhs, rhs=existential)
         if not (MQ(ce_existential) and not H_MQ(ce_existential)):
@@ -714,7 +731,7 @@ def normalise_counterexample(
         # Case 1: if C has a conjunct ∃r.F' with O |= F' ⊑ F, then F' ⊑ F is
         # a strictly smaller positive CE — recurse on it.  This is the step
         # that grounds the termination argument in the paper.
-        for r_prime, filler_prime in counterexample.lhs.existentials:
+        for r_prime, filler_prime in sorted(counterexample.lhs.existentials, key=existential_key):
             if r_prime == role:
                 sub_ce = GCI(lhs=filler_prime, rhs=filler)
                 if MQ(sub_ce): # not H_MQ(sub_ce) is logically redundant per the paper's proof of Lemma 4
@@ -722,7 +739,7 @@ def normalise_counterexample(
 
         # Case 2: by Lemma 3, there exists A ∈ Σ_O such that A ⊑ ∃r.F is a
         # positive CE (atomic LHS).
-        for atom in signature:
+        for atom in sorted(signature):
             candidate = GCI(
                 lhs=ELConcept(atoms=frozenset({atom})),
                 rhs=existential,
@@ -791,7 +808,7 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
     logger.info("=== Phase 1: Enumerating atomic subsumptions ===")
     H: set[GCI] = set()
     H_MQ = oracle.make_H_MQ(H)
-    sigma = list(oracle.signature)
+    sigma = sorted(oracle.signature)
 
     for a_name in sigma:
         for b_name in sigma:

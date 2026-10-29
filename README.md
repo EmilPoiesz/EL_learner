@@ -99,15 +99,17 @@ This produces `OWLGateway.class` (Java 11 bytecode, also when compiled with a ne
 
 ### Oracle abstraction
 
-The learning algorithm interacts with the outside world exclusively through the `Oracle` ABC defined in `el_algorithm.py`. Any oracle must implement:
+The learning algorithm interacts with the outside world exclusively through the `Oracle` ABC defined in `el_algorithm.py`. The learner uses these members:
 
 | Method | Description |
 |---|---|
 | `MQ(gci)` | Membership query — does O entail this GCI? |
 | `EQ(H)` | Equivalence query — return a counterexample GCI, or `None` if H ≡ O |
 | `signature` | Σ_O — the set of atomic concept names in O |
-| `make_H_MQ(H)` | Return a callable for H-entailment (default: structural EL check) |
-| `on_H_add(gci)` | Called when a GCI is added to H (override to keep an external reasoner in sync) |
+| `make_H_MQ(H)` | Return a callable answering H ⊨ α. Both shipped oracles return their `HypothesisReasoner` |
+| `on_H_add(gci)` | Called after each GCI is added to H; keeps the H-reasoner in sync |
+
+`MQ` and `EQ` are concrete wrappers that count calls (`mq_count`, `eq_count`) and delegate to `_MQ` / `_EQ`. A new oracle implements `signature`, `_MQ`, `_EQ`, `make_H_MQ` and `on_H_add`; overriding `MQ`/`EQ` directly would bypass the counters.
 
 Two oracle implementations are provided:
 
@@ -422,6 +424,6 @@ oracle = ReasonerOracle(
 )
 ```
 
-Each skill is applied independently with the given probability whenever a counterexample is found. All produced counterexamples are guaranteed to be O-entailed and H-not-entailed.
+Each skill is applied independently with the given probability whenever a counterexample is found. All produced counterexamples are guaranteed to be O-entailed and H-not-entailed: the base counterexample is an axiom of O not entailed by H; `saturate_left` only adds conjuncts to the LHS, which keeps the GCI O-entailed, and checks that H still does not entail it; every other skill re-checks both conditions before accepting a change.
 
 Omit `oracle_skills` (or pass `{}`) for a deterministic oracle that always returns the first unentailed axiom from O.
