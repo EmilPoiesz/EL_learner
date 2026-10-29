@@ -56,6 +56,12 @@ Test catalogue
 36  learn_el_terminology    — soundness: every GCI in H is entailed by O
 37  learn_el_terminology    — equivalence: EQ returns None after learning
 38  learn_el_terminology    — Phase 1 calls on_H_add for each atomic subsumption
+39  learn_el_terminology    — progress guard: stops on a counterexample H already entails
+40  learn_el_terminology    — progress guard: skips an H-entailed essential; stops only on a repeat
+41  normalise_counterexample — inconsistent oracle (accepts C ⊑ D, rejects all it implies): None
+42  learn_el_terminology    — a counterexample that cannot be normalised is skipped; stops only on a repeat
+43  learn_el_terminology    — an OracleError (EQ or MQ) stops learning and returns the H learned so far
+44  remove_subtree          — removes at the one position its path names, also when the tree shares objects
 """
 
 from __future__ import annotations
@@ -621,3 +627,174 @@ def test_38_phase1_calls_on_h_add():
     assert GCI(A, B) in on_h_add_calls, (
         "on_H_add was not called for the Phase 1 atomic subsumption A ⊑ B"
     )
+
+
+def test_39_progress_guard_stops_on_h_entailed_counterexample(caplog):
+    # An oracle that keeps returning a counterexample H already entails (as an
+    # LLM can) must stop learning at once, not loop until max_iterations.
+    class MockOracle:
+        signature = {"A", "B"}
+        mq_count = 0
+        eq_count = 0
+
+        def MQ(self, gci):
+            self.mq_count += 1
+            return gci == GCI(A, B)
+
+        def EQ(self, H):
+            self.eq_count += 1
+            return GCI(A, B)  # entailed by H after Phase 1
+
+        def make_H_MQ(self, H):
+            return lambda gci: gci in H
+
+        def on_H_add(self, gci):
+            pass
+
+    oracle = MockOracle()
+    with caplog.at_level("WARNING", logger="learner.el_algorithm"):
+        H = learn_el_terminology(oracle, max_iterations=1000)
+    assert oracle.eq_count == 1
+    assert H == {GCI(A, B)}
+    assert "already entailed by H" in caplog.text
+
+
+@pytest.mark.parametrize("repeat, expected_eqs", [(True, 2), (False, 4)])
+def test_40_progress_guard_skips_unproductive_essential(monkeypatch, caplog, repeat, expected_eqs):
+    # An O-essential H already entails is skipped, not added.  Learning stops only
+    # when the same counterexample comes back with H unchanged (a deterministic
+    # LLM judge); fresh counterexamples (PAC sampling) keep it going.
+    import learner.el_algorithm as el
+
+    C = ELConcept(frozenset({"C"}))
+    ces = [GCI(A, C), GCI(B, C), GCI(C, A)]
+
+    class MockOracle:
+        signature = {"A", "B", "C"}
+        mq_count = 0
+        eq_count = 0
+
+        def MQ(self, gci):
+            self.mq_count += 1
+            return gci == GCI(A, B)   # Phase 1 adds A ⊑ B; everything else is "no"
+
+        def EQ(self, H):
+            self.eq_count += 1
+            if repeat:
+                return ces[0]
+            return ces[self.eq_count - 1] if self.eq_count <= len(ces) else None
+
+        def make_H_MQ(self, H):
+            return lambda gci: gci in H
+
+        def on_H_add(self, gci):
+            pass
+
+    # Every counterexample yields an essential H already contains.
+    monkeypatch.setattr(el, "compute_right_essential", lambda **kw: GCI(A, B))
+
+    oracle = MockOracle()
+    with caplog.at_level("WARNING", logger="learner.el_algorithm"):
+        H = el.learn_el_terminology(oracle, max_iterations=1000)
+    assert H == {GCI(A, B)}
+    assert oracle.eq_count == expected_eqs
+    assert "skipped" in caplog.text
+    assert ("no progress is possible" in caplog.text) is repeat
+
+
+# An oracle that accepts  A ⊓ B ⊑ ∃r.C  but rejects every GCI that it implies, as an
+# inconsistent LLM can: Lemma 4 finds no normalised counterexample.
+_R_C = ELConcept(existentials=frozenset({("r", ELConcept(frozenset({"C"})))}))
+_INCONSISTENT_CE = GCI(ELConcept(frozenset({"A", "B"})), _R_C)
+
+
+def test_41_normalise_inconsistent_oracle_returns_none():
+    mq = lambda gci: gci == _INCONSISTENT_CE
+    h_mq = lambda gci: False
+    assert normalise_counterexample(_INCONSISTENT_CE, {"A", "B", "C"}, mq, h_mq) is None
+
+
+@pytest.mark.parametrize("repeat, expected_eqs", [(True, 2), (False, 3)])
+def test_42_unnormalisable_counterexample_skipped(caplog, repeat, expected_eqs):
+    # The run must not crash: the counterexample is skipped with a warning that
+    # names the inconsistent oracle; a repeat with H unchanged stops learning,
+    # fresh counterexamples (PAC sampling) keep it going.
+    other_ce = GCI(ELConcept(frozenset({"A", "C"})), _R_C)
+
+    class MockOracle:
+        signature = {"A", "B", "C"}
+        mq_count = 0
+        eq_count = 0
+
+        def MQ(self, gci):
+            self.mq_count += 1
+            return gci in (_INCONSISTENT_CE, other_ce)
+
+        def EQ(self, H):
+            self.eq_count += 1
+            if repeat:
+                return _INCONSISTENT_CE
+            return [_INCONSISTENT_CE, other_ce, None][self.eq_count - 1]
+
+        def make_H_MQ(self, H):
+            return lambda gci: gci in H
+
+        def on_H_add(self, gci):
+            pass
+
+    oracle = MockOracle()
+    with caplog.at_level("WARNING", logger="learner.el_algorithm"):
+        H = learn_el_terminology(oracle, max_iterations=1000)
+    assert H == set()
+    assert oracle.eq_count == expected_eqs
+    assert "contradict each other" in caplog.text
+    assert ("no progress is possible" in caplog.text) is repeat
+
+
+@pytest.mark.parametrize("where", ["EQ", "MQ"])
+def test_43_oracle_error_returns_h_so_far(caplog, where):
+    # An oracle with no usable answer (an LLM reply that does not parse) ends the
+    # run with a warning; the H learned before it is kept, not lost to a crash.
+    from learner.el_algorithm import OracleError
+    C = ELConcept(frozenset({"C"}))
+
+    class MockOracle:
+        signature = {"A", "B", "C"}
+        mq_count = 0
+        eq_count = 0
+
+        def MQ(self, gci):
+            self.mq_count += 1
+            if where == "MQ" and gci.lhs == C:   # Phase 1 reaches C's row last
+                raise OracleError("Unparseable MQ response: 'Let me think'")
+            return gci == GCI(A, B)
+
+        def EQ(self, H):
+            self.eq_count += 1
+            raise OracleError("no usable counterexample in 3 attempts")
+
+        def make_H_MQ(self, H):
+            return lambda gci: gci in H
+
+        def on_H_add(self, gci):
+            pass
+
+    with caplog.at_level("WARNING", logger="learner.el_algorithm"):
+        H = learn_el_terminology(MockOracle(), max_iterations=1000)
+    assert H == {GCI(A, B)}
+    assert "could not give a usable answer" in caplog.text
+
+
+def test_44_remove_subtree_by_path():
+    # The same filler object under r and under s: removing ∃t.C below r must leave
+    # the s-branch alone.  (By object identity, both branches would lose it.)
+    from learner.el_algorithm import remove_subtree
+    C = ELConcept(frozenset({"C"}))
+    X = ELConcept(frozenset({"B"}), frozenset({("t", C)}))
+    shared = ELConcept(frozenset({"A"}), frozenset({("r", X), ("s", X)}))
+    expected = ELConcept(frozenset({"A"}), frozenset({
+        ("r", ELConcept(frozenset({"B"}))), ("s", X),
+    }))
+    assert remove_subtree(shared, (("r", X),), "t", C) == expected
+    # At the root (empty path), only the root's conjunct goes.
+    assert remove_subtree(shared, (), "s", X) == ELConcept(frozenset({"A"}), frozenset({("r", X)}))

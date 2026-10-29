@@ -426,4 +426,11 @@ oracle = ReasonerOracle(
 
 Each skill is applied independently with the given probability whenever a counterexample is found. All produced counterexamples are guaranteed to be O-entailed and H-not-entailed: the base counterexample is an axiom of O not entailed by H; `saturate_left` only adds conjuncts to the LHS, which keeps the GCI O-entailed, and checks that H still does not entail it; every other skill re-checks both conditions before accepting a change.
 
-Omit `oracle_skills` (or pass `{}`) for a deterministic oracle that always returns the first unentailed axiom from O.
+The skills draw from a `random.Random(seed)` owned by the oracle (`seed=0` by default; `None` for a fresh seed each run). Omit `oracle_skills` (or pass `{}`) for an oracle without randomness that always returns the first unentailed axiom of O, in the order of their string forms.
+
+**Reproducibility:** the learner and `ReasonerOracle` iterate signatures, existentials, O and H in sorted order, never in Python's set order (which changes per process with hash randomisation). With the same ontology and seed, a run asks the same queries in the same order, and gives the same H and the same MQ/EQ counts, in every process.
+
+**Progress guard:** none of the cases below happens with a correct oracle; all can with an LLM, whose answers can contradict each other.
+- If the oracle returns a counterexample already entailed by H, `learn_el_terminology` stops with a warning instead of looping until `max_iterations`.
+- If the O-essential computed from a counterexample is already entailed by H, it is skipped with a warning and learning continues. Learning stops only if the same counterexample comes back with H unchanged, as a deterministic LLM judge would return it. With PAC sampling, every equivalence query draws fresh statements, so the run continues, as upstream's does.
+- If a counterexample cannot be normalised to a GCI with a concept name on one side (Lemma 4), the oracle accepted it but rejected every smaller GCI it implies. A consistent oracle always admits one, so this means the oracle contradicted itself. The counterexample is skipped with a warning saying so, under the same rule: learning stops only if it comes back with H unchanged.

@@ -90,6 +90,15 @@ class GCI:
 # Oracle abstract base class
 # ---------------------------------------------------------------------------
 
+class OracleError(ValueError):
+    """
+    The oracle cannot give a usable answer: e.g. an LLM whose reply does not
+    parse, or which keeps naming counterexamples it then rejects.
+    ``learn_el_terminology`` stops on it with a warning and returns the H
+    learned so far, instead of losing it to an exception.
+    """
+
+
 class Oracle(ABC):
     """
     Abstract base class defining the interface that any oracle must implement.
@@ -328,20 +337,25 @@ def sibling_merge(concept: ELConcept, lhs: ELConcept, MQ: Callable) -> ELConcept
     return current
 
 
-def remove_subtree(root, target_node, role, sub_to_remove):
-    if root is target_node:
-        new_existentials = {
-            (r, sub) for (r, sub) in root.existentials
-            if not (r == role and sub == sub_to_remove)
-        }
-        return ELConcept(root.atoms, new_existentials)
+# A position in a concept tree: the (role, filler) steps from the root to a node,
+# () for the root.  Within a node the existentials are a set, so each step is
+# unique and a path names exactly one position, however the tree shares objects.
+TreePath = Tuple[Tuple[str, ELConcept], ...]
 
-    new_existentials = set()
-    for r, sub in root.existentials:
-        new_sub = remove_subtree(sub, target_node, role, sub_to_remove)
-        new_existentials.add((r, new_sub))
 
-    return ELConcept(root.atoms, new_existentials)
+def remove_subtree(root: ELConcept, path: TreePath, role: str, sub_to_remove: ELConcept) -> ELConcept:
+    """
+    *root* without the conjunct ∃role.sub_to_remove of the node at *path*.  Only
+    that position changes, also when an equal subtree occurs elsewhere in *root*.
+    """
+    if not path:
+        return ELConcept(root.atoms, root.existentials - {(role, sub_to_remove)})
+    step, rest = path[0], path[1:]
+    r, child = step
+    return ELConcept(
+        root.atoms,
+        (root.existentials - {step}) | {(r, remove_subtree(child, rest, role, sub_to_remove))},
+    )
 
 def decompose_rhs(lhs, concept, MQ, H_MQ):
     """
@@ -357,12 +371,13 @@ def decompose_rhs(lhs, concept, MQ, H_MQ):
       (b) return lhs ⊑ C|⁻_d'↓  otherwise
     Lemma 5 guarantees that when (b) applies, H ⊭ lhs ⊑ C|⁻_d'↓.
     """
-    stack = [(None, None, concept)]
+    # Stack entries: (path from the root to node, node)
+    stack: list[tuple[TreePath, ELConcept]] = [((), concept)]
 
     while stack:
-        parent, role, node = stack.pop()
+        path, node = stack.pop()
 
-        is_root = (parent is None)
+        is_root = not path
 
         if is_root:
             # Exclude A' where A' ≡_O lhs (would not make progress).
@@ -387,11 +402,11 @@ def decompose_rhs(lhs, concept, MQ, H_MQ):
                         return GCI(A_prime_concept, candidate_rhs)
                     else:
                         # Case (b): strip the subtree; Lemma 5 guarantees H ⊭ result
-                        new_concept = remove_subtree(concept, node, r, sub)
+                        new_concept = remove_subtree(concept, path, r, sub)
                         return GCI(lhs, new_concept)
 
         for r, sub in sorted(node.existentials, key=existential_key):
-            stack.append((node, r, sub))
+            stack.append((path + ((r, sub),), sub))
 
     return None
 
@@ -505,15 +520,17 @@ def decompose_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool], H_
                         A' ∈ ΣO (skipping atoms already in lhs_d.atoms),
                         return lhs_d ⊑ A'.
     """
-    # Stack entries: (parent_node_in_lhs, role, child_node)
-    stack = [(lhs, r, sub) for r, sub in sorted(lhs.existentials, key=existential_key)]
+    # Stack entries: (path from the root of lhs to the parent, role, child node)
+    stack: list[tuple[TreePath, str, ELConcept]] = [
+        ((), r, sub) for r, sub in sorted(lhs.existentials, key=existential_key)
+    ]
 
     while stack:
-        parent, role, node = stack.pop()
+        parent_path, role, node = stack.pop()
 
         # Case 1 (prune): remove the subtree rooted at node from lhs;
         # if the result still forces rhs under O, return it immediately.
-        pruned = remove_subtree(lhs, parent, role, node)
+        pruned = remove_subtree(lhs, parent_path, role, node)
         if MQ(GCI(pruned, rhs)):
             return GCI(pruned, rhs)
 
@@ -528,7 +545,7 @@ def decompose_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool], H_
 
         # Descend into deeper nodes.
         for r, sub in sorted(node.existentials, key=existential_key):
-            stack.append((node, r, sub))
+            stack.append((parent_path + ((role, node),), r, sub))
 
     return None
 
@@ -675,7 +692,7 @@ def normalise_counterexample(
     signature: set[str],
     MQ: Callable[[GCI], bool],
     H_MQ: Callable[[GCI], bool],
-) -> GCI:
+) -> Optional[GCI]:
     """
     Given a positive counterexample  C ⊑ D  (entailed by O, not by H),
     produce a *normalised* GCI  C' ⊑ D'  such that either:
@@ -694,6 +711,12 @@ def normalise_counterexample(
               recurse on it.  This is the step that grounds termination.
     Case 2:   if Case 1 does not apply, by Lemma 3 there exists A ∈ Σ_O such
               that A ⊑ ∃r.F is a positive CE (atomic LHS).
+
+    Returns None when none of the cases finds one.  Lemma 4 guarantees a
+    normalised counterexample for an oracle whose answers are consistent (a DL
+    reasoner), so None means the oracle contradicted itself: typically an LLM
+    that accepted C ⊑ D but rejected every smaller GCI that C ⊑ D implies.
+    The caller decides what to do (learn_el_terminology skips the counterexample).
     """
     # Already normalised?
     lhs_atomic = (
@@ -747,13 +770,8 @@ def normalise_counterexample(
             if MQ(candidate) and not H_MQ(candidate):
                 return candidate
 
-    # Fall back: return original (may already be normalisable by the caller)
-    logger.warning(
-        "Could not normalise counterexample %s to have an atomic side; "
-        "returning as-is.  The algorithm may not terminate.",
-        counterexample,
-    )
-    return counterexample
+    # No case applied: by Lemma 4 the oracle's answers are inconsistent.
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -800,13 +818,31 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
         Line 10  Add the O-essential α to H.
 
     Line 12  Return H.
+
+    An ``OracleError`` (the oracle has no usable answer, e.g. an LLM reply that
+    does not parse) stops learning with a warning; the H learned so far is
+    returned, minimised as usual.
     """
+    H: set[GCI] = set()
+    try:
+        _learn(oracle, H, max_iterations)
+    except OracleError as exc:
+        logger.warning(
+            "Stopping: the oracle could not give a usable answer (%s). "
+            "Returning the %d GCI(s) learned so far; H may not be equivalent to O.",
+            exc, len(H),
+        )
+    return _minimise(H)
+
+
+def _learn(oracle: Oracle, H: set[GCI], max_iterations: int) -> None:
+    """Phase 1 and the refinement loop of ``learn_el_terminology``, adding to *H*
+    in place, so that what was learned survives an ``OracleError``."""
 
     # ------------------------------------------------------------------
     # Line 1: Initialise H with all atomic subsumptions A ⊑ B entailed by O
     # ------------------------------------------------------------------
     logger.info("=== Phase 1: Enumerating atomic subsumptions ===")
-    H: set[GCI] = set()
     H_MQ = oracle.make_H_MQ(H)
     sigma = sorted(oracle.signature)
 
@@ -830,6 +866,9 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
     # Lines 2–11: Main refinement loop
     # ------------------------------------------------------------------
     logger.info("=== Phase 2: Iterative refinement ===")
+    # The last counterexample whose O-essential H already entailed (see the
+    # progress guard below); None after a round that extended H.
+    unproductive_counterexample: Optional[GCI] = None
     for iteration in range(max_iterations):
 
         # Line 3: Ask the oracle for a positive counterexample
@@ -842,6 +881,18 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
 
         logger.info("Iteration %d | Counterexample: %s", iteration + 1, counterexample)
 
+        # A positive counterexample must not follow from H.  An oracle that is
+        # not a reasoner (e.g. an LLM) can return one that does; the rest of the
+        # iteration would then add nothing, and a deterministic oracle would
+        # return the same counterexample again until max_iterations.
+        if H_MQ(counterexample):
+            logger.warning(
+                "Counterexample %s is already entailed by H; it cannot refine H. "
+                "Stopping after %d iteration(s); H may not be equivalent to O.",
+                counterexample, iteration,
+            )
+            break
+
         # Line 4: Normalise so that C' or D' is in Σ_O ∩ N_C
         normalised = normalise_counterexample(
             counterexample=counterexample,
@@ -849,6 +900,29 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
             MQ=oracle.MQ,
             H_MQ=H_MQ,
         )
+        # A consistent oracle always allows normalisation (Lemma 4).  None means the
+        # oracle's answers contradict each other, as an LLM's can: it accepted the
+        # counterexample but rejected every smaller GCI the counterexample implies.
+        # The counterexample is skipped, as in the progress guard below, and the
+        # same counterexample coming back with H unchanged stops learning.
+        if normalised is None:
+            if counterexample == unproductive_counterexample:
+                logger.warning(
+                    "Counterexample %s again cannot be normalised: the oracle's answers "
+                    "are inconsistent (see the previous warning), so no progress is "
+                    "possible. Stopping after %d iteration(s); H may not be equivalent to O.",
+                    counterexample, iteration + 1,
+                )
+                break
+            logger.warning(
+                "Counterexample %s cannot be normalised (Lemma 4): the oracle accepted it "
+                "but rejected every smaller GCI with a concept name on one side that it "
+                "implies. A consistent oracle (a reasoner) always admits one, so the "
+                "oracle's answers contradict each other, as an LLM's can. Skipped.",
+                counterexample,
+            )
+            unproductive_counterexample = counterexample
+            continue
         logger.info("  Normalised:  %s", normalised)
 
         C_prime = normalised.lhs
@@ -867,10 +941,11 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
         )
 
         if not C_prime_is_atomic and not D_prime_is_atomic:
+            # normalise_counterexample returns None rather than such a GCI, so this
+            # is unreachable unless that function breaks its contract.
             raise RuntimeError(
                 f"Normalisation failed: neither side of {normalised!r} is atomic. "
-                "This is a bug in normalise_counterexample or a violated algorithm "
-                "invariant (the input may not be a valid EL terminology)."
+                "This is a bug in normalise_counterexample."
             )
 
         if C_prime_is_atomic:
@@ -906,6 +981,30 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
                 H_MQ=H_MQ,
             )
 
+        # Progress guard: with a sound and complete oracle α is never entailed by
+        # H (Lemmas 5 and 6), but an inconsistent oracle (an LLM) can lead here.
+        # Adding α would change nothing, so it is skipped.  An oracle that draws
+        # fresh counterexamples (PAC sampling) then simply continues; one that
+        # answers the same H with the same counterexample (a deterministic LLM
+        # judge) would loop, so a second unproductive round on the same
+        # counterexample with H unchanged stops learning.
+        if H_MQ(alpha):
+            if counterexample == unproductive_counterexample:
+                logger.warning(
+                    "Counterexample %s again yields O-essential %s, already entailed "
+                    "by H; no progress is possible. Stopping after %d iteration(s); "
+                    "H may not be equivalent to O.",
+                    counterexample, alpha, iteration + 1,
+                )
+                break
+            logger.warning(
+                "O-essential %s (from counterexample %s) is already entailed by H; skipped.",
+                alpha, counterexample,
+            )
+            unproductive_counterexample = counterexample
+            continue
+        unproductive_counterexample = None
+
         # Line 10: Add the essential GCI to H
         logger.info("  Adding to H: %s", alpha)
         H.add(alpha)
@@ -919,13 +1018,18 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
             max_iterations,
         )
 
-    # Line 12: Minimise and return H.
-    # Remove any GCI whose RHS is structurally subsumed by another GCI in H
-    # with the same LHS.  A GCI  A ⊑ B  is redundant when H also contains
-    # A ⊑ B ⊓ C ⊓ ...  because the stronger GCI entails the weaker one by
-    # conjunction elimination.  This prunes GCIs accumulated across iterations
-    # (e.g. atomic subsumptions from phase 1 that become absorbed by richer
-    # GCIs added during refinement).
+
+def _minimise(H: set[GCI]) -> set[GCI]:
+    """
+    Line 12 of Algorithm 1: H without its structurally redundant GCIs.
+
+    Remove any GCI whose RHS is structurally subsumed by another GCI in H
+    with the same LHS.  A GCI  A ⊑ B  is redundant when H also contains
+    A ⊑ B ⊓ C ⊓ ...  because the stronger GCI entails the weaker one by
+    conjunction elimination.  This prunes GCIs accumulated across iterations
+    (e.g. atomic subsumptions from phase 1 that become absorbed by richer
+    GCIs added during refinement).
+    """
     def _subsumed(g: GCI) -> bool:
         for other in H:
             if other == g:
@@ -936,5 +1040,4 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
                 return True
         return False
 
-    H = {g for g in H if not _subsumed(g)}
-    return H
+    return {g for g in H if not _subsumed(g)}
