@@ -4,13 +4,15 @@ import logging
 import re
 import os
 from learner.cache.cache import LLMCache
-from typing import Optional
+from typing import Callable, Optional, Sequence, TypeVar
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 from transformers import pipeline, GenerationConfig
 
-from learner.el_algorithm import Oracle, ELConcept, GCI
+from learner.el_algorithm import Oracle, OracleError, ELConcept, GCI
 from learner.hypothesis_reasoner import HypothesisReasoner
 
 
@@ -39,6 +41,22 @@ def gci_to_manchester(gci: GCI) -> str:
     return f"{concept_to_manchester(gci.lhs)} SubClassOf {concept_to_manchester(gci.rhs)}"
 
 
+def gci_names(gci: GCI) -> tuple[set[str], set[str]]:
+    """The concept names and the role names that occur in *gci*."""
+    atoms: set[str] = set()
+    roles: set[str] = set()
+
+    def _walk(concept: ELConcept) -> None:
+        atoms.update(concept.atoms)
+        for role, filler in concept.existentials:
+            roles.add(role)
+            _walk(filler)
+
+    _walk(gci.lhs)
+    _walk(gci.rhs)
+    return atoms, roles
+
+
 def hypothesis_to_manchester(H: set[GCI]) -> str:
     if not H:
         return "  (empty)"
@@ -51,16 +69,24 @@ def hypothesis_to_manchester(H: set[GCI]) -> str:
 
 def parse_manchester_gci(s: str) -> GCI:
     """
-    Parse a GCI in Manchester syntax: "C SubClassOf D".
+    Parse a GCI in Manchester syntax: "C SubClassOf D".  The keywords
+    (SubClassOf, and, some) may be in any case, and "SubClassOf:" (Manchester
+    frame syntax) is accepted too.
 
     Raises ValueError if the format is not recognised.
     """
-    match = re.match(r'^(.+?)\s+SubClassOf\s+(.+)$', s.strip(), re.DOTALL)
+    match = re.match(r'^(.+?)\s+SubClassOf:?\s+(.+)$', s.strip(), re.DOTALL | re.IGNORECASE)
     if not match:
         raise ValueError(f"Cannot parse GCI (expected 'C SubClassOf D'): {s!r}")
     lhs = parse_manchester_concept(match.group(1).strip())
     rhs = parse_manchester_concept(match.group(2).strip())
     return GCI(lhs=lhs, rhs=rhs)
+
+
+# A concept or role name: word characters, with ':', '.' or '-' inside but not at
+# either end (prefixed names such as ex:hasPart, hyphenated ones such as has-part;
+# "B." is the name B and a full stop).
+_NAME = r'\w(?:[\w:.\-]*\w)?'
 
 
 def parse_manchester_concept(s: str) -> ELConcept:
@@ -76,7 +102,7 @@ def parse_manchester_concept(s: str) -> ELConcept:
       (A and B) and (r some (C and D))
     """
     s = s.strip()
-    if s == "owl:Thing":
+    if s.lower() == "owl:thing":
         return ELConcept()
 
     parts = _split_top_level_and(s)
@@ -94,7 +120,7 @@ def parse_manchester_concept(s: str) -> ELConcept:
         ):
             part = part[1:-1].strip()
 
-        some_match = re.match(r'^(\w+)\s+some\s+(.+)$', part, re.DOTALL)
+        some_match = re.match(rf'^({_NAME})\s+some\s+(.+)$', part, re.DOTALL | re.IGNORECASE)
         if some_match:
             role = some_match.group(1)
             filler_str = some_match.group(2).strip()
@@ -105,8 +131,8 @@ def parse_manchester_concept(s: str) -> ELConcept:
             ):
                 filler_str = filler_str[1:-1].strip()
             existentials.add((role, parse_manchester_concept(filler_str)))
-        elif re.match(r'^\w[\w:]*$', part):
-            if part != "owl:Thing":
+        elif re.match(rf'^{_NAME}$', part):
+            if part.lower() != "owl:thing":
                 atoms.add(part)
         else:
             raise ValueError(f"Cannot parse Manchester concept fragment: {part!r}")
@@ -140,7 +166,7 @@ def _split_top_level_and(s: str) -> list[str]:
         elif s[i] == ')':
             depth -= 1
             current.append(s[i])
-        elif depth == 0 and s[i:i + 5] == ' and ':
+        elif depth == 0 and s[i:i + 5].lower() == ' and ':
             parts.append(''.join(current))
             current = []
             i += 5
@@ -171,7 +197,8 @@ class LLMOracle(Oracle):
         e.g. "meta-llama/Llama-3.2-1B-Instruct".
     signature : set[str] | None
         Σ_O — the set of atomic concept names in the target ontology.
-        Required when ``ontology_path`` is not given; ignored otherwise.
+        Required when ``ontology_path`` is not given; when both are given,
+        ``signature`` wins.
     h_reasoner : HypothesisReasoner
         A running HypothesisReasoner instance that will be kept in sync
         with H and used to answer H-entailment queries.
@@ -187,8 +214,11 @@ class LLMOracle(Oracle):
         provided the oracle operates in *grounded* mode: the full set of
         parsed GCIs is placed in the system prompt so the LLM reasons
         from the given axioms rather than from parametric knowledge.
-        The signature is also derived from the file, overriding
-        ``signature``.
+        The signature and roles are also derived from the file, unless
+        ``signature`` / ``roles`` are given.
+    roles : set[str] | None
+        Role names in scope.  ``None``: those in the file's parsed axioms, or
+        none without ``ontology_path``.
     """
 
     def __init__(
@@ -200,6 +230,7 @@ class LLMOracle(Oracle):
         device: str | int = "cpu",
         verbose: bool = False,
         ontology_path: str | None = None,
+        roles: set[str] | None = None,
     ):
         super().__init__()
         self._h_reasoner = h_reasoner
@@ -209,6 +240,12 @@ class LLMOracle(Oracle):
             "text-generation",
             model=model_name_or_path,
             device=device,
+        )
+        # Models without a pad token (Mistral, Llama, …) pad with EOS anyway; passing
+        # it explicitly stops generate() warning about it on every query.
+        tokenizer = self._pipe.tokenizer
+        self._pad_token_id = (
+            tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         )
         self._model_name = model_name_or_path
         cache_enabled = os.getenv("LLM_CACHE_ENABLED", "1") != "0"
@@ -222,15 +259,16 @@ class LLMOracle(Oracle):
 
         if ontology_path is not None:
             from utils.owl_parser import extract_ontology
-            self._sig, self._O = extract_ontology(ontology_path)
-            self._roles: set[str] = self._extract_roles(self._O)
+            parsed_sig, self._O = extract_ontology(ontology_path)
+            self._sig = set(signature) if signature is not None else parsed_sig
+            self._roles: set[str] = set(roles) if roles is not None else self._extract_roles(self._O)
             self._system_msg = self._build_grounded_system_message(self._sig, self._roles, self._O)
         else:
             if signature is None:
                 raise ValueError("Either 'signature' or 'ontology_path' must be provided.")
             self._sig = signature
             self._O: set[GCI] | None = None
-            self._roles = set()
+            self._roles = set(roles or ())
             self._system_msg = (
                 "You are a precise ontology reasoning assistant. "
                 "Follow the output format exactly as specified. "
@@ -327,16 +365,22 @@ class LLMOracle(Oracle):
         )
 
     @staticmethod
-    def _build_eq_counterexample_prompt(sig: set[str], roles: set[str], H: set[GCI]) -> str:
+    def _build_eq_counterexample_prompt(
+        sig: set[str], roles: set[str], H: set[GCI], feedback: Sequence[str] = (),
+    ) -> str:
+        """*feedback*: why earlier answers to this prompt could not be used, one
+        line each.  Generation is deterministic, so a retry must change the prompt."""
         sig_str   = ", ".join(sorted(sig))
         roles_str = ", ".join(sorted(roles)) if roles else "(none)"
         h_str = hypothesis_to_manchester(H)
+        retry = "".join(f"{line}\n" for line in feedback)
         return (
             f"Concept names in scope: {sig_str}.\n"
             f"Object properties in scope: {roles_str}.\n\n"
             "Hypothesis H:\n"
             f"{h_str}\n\n"
-            "Name one GCI that is entailed by target ontology O but is NOT entailed by H.\n"
+            + (f"{retry}\n" if retry else "")
+            + "Name one GCI that is entailed by target ontology O but is NOT entailed by H.\n"
             "Output exactly one line in Manchester syntax, e.g.: Cat SubClassOf Animal\n"
             "Output nothing else."
         )
@@ -345,65 +389,121 @@ class LLMOracle(Oracle):
     # LLM query helper
     # ------------------------------------------------------------------
 
-    def _query(self, prompt: str, label: str = "QUERY") -> str:
+    def _query(self, prompt: str, parse: Callable[[str], T], label: str = "QUERY") -> T:
+        """
+        Ask the LLM and return ``parse(response)``.
+
+        A response is cached only once ``parse`` accepts it, so a response that
+        cannot be parsed (e.g. reasoning cut off by max_new_tokens) is never
+        replayed from the cache.  A cached response that no longer parses, left
+        by an older version, is treated as a miss and regenerated.
+        """
         messages = [
             {"role": "system", "content": self._system_msg},
             {"role": "user",   "content": prompt},
         ]
+        # Part of the cache key: a response generated under another budget is not reused.
+        params = {"max_new_tokens": self._max_new_tokens, "do_sample": False}
 
         # Cache lookup
-        cached = self._cache.get(self._model_name, messages)
+        cached = self._cache.get(self._model_name, messages, params)
         if cached is not None:
             if self._verbose:
                 print(f"\n--- {label} (CACHED) ---")
                 print("[PROMPT]\n" + prompt)
                 print("[RESPONSE]\n" + cached)
-            return cached
+            try:
+                return parse(cached)
+            except ValueError:
+                logger.warning("Cached %s response does not parse; regenerating.", label)
 
-        generation_config = GenerationConfig(
-            max_new_tokens=self._max_new_tokens,
-            do_sample=False,
-        )
+        generation_config = GenerationConfig(**params, pad_token_id=self._pad_token_id)
 
         outputs = self._pipe(messages, generation_config=generation_config)
         response = outputs[0]["generated_text"][-1]["content"].strip()
-
-        # Cache store
-        self._cache.set(self._model_name, messages, response)
 
         if self._verbose:
             print(f"\n--- {label} ---")
             print("[PROMPT]\n" + prompt)
             print("[RESPONSE]\n" + response)
 
-        return response
+        result = parse(response)  # raises ValueError before anything is cached
+
+        # Cache store
+        self._cache.set(self._model_name, messages, response, params)
+        return result
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_last_line(response: str) -> str:
-        """Return the last non-empty line of *response*.
+    def _extract_yes_no(response: str) -> str | None:
+        """Return 'yes' or 'no' as the answer given in *response*, or None.
 
-        Reasoning models emit chain-of-thought before the final answer line,
-        so we discard everything above and return only the conclusion.
+        Reasoning models think before answering, and DeepSeek-style models wrap
+        that in <think>…</think>, so only the text after the last </think> is
+        read.  The verdict is taken from its last non-empty line, using the
+        first yes/no there ("Yes — no axiom contradicts it" is a yes).  Only
+        when that line has none is the last yes/no anywhere in the text used.
         """
-        lines = [ln.strip() for ln in response.splitlines() if ln.strip()]
-        if not lines:
-            raise ValueError(f"Empty response: {response!r}")
-        return lines[-1]
+        text = response.rsplit("</think>", 1)[-1].lower()
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        if lines:
+            final = re.findall(r'\b(yes|no)\b', lines[-1])
+            if final:
+                return final[0]
+        matches = re.findall(r'\b(yes|no)\b', text)
+        return matches[-1] if matches else None
+
+    @classmethod
+    def _parse_yes_no(cls, response: str, what: str) -> bool:
+        """Return True for 'yes', False for 'no'; raise OracleError otherwise
+        (often reasoning cut off by max_new_tokens, which a retry would repeat)."""
+        answer = cls._extract_yes_no(response)
+        if answer is None:
+            raise OracleError(f"Unparseable {what} response: {response!r}")
+        return answer == "yes"
 
     @staticmethod
-    def _extract_yes_no(response: str) -> str | None:
-        """Return 'yes' or 'no' based on the last occurrence in *response*.
-
-        Reasoning models produce chain-of-thought before their final answer,
-        so we scan the entire text and take the last match rather than only
-        checking the first word.
+    def _answer_line(response: str) -> str:
         """
-        matches = re.findall(r'\b(yes|no)\b', response.lower())
-        return matches[-1] if matches else None
+        The line of *response* that holds a counterexample: the last non-empty
+        line that is not a code fence, without the wrapping a model may add
+        (backticks, quotes, a list dash, an "Answer:" label, a full stop).
+        """
+        text = response.rsplit("</think>", 1)[-1]
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip() and ln.strip().strip("`")]
+        if not lines:
+            raise ValueError(f"no answer line in {response!r}")
+        line = lines[-1]
+        line = re.sub(r'^[-*]\s+', '', line)
+        line = re.sub(r'^(answer|counterexample|gci)\s*:\s*', '', line, flags=re.IGNORECASE)
+        line = line.strip().strip('`"\'').strip()
+        return line.rstrip('.').strip()
+
+    def _parse_counterexample(self, response: str) -> GCI:
+        """
+        The GCI named in an EQ counterexample *response*.  Raises ValueError,
+        saying why, when the answer line does not parse or uses a concept name
+        outside Σ or a role outside the roles in scope.
+        """
+        line = self._answer_line(response)
+        try:
+            gci = parse_manchester_gci(line)
+        except ValueError:
+            raise ValueError(f"{line!r} is not of the form 'C SubClassOf D' in Manchester syntax")
+        atoms, roles = gci_names(gci)
+        unknown = sorted(atoms - self._sig)
+        unknown_roles = sorted(roles - self._roles)
+        problems = []
+        if unknown:
+            problems.append(f"{', '.join(unknown)} {'is not a concept name' if len(unknown) == 1 else 'are not concept names'} in scope")
+        if unknown_roles:
+            problems.append(f"{', '.join(unknown_roles)} {'is not an object property' if len(unknown_roles) == 1 else 'are not object properties'} in scope")
+        if problems:
+            raise ValueError(f"{line!r}: " + "; ".join(problems))
+        return gci
 
     # ------------------------------------------------------------------
     # Oracle interface — O-entailment via LLM
@@ -416,15 +516,14 @@ class LLMOracle(Oracle):
         The LLM is prompted for a yes/no answer in Manchester syntax.
         Raises ValueError if the response cannot be parsed as yes or no.
         """
-        response = self._query(self._build_mq_prompt(self._sig, self._roles, gci), label="MQ")
-        answer = self._extract_yes_no(response)
-        if answer == "yes":
-            return True
-        if answer == "no":
-            return False
-        raise ValueError(
-            f"Unparseable MQ response for '{gci_to_manchester(gci)}': {response!r}"
+        return self._query(
+            self._build_mq_prompt(self._sig, self._roles, gci),
+            parse=lambda r: self._parse_yes_no(r, f"MQ for '{gci_to_manchester(gci)}'"),
+            label="MQ",
         )
+
+    # Attempts at a usable counterexample per EQ (the first ask and two retries).
+    _EQ_ATTEMPTS = 3
 
     def _EQ(self, hypothesis: set[GCI]) -> Optional[GCI]:
         """
@@ -433,19 +532,42 @@ class LLMOracle(Oracle):
         Step 1 — ask the LLM yes/no whether H captures all of O.
         Step 2 — if no, ask for one counterexample GCI in Manchester syntax.
 
-        Returns None if the LLM confirms equivalence, otherwise parses and
-        returns the counterexample GCI.
-        Raises ValueError if either response cannot be parsed.
+        Returns None if the LLM confirms equivalence, otherwise the counterexample.
+        A counterexample is usable when it parses, uses only names in scope, and
+        the LLM's own MQ accepts it (it must be O-entailed).  An unusable one is
+        asked for again, up to ``_EQ_ATTEMPTS`` times in all, with the reasons the
+        earlier answers failed added to the prompt.  Raises OracleError when the
+        judge's answer does not parse or no attempt gives a usable counterexample.
+        Whether H already entails it is checked by learn_el_terminology.
         """
-        judge_raw = self._query(self._build_eq_judge_prompt(self._sig, self._roles, hypothesis), label="EQ (judge)")
-        judge = self._extract_yes_no(judge_raw)
-        if judge == "yes":
+        equivalent = self._query(
+            self._build_eq_judge_prompt(self._sig, self._roles, hypothesis),
+            parse=lambda r: self._parse_yes_no(r, "EQ judge"),
+            label="EQ (judge)",
+        )
+        if equivalent:
             return None
-        if judge != "no":
-            raise ValueError(f"Unparseable EQ judge response: {judge_raw!r}")
-        ce_raw = self._query(self._build_eq_counterexample_prompt(self._sig, self._roles, hypothesis), label="EQ (counterexample)")
-        ce_line = self._extract_last_line(ce_raw)
-        return parse_manchester_gci(ce_line)
+        reasons: list[str] = []   # why each earlier answer could not be used
+        for _ in range(self._EQ_ATTEMPTS):
+            feedback = [f"Your previous answer could not be used: {r}." for r in reasons]
+            try:
+                counterexample = self._query(
+                    self._build_eq_counterexample_prompt(self._sig, self._roles, hypothesis, feedback),
+                    parse=self._parse_counterexample,
+                    label="EQ (counterexample)",
+                )
+            except ValueError as exc:
+                reasons.append(str(exc))
+                continue
+            if self.MQ(counterexample):
+                return counterexample
+            # The model named an axiom it then rejects: its answers are inconsistent.
+            reasons.append(
+                f"asked whether O entails '{gci_to_manchester(counterexample)}', you answered no"
+            )
+        raise OracleError(
+            f"no usable counterexample in {self._EQ_ATTEMPTS} attempts: " + "; ".join(reasons)
+        )
 
     # ------------------------------------------------------------------
     # Cleanup

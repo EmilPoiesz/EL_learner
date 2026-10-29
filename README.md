@@ -277,6 +277,8 @@ with LLMOracle(
 
 `learn_el_terminology` returns a `set[GCI]` representing what the language model knows about the domain.
 
+In this parametric mode (no `ontology_path`) the prompts list no object properties, so the model is effectively limited to atomic subsumptions. Pass `ontology_path` for grounded mode, where the signature, roles and axioms are taken from the ontology file and placed in the system prompt.
+
 #### Manchester syntax
 
 `llm_oracle.py` exports module-level helpers for converting between `ELConcept`/`GCI` objects and Manchester syntax strings:
@@ -291,6 +293,8 @@ from learner.llm_oracle import concept_to_manchester, gci_to_manchester, parse_m
 | `gci_to_manchester(gci)` | `GCI` → string |
 | `parse_manchester_concept(s)` | string → `ELConcept` |
 | `parse_manchester_gci(s)` | string → `GCI` (raises `ValueError` on invalid input) |
+
+The parsers accept the keywords `SubClassOf` (also `SubClassOf:`), `and` and `some` in any case, and names with `:`, `.` or `-` inside them (`ex:hasPart`, `has-part`).
 
 #### How MQ and EQ work
 
@@ -318,7 +322,11 @@ Output exactly one line in Manchester syntax, e.g.: Cat SubClassOf Animal
 Output nothing else.
 ```
 
-Parsing is strict: any response that does not parse as a valid GCI raises `ValueError`.
+The answer to an MQ or judge prompt is read from the text after any `<think>…</think>` block: the first yes/no on the last non-empty line, or, if that line has none, the last yes/no anywhere. A response with no yes/no at all (often reasoning cut off by `max_new_tokens`) raises `OracleError`.
+
+The counterexample is read from the last non-empty line after any `<think>` block, skipping code fences and removing backticks, quotes, a list dash, an `Answer:` label and a final full stop. It is usable when it parses, uses only the concept names and object properties in scope, and the model's own MQ accepts it. An unusable answer is asked for again, up to 3 attempts in all, with one line per earlier failure added to the prompt (e.g. "Your previous answer could not be used: Animal, Cat are not concept names in scope."). Generation is deterministic, so the changed prompt is what gets a different answer. If no attempt gives a usable counterexample, the oracle raises `OracleError`.
+
+`learn_el_terminology` stops on an `OracleError` with a warning that gives the reason, and returns the H learned so far. A response that does not parse is never cached, so a rerun (for example with a larger `max_new_tokens`) asks the model again instead of replaying it; a cached response that no longer parses is regenerated.
 
 #### Verbose mode
 
