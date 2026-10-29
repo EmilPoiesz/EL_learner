@@ -17,7 +17,7 @@ Usage
 
   # LLMOracle in grounded mode (taught — ontology placed in system prompt)
   python demo.py --oracle taught --ontology ontologies/medical.ttl
-  python demo.py --oracle taught --ontology ontologies/medical.owl --model <hf-model> --device mps
+  python demo.py --oracle taught --ontology ontologies/medical.ttl --model <hf-model> --device mps
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
+from typing import Callable
 
 from learner.el_algorithm import ELConcept, GCI, Oracle, learn_el_terminology
 
@@ -47,7 +49,7 @@ def _run_reasoner_demo(
     reasoner: str,
     verbose: bool,
     output: str | None = None,
-) -> None:
+) -> bool:
     from learner.reasoner_oracle import ReasonerOracle
 
     ontology_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ontology)
@@ -72,14 +74,18 @@ def _run_reasoner_demo(
             _run_and_report(oracle, verbose=verbose, output=output)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
+        return False
+    return True
 
 
-def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None) -> None:
+def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, judge: Callable[[GCI], bool] | None = None) -> None:
     """Run the learner and print a comparison report against oracle.axioms."""
     if not verbose:
         logging.disable(logging.INFO)
-    H = learn_el_terminology(oracle, max_iterations=50)
-    logging.disable(logging.NOTSET)
+    try:
+        H = learn_el_terminology(oracle, max_iterations=50)
+    finally:
+        logging.disable(logging.NOTSET)
 
     mq_calls = oracle.mq_count
     eq_calls = oracle.eq_count
@@ -96,13 +102,17 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None) ->
         print(f"    {tag}{gci}")
     print("  (* = derivable from O but not a primitive axiom)")
 
-    extra   = [g for g in H if not oracle.MQ(g)]
-    covered = all(oracle.MQ(g) or g in H for g in target_O)
-    print()
-    if covered and not extra:
+    H_MQ = oracle.make_H_MQ(H)
+    O_MQ = judge or oracle.MQ
+    extra   = [g for g in H if not O_MQ(g)]   # soundness:    O ⊨ H
+    missing = [g for g in target_O if not H_MQ(g)] # completeness: H ⊨ O
+
+    if not missing and not extra:
         print("  ✓  H ≡ O")
     else:
         print("  ✗  H ≢ O")
+        for g in missing: print(f"      missing: {g}")
+        for g in extra:   print(f"      extra:   {g}")
 
     print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
 
@@ -116,7 +126,14 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None) ->
 # Grounded (taught) LLMOracle demo
 # ---------------------------------------------------------------------------
 
-def _run_taught_llm_demo(ontology: str, model: str, device: str, verbose: bool, output: str | None = None) -> None:
+def _run_taught_llm_demo(
+    ontology: str,
+    model: str,
+    device: str,
+    verbose: bool,
+    output: str | None = None,
+    max_new_tokens: int | None = None,
+) -> bool:
     from utils.java_utils import build_classpath
     from learner.hypothesis_reasoner import HypothesisReasoner
     from learner.llm_oracle import LLMOracle
@@ -127,6 +144,8 @@ def _run_taught_llm_demo(ontology: str, model: str, device: str, verbose: bool, 
     _section(f"EL Learner — LLMOracle (grounded / taught)  ({model})")
     print(f"\n  Ontology : {ontology}")
     print(f"  Device   : {device}")
+    if max_new_tokens is not None:
+        print(f"  Max new tokens : {max_new_tokens}")
 
     classpath = build_classpath(gateway_jar_dir)
     print("\n  Starting ELK H-reasoner …")
@@ -142,12 +161,21 @@ def _run_taught_llm_demo(ontology: str, model: str, device: str, verbose: bool, 
             ontology_path=ontology_path,
             device=device,
             verbose=verbose,
+            # None keeps LLMOracle's default budget.
+            **({} if max_new_tokens is None else {"max_new_tokens": max_new_tokens}),
         ) as oracle:
             print("  Model loaded.")
-            print(f"  Σ = {sorted(oracle.signature)}\n")
-            _run_and_report(oracle, verbose=verbose, output=output)
+            print(f"  Σ = {sorted(oracle.signature)}")
+            print()
+            # Soundness is judged by ELK on O's axioms, not by the model's own MQs.
+            with HypothesisReasoner(classpath, "elk") as judge:
+                for gci in oracle.axioms:
+                    judge.add(gci)
+                _run_and_report(oracle, verbose=verbose, output=output, judge=judge)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +184,7 @@ def _run_taught_llm_demo(ontology: str, model: str, device: str, verbose: bool, 
 
 _LLM_MODEL     = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 _LLM_SIGNATURE: set[str] = {"Person", "Male", "Female", "Parent", "Father", "Mother"}
+_LLM_ROLES: set[str] = set()
 
 # A few representative GCIs used in the dry-run preview and MQ sanity check.
 _PREVIEW_GCIS: list[GCI] = [
@@ -186,7 +215,7 @@ def _llm_dry_run() -> None:
     for gci in _PREVIEW_GCIS:
         print(f"GCI: {gci_to_manchester(gci)}")
         print("-" * 40)
-        print(LLMOracle._build_mq_prompt(_LLM_SIGNATURE, gci))
+        print(LLMOracle._build_mq_prompt(_LLM_SIGNATURE, _LLM_ROLES, gci))
         print()
 
     print("\n--- EQ prompts ---\n")
@@ -194,13 +223,19 @@ def _llm_dry_run() -> None:
     print(hypothesis_to_manchester(_PREVIEW_HYPOTHESIS))
     print("\n[Step 1 — judge equivalence]")
     print("-" * 40)
-    print(LLMOracle._build_eq_judge_prompt(_LLM_SIGNATURE, _PREVIEW_HYPOTHESIS))
+    print(LLMOracle._build_eq_judge_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
     print("\n[Step 2 — request counterexample]")
     print("-" * 40)
-    print(LLMOracle._build_eq_counterexample_prompt(_LLM_SIGNATURE, _PREVIEW_HYPOTHESIS))
+    print(LLMOracle._build_eq_counterexample_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
 
 
-def _run_llm_demo(model: str, device: str, verbose: bool, output: str | None = None) -> None:
+def _run_llm_demo(
+    model: str,
+    device: str,
+    verbose: bool,
+    output: str | None = None,
+    max_new_tokens: int | None = None,
+) -> bool:
     from utils.java_utils import build_classpath
     from learner.hypothesis_reasoner import HypothesisReasoner
     from learner.llm_oracle import LLMOracle, gci_to_manchester
@@ -215,38 +250,43 @@ def _run_llm_demo(model: str, device: str, verbose: bool, output: str | None = N
     print("  H-reasoner ready.")
 
     print(f"\n  Loading model '{model}' …")
-    with LLMOracle(
-        model_name_or_path=model,
-        signature=_LLM_SIGNATURE,
-        h_reasoner=h_reasoner,
-        max_new_tokens=128,
-        device=device,
-        verbose=verbose,
-    ) as oracle:
-        print("  Model loaded.")
+    try:
+        with LLMOracle(
+            model_name_or_path=model,
+            signature=_LLM_SIGNATURE,
+            h_reasoner=h_reasoner,
+            max_new_tokens=128 if max_new_tokens is None else max_new_tokens,
+            device=device,
+            verbose=verbose,
+        ) as oracle:
+            print("  Model loaded.")
 
-        _section("MQ sanity check")
-        for gci in _PREVIEW_GCIS:
-            print(f"  MQ({gci_to_manchester(gci)}) = {oracle.MQ(gci)}")
+            _section("MQ sanity check")
+            for gci in _PREVIEW_GCIS:
+                print(f"  MQ({gci_to_manchester(gci)}) = {oracle.MQ(gci)}")
 
-        _section("Learning EL terminology from LLM oracle")
-        print("  (Each MQ/EQ call queries the LLM — this may take a while)\n")
-        oracle.reset_counts()
-        H = learn_el_terminology(oracle, max_iterations=50)
-        mq_calls = oracle.mq_count
-        eq_calls = oracle.eq_count
+            _section("Learning EL terminology from LLM oracle")
+            print("  (Each MQ/EQ call queries the LLM — this may take a while)\n")
+            oracle.reset_counts()
+            H = learn_el_terminology(oracle, max_iterations=50)
+            mq_calls = oracle.mq_count
+            eq_calls = oracle.eq_count
 
-        _section("Result")
-        print(f"\n  |H| = {len(H)}\n")
-        print("  Learned GCIs (Manchester syntax):")
-        for gci in sorted(H, key=str):
-            print(f"    {gci_to_manchester(gci)}")
-        print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
+            _section("Result")
+            print(f"\n  |H| = {len(H)}\n")
+            print("  Learned GCIs (Manchester syntax):")
+            for gci in sorted(H, key=str):
+                print(f"    {gci_to_manchester(gci)}")
+            print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
 
-        if output:
-            from utils.owl_parser import save_ontology
-            save_ontology(H, output)
-            print(f"\n  Saved learned ontology to: {output}")
+            if output:
+                from utils.owl_parser import save_ontology
+                save_ontology(H, output)
+                print(f"\n  Saved learned ontology to: {output}")
+    except Exception as exc:
+        print(f"\n  ✗  Failed: {exc}")
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +326,12 @@ if __name__ == "__main__":
         help="Inference device: cpu, cuda, or mps.",
     )
     llm_grp.add_argument(
+        "--max-new-tokens", type=int, default=None, metavar="N",
+        help="Generation budget per LLM query.  Unset: 1024 for taught and "
+             "128 for --oracle llm.  Reasoning models need room to finish thinking "
+             "before their answer.",
+    )
+    llm_grp.add_argument(
         "--dry-run", action="store_true",
         help="Print prompts without loading the model (LLM oracle only).",
     )
@@ -305,28 +351,34 @@ if __name__ == "__main__":
             "ontologies", "learned", args.output,
         )
 
+    ok = True
     if args.oracle == "reasoner":
-        _run_reasoner_demo(
+        ok = _run_reasoner_demo(
             ontology=args.ontology,
             reasoner=args.reasoner,
             verbose=args.verbose,
             output=args.output,
         )
     elif args.oracle == "taught":
-        _run_taught_llm_demo(
+        ok = _run_taught_llm_demo(
             ontology=args.ontology,
             model=args.model,
             device=args.device,
             verbose=args.verbose,
             output=args.output,
+            max_new_tokens=args.max_new_tokens,
         )
     else:
         if args.dry_run:
             _llm_dry_run()
         else:
-            _run_llm_demo(
+            ok = _run_llm_demo(
                 model=args.model,
                 device=args.device,
                 verbose=args.verbose,
                 output=args.output,
+                max_new_tokens=args.max_new_tokens,
             )
+
+    # Non-zero on failure, so scripts and batch jobs see it.
+    sys.exit(0 if ok else 1)

@@ -330,7 +330,7 @@ The counterexample is read from the last non-empty line after any `<think>` bloc
 
 #### Verbose mode
 
-Pass `verbose=True` to `LLMOracle` (or `-v` in `demo_llm.py`) to print every prompt and response, labelled by query type:
+Pass `verbose=True` to `LLMOracle` (or `-v` with `demo.py --oracle llm`) to print every prompt and response, labelled by query type:
 
 ```
 --- MQ ---
@@ -354,7 +354,7 @@ Both oracle backends are accessed through a single entry point. Use `--oracle` t
 
 ```bash
 # ReasonerOracle (default)
-python demo.py                                     # ELK on ontologies/medical.ttl
+python demo.py                                     # ELK on ontologies/animals.owl
 python demo.py --reasoner hermit                   # HermiT instead of ELK
 python demo.py --ontology ontologies/medical.ttl   # explicit ontology path
 python demo.py -v                                  # verbose logging
@@ -366,7 +366,17 @@ python demo.py --oracle llm --device cuda          # NVIDIA GPU
 python demo.py --oracle llm -v                     # print all prompts and responses
 python demo.py --oracle llm --dry-run              # preview prompts without loading the model
 python demo.py --oracle llm --model <hf-path>      # use a different HuggingFace model
+
+# LLMOracle, grounded ("taught"): the ontology is placed in the system prompt
+python demo.py --oracle taught --ontology ontologies/medical.ttl
+python demo.py --oracle taught --ontology ontologies/animals.owl --model <hf-path> --device mps
+python demo.py --oracle taught --max-new-tokens 4096  # more room for a reasoning model (default 1024; 128 for --oracle llm)
+
+# Save the learned ontology (.ttl → Turtle, .owl/.xml → RDF/XML)
+python demo.py --output learned.ttl                # bare filename → ontologies/learned/learned.ttl
 ```
+
+The reasoner and taught demos finish with an equivalence check: every axiom of O must be entailed by H (completeness, checked with the H-reasoner) and every axiom of H must be entailed by O (soundness, checked with the oracle's MQ). Any missing or extra axioms are listed. `demo.py` exits with status 1 when a run fails (an exception such as an unparseable LLM response), so scripts and batch jobs can detect it.
 
 The LLM demo uses `HuggingFaceTB/SmolLM2-1.7B-Instruct` on a kinship domain (`{Person, Male, Female, Parent, Father, Mother}`). The model is downloaded automatically on first run and cached in `~/.cache/huggingface/`. To pre-download:
 
