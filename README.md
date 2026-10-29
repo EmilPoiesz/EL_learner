@@ -53,7 +53,7 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 │   ├── reasoner_oracle.py       # ReasonerOracle — O-oracle backed by OWL API + ELK/HermiT
 │   ├── llm_oracle.py            # LLMOracle — O-oracle backed by a local HuggingFace model
 │   └── cache/
-│       ├── __init__.py          # Exports PATH (package directory used as default DB location)
+│       ├── __init__.py
 │       ├── hashing.py           # stable_hash() — deterministic SHA-256 key generation
 │       ├── backend.py           # SQLiteCacheBackend — persistent SQLite storage
 │       └── cache.py             # LLMCache — two-level cache (in-memory + SQLite)
@@ -166,12 +166,16 @@ Two storage layers are consulted in order:
 
 A cache hit on the memory layer requires no disk I/O. A miss falls through to SQLite and promotes the value to memory. The disk cache is never invalidated automatically — delete the `.db` file to start fresh.
 
+By default the database is `llm_cache.db` in the working directory, i.e. the project's top directory when `demo.py` is run from there (the file is git-ignored).
+
+The cache key covers the model name, the messages and the generation settings (`max_new_tokens`, `do_sample`), so a response generated under one token budget is never returned for another.
+
 The cache is controlled by three environment variables:
 
 | Variable | Default | Effect |
 |---|---|---|
 | `LLM_CACHE_ENABLED` | `1` | Set to `0` to disable all caching |
-| `LLM_CACHE_DB` | `llm_cache.db` | Path to the SQLite database file |
+| `LLM_CACHE_DB` | `llm_cache.db` | Path to the SQLite database file (relative paths resolve against the working directory) |
 | `LLM_CACHE_STORE_PROMPTS` | `0` | Set to `1` to also store the raw prompt string alongside the response (useful for debugging) |
 
 Example — run with a custom DB path and prompt logging:
