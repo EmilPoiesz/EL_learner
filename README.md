@@ -25,7 +25,7 @@ The algorithm is described in:
 - **Java 11**
 - **ELK jar** — `elk-owlapi-standalone-0.4.2-bin.jar` from [Maven Central](https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/), renamed to `elk-owlapi-standalone-0.4.2.jar` and placed in the `java/` directory (or pointed to via the `ELK_JAR` environment variable).
 
-> **ELK version note:** ELK 0.4.2 is required because it targets OWL API 3.x, which is compatible with the HermiT jar bundled by `owlready2`. Newer ELK versions target OWL API 4+ and are incompatible.
+> **ELK version note:** ELK 0.4.2 is required because it targets OWL API 3.x. The ELK standalone jar does not include the OWL API itself; those classes come from the `HermiT.jar` bundled with `owlready2` (located by `find_owlapi_jar()`), so that jar is always on the classpath, whichever reasoner is selected. Newer ELK versions target OWL API 4+ and are incompatible.
 
 Install Python dependencies:
 
@@ -83,17 +83,15 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 
 ## Setup: Compile the Java gateway
 
-A pre-compiled `OWLGateway.class` (Java 11) is committed to the repository, so no compilation step is required for normal use.
-
-If you need to recompile (e.g. after modifying `OWLGateway.java`), use the helper script, which auto-detects the required jars from your Python environment:
+`OWLGateway.class` is not committed. Compile it once after cloning, and again after any change to `OWLGateway.java`, using the helper script, which auto-detects the required jars from your Python environment:
 
 ```bash
 bash java/java_env.bash
 ```
 
-This produces `OWLGateway.class` in the `java/` directory.
+This produces `OWLGateway.class` (Java 11 bytecode, also when compiled with a newer JDK) in the `java/` directory.
 
-> **Note:** The script expects `owlready2`, `py4j`, and the ELK jar to be available. Activate your virtual environment first, and ensure the ELK jar is in the `java/` directory or pointed to via `$ELK_JAR`.
+> **Note:** The script expects `owlready2` and `py4j` to be installed in the active virtual environment. The ELK jar is not needed to compile, since `OWLGateway` loads ELK by reflection at runtime.
 
 ---
 
@@ -203,7 +201,7 @@ Two reasoners are supported, selected via the `reasoner` parameter of `ReasonerO
 | **ELK** | `"elk"` | Default. OWL 2 EL reasoner; fast and sound/complete for the EL profile. Requires the ELK jar (see Prerequisites). |
 | **HermiT** | `"hermit"` | Full OWL 2 DL reasoner; supports expressive axioms beyond EL but is slower. Bundled with `owlready2`, no extra download needed. |
 
-ELK is the default because the learning algorithm targets the EL profile, making HermiT's extra expressivity unnecessary.
+ELK is the default everywhere (`ReasonerOracle`, `HypothesisReasoner`, `demo.py`, `pytest`, and the `OWLGateway` entry point) because the learning algorithm targets the EL profile, so HermiT's extra expressivity is unnecessary. HermiT remains available as an alternative, e.g. to cross-check ELK's answers: pass `reasoner="hermit"`, `--reasoner hermit` to `demo.py`, or `--reasoner=hermit` to `pytest`. With `ReasonerOracle`, the choice applies to both the O-reasoner and the H-reasoner. The LLM demos always use ELK for the H-reasoner.
 
 ### ELK jar lookup order
 

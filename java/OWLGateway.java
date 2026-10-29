@@ -189,7 +189,11 @@ public class OWLGateway {
         manager.addAxiom(ontology, proxyAxiom);
         reasoner.flush();
 
-        boolean result = reasoner.getSuperClasses(lhs, false).containsEntity(proxy);
+        // ⊤ ⊑ rhs makes the proxy equivalent to ⊤, and getSuperClasses lists strict
+        // superclasses only, so for a ⊤ LHS the proxy is looked for in the top node.
+        boolean result = lhs.isOWLThing()
+                ? reasoner.getTopClassNode().contains(proxy)
+                : reasoner.getSuperClasses(lhs, false).containsEntity(proxy);
 
         manager.removeAxiom(ontology, proxyAxiom);
         reasoner.flush();
@@ -202,7 +206,7 @@ public class OWLGateway {
     // ---------------------------------------------------------------
     public static void main(String[] args) throws Exception {
         int port = args.length > 0 ? Integer.parseInt(args[0]) : 25333;
-        String reasonerType = args.length > 1 ? args[1] : "hermit";
+        String reasonerType = args.length > 1 ? args[1] : "elk";
 
         OWLGateway gateway = new OWLGateway(reasonerType);
         GatewayServer server = new GatewayServer(gateway, port);

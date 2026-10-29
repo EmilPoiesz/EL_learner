@@ -4,7 +4,7 @@ import subprocess
 from py4j.java_gateway import JavaGateway, GatewayParameters
 
 from learner.el_algorithm import GCI
-from utils.java_utils import encode, start_gateway
+from utils.java_utils import encode, find_java, start_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ class HypothesisReasoner:
 
     def __init__(self, classpath: str, reasoner: str = "elk"):
         self._java_proc = subprocess.Popen(
-            ["java", "-cp", classpath, "OWLGateway", "0", reasoner],  # "0" → OS assigns a free port
+            [find_java(), "-cp", classpath, "OWLGateway", "0", reasoner],  # "0" → OS assigns a free port
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         port = start_gateway(self._java_proc)

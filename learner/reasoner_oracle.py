@@ -8,7 +8,7 @@ from py4j.java_gateway import JavaGateway, GatewayParameters
 from learner.el_algorithm import Oracle, ELConcept, GCI
 from typing import Optional
 
-from utils.java_utils import find_hermit_jar, find_py4j_jar, find_elk_jar, find_log4j_jars, start_gateway, encode
+from utils.java_utils import encode, find_elk_jar, find_java, find_log4j_jars, find_owlapi_jar, find_py4j_jar, start_gateway
 from learner.hypothesis_reasoner import HypothesisReasoner
 from utils.owl_parser import extract_ontology
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# OWL API + HermiT/ELK reasoner bridge via py4j
+# OWL API + ELK/HermiT reasoner bridge via py4j
 # ---------------------------------------------------------------------------
 
 class ReasonerOracle(Oracle):
@@ -34,15 +34,14 @@ class ReasonerOracle(Oracle):
     path : str
         Path to the OWL/Turtle ontology file.
     gateway_jar_dir : str, optional
-        Directory containing OWLGateway.class.  Defaults to the directory
-        of this source file, so compiling OWLGateway.java in the project
-        directory is all that is needed.
+        Directory containing OWLGateway.class.  Defaults to the project's
+        ``java/`` directory, where OWLGateway.java is compiled.
     reasoner : str, optional
-        Which DL reasoner to use: ``"hermit"`` (default) or ``"elk"``.
-        ELK is an OWL 2 EL reasoner; it is faster but only supports the EL
-        profile.  HermiT is a full OWL 2 DL reasoner.
+        Which DL reasoner to use: ``"elk"`` (default) or ``"hermit"``.
+        ELK is an OWL 2 EL reasoner; it is fast and complete for the EL
+        profile the learner targets.  HermiT is a full OWL 2 DL reasoner.
         When using ELK the ``elk-owlapi-standalone-*.jar`` must be on the
-        classpath (place it in the project directory or set ELK_JAR).
+        classpath (place it in the java/ directory or set ELK_JAR).
     """
 
     def __init__(
@@ -62,10 +61,10 @@ class ReasonerOracle(Oracle):
             gateway_jar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../java")
         logger.info("Using gateway_jar_dir: %s", gateway_jar_dir)
 
-        hermit_jar = find_hermit_jar()
+        owlapi_jar = find_owlapi_jar()
         py4j_jar   = find_py4j_jar()
 
-        jars = [gateway_jar_dir, hermit_jar, py4j_jar]
+        jars = [gateway_jar_dir, owlapi_jar, py4j_jar]
         if self._reasoner_type == "elk":
             jars.append(find_elk_jar(gateway_jar_dir))
             jars.extend(find_log4j_jars())
@@ -74,24 +73,29 @@ class ReasonerOracle(Oracle):
         logger.debug("Java classpath: %s", classpath)
         logger.info("Starting OWLGateway Java process (reasoner=%s)...", self._reasoner_type)
         self._java_proc = subprocess.Popen(
-            ["java", "-cp", classpath, "OWLGateway", "0", self._reasoner_type],
+            [find_java(), "-cp", classpath, "OWLGateway", "0", self._reasoner_type],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-        port = start_gateway(self._java_proc)
-        logger.info("OWLGateway listening on port %d", port)
+        # From here on a Java process runs: if the rest fails, stop what was started.
+        try:
+            port = start_gateway(self._java_proc)
+            logger.info("OWLGateway listening on port %d", port)
 
-        self._gw  = JavaGateway(
-            gateway_parameters=GatewayParameters(port=port, eager_load=True),
-            callback_server_parameters=None,
-        )
-        self._owl = self._gw.entry_point
+            self._gw  = JavaGateway(
+                gateway_parameters=GatewayParameters(port=port, eager_load=True),
+                callback_server_parameters=None,
+            )
+            self._owl = self._gw.entry_point
 
-        # Load all O-axioms into the O-reasoner
-        for gci in self._O:
-            self._owl.add_gci(encode(gci.lhs), encode(gci.rhs))
+            # Load all O-axioms into the O-reasoner
+            for gci in self._O:
+                self._owl.add_gci(encode(gci.lhs), encode(gci.rhs))
 
-        # Start a second gateway for H-entailment
-        self._h_reasoner = HypothesisReasoner(classpath, self._reasoner_type)
+            # Start a second gateway for H-entailment
+            self._h_reasoner = HypothesisReasoner(classpath, self._reasoner_type)
+        except BaseException:
+            self.close()
+            raise
         self._mq_cache: dict[GCI, bool] = {}
 
         # oracle_skills: map skill name → probability in [0, 1].
@@ -102,17 +106,24 @@ class ReasonerOracle(Oracle):
         logger.info("ReasonerOracle ready. Σ = %s", self._sig)
 
     def close(self) -> None:
-        """Shut down both the O-reasoner and H-reasoner Java processes."""
-        try:
-            self._gw.close()
-            self._java_proc.terminate()
-            self._java_proc.wait(timeout=5)
-        except Exception:
-            logger.debug("Error shutting down O-reasoner", exc_info=True)
-        try:
-            self._h_reasoner.close()
-        except Exception:
-            logger.debug("Error shutting down H-reasoner", exc_info=True)
+        """Shut down both the O-reasoner and H-reasoner Java processes (those that
+        were started: the constructor also calls this when it fails part-way)."""
+        if hasattr(self, "_gw"):
+            try:
+                self._gw.close()
+            except Exception:
+                logger.debug("Error closing O-reasoner gateway", exc_info=True)
+        if hasattr(self, "_java_proc"):
+            try:
+                self._java_proc.terminate()
+                self._java_proc.wait(timeout=5)
+            except Exception:
+                logger.debug("Error shutting down O-reasoner", exc_info=True)
+        if hasattr(self, "_h_reasoner"):
+            try:
+                self._h_reasoner.close()
+            except Exception:
+                logger.debug("Error shutting down H-reasoner", exc_info=True)
 
     def __enter__(self):
         return self
@@ -138,7 +149,7 @@ class ReasonerOracle(Oracle):
         self._h_reasoner.add(gci)
 
     def _MQ(self, gci: GCI) -> bool:
-        """Membership query via HermiT: O |= lhs ⊑ rhs?"""
+        """Membership query via the configured reasoner: O |= lhs ⊑ rhs?"""
         if gci not in self._mq_cache:
             self._mq_cache[gci] = self._owl.entails(encode(gci.lhs), encode(gci.rhs))
         return self._mq_cache[gci]

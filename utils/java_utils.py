@@ -7,11 +7,12 @@ encode(concept)               — serialise an ELConcept to the OWLGateway wire 
 
 Jar discovery
 -------------
-find_hermit_jar()             — HermiT.jar bundled with owlready2
+find_owlapi_jar()             — OWL API 3 classes (shipped inside owlready2's HermiT.jar)
 find_py4j_jar()               — py4j runtime jar
 find_elk_jar(gateway_jar_dir) — ELK OWL-API standalone jar
 find_log4j_jars()             — log4j jars required by ELK 0.4.2
 build_classpath(gateway_jar_dir) — assemble a full classpath string
+find_java()                   — a java executable new enough for OWLGateway (Java 11+)
 
 Gateway lifecycle
 -----------------
@@ -21,8 +22,11 @@ start_gateway(proc)           — block until the gateway prints READY:<port>, r
 from __future__ import annotations
 
 import glob
+import logging
 import os
 import queue
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -31,6 +35,8 @@ from functools import cache
 import owlready2
 
 from learner.el_algorithm import ELConcept
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +77,14 @@ def _search_for_jar(pattern: str, roots: list[str]) -> str | None:
     return None
 
 
-def find_hermit_jar() -> str:
+def find_owlapi_jar() -> str:
+    """
+    Locate the jar that provides the OWL API 3 classes OWLGateway compiles against.
+
+    owlready2 bundles OWL API 3 inside its HermiT.jar, so this jar is required
+    for every reasoner (ELK 0.4.2 ships without its own OWL API).  It also
+    provides the HermiT reasoner, used when ``reasoner="hermit"``.
+    """
     jar = os.path.join(os.path.dirname(owlready2.__file__), "hermit", "HermiT.jar")
     if not os.path.exists(jar):
         raise FileNotFoundError(f"HermiT.jar not found at {jar}")
@@ -133,14 +146,63 @@ def find_log4j_jars() -> list[str]:
 def build_classpath(gateway_jar_dir: str) -> str:
     """Assemble the full Java classpath for OWLGateway + ELK."""
     return os.pathsep.join(
-        [gateway_jar_dir, find_hermit_jar(), find_py4j_jar(), find_elk_jar(gateway_jar_dir)]
+        [gateway_jar_dir, find_owlapi_jar(), find_py4j_jar(), find_elk_jar(gateway_jar_dir)]
         + find_log4j_jars()
+    )
+
+
+MIN_JAVA = 11   # OWLGateway.class is Java 11 bytecode (java_env.bash: javac --release 11)
+
+
+def _java_major(java: str) -> int | None:
+    """The major version of *java* (8 for "1.8.0_472", 17 for "17.0.18"), or None."""
+    try:
+        out = subprocess.run([java, "-version"], capture_output=True, text=True, timeout=10).stderr
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r'version "(?:1\.)?(\d+)', out)
+    return int(m[1]) if m else None
+
+
+@cache
+def find_java() -> str:
+    """
+    A java executable that can run OWLGateway: the first of ``java`` on PATH,
+    ``$JAVA_HOME/bin/java`` and (macOS) ``/usr/libexec/java_home -v 11+`` that is
+    Java 11 or newer.  An IDE or notebook kernel often starts with a different
+    PATH and JAVA_HOME than the terminal, where an older default Java comes first.
+    """
+    candidates = [shutil.which("java")]
+    if os.environ.get("JAVA_HOME"):
+        candidates.append(os.path.join(os.environ["JAVA_HOME"], "bin", "java"))
+    if os.path.exists("/usr/libexec/java_home"):
+        home = subprocess.run(["/usr/libexec/java_home", "-v", f"{MIN_JAVA}+"], capture_output=True, text=True)
+        if home.returncode == 0:
+            candidates.append(os.path.join(home.stdout.strip(), "bin", "java"))
+    seen = []
+    for java in dict.fromkeys(filter(None, candidates)):   # PATH and JAVA_HOME often agree
+        major = _java_major(java)
+        if major is not None and major >= MIN_JAVA:
+            return java
+        seen.append(f"{java} (Java {major or '?'})")
+    raise RuntimeError(
+        f"OWLGateway needs Java {MIN_JAVA} or newer; found only: {', '.join(seen) or 'no java'}. "
+        "Put a newer JDK first on PATH or point JAVA_HOME at it."
     )
 
 
 # ---------------------------------------------------------------------------
 # Gateway lifecycle
 # ---------------------------------------------------------------------------
+
+def _drain(stream, name: str) -> None:
+    """Read *stream* (a gateway's pipe) to its end, logging each line at debug level."""
+    try:
+        for raw in stream:
+            logger.debug("OWLGateway %s: %s", name, raw.decode(errors="replace").rstrip())
+    except Exception:
+        pass
+
 
 def start_gateway(proc: subprocess.Popen, timeout: float = 10.0) -> int:
     """
@@ -150,20 +212,28 @@ def start_gateway(proc: subprocess.Popen, timeout: float = 10.0) -> int:
     bound port is reported on stdout as ``READY:<port>``.  Reading it here
     eliminates the TOCTOU race that existed when Python selected the port itself.
 
+    Once READY, both pipes are read until the process ends and each line goes to
+    the debug log: a pipe nobody reads fills up (about 64 KB), and the JVM then
+    blocks on its next log line.  Before READY, stderr is left for the error message.
+
     Raises RuntimeError on timeout or if the process exits before printing READY.
     """
     result: queue.Queue[int | None] = queue.Queue()
 
     def _read_stdout() -> None:
+        ready = False
         try:
             for raw in proc.stdout:
-                line = raw.decode(errors="replace").strip()
-                if line.startswith("READY:"):
+                line = raw.decode(errors="replace").rstrip()
+                if not ready and line.startswith("READY:"):
+                    ready = True
                     result.put(int(line.split(":")[1]))
-                    return
+                elif ready:
+                    logger.debug("OWLGateway stdout: %s", line)
         except Exception:
             pass
-        result.put(None)  # stdout closed without a READY line
+        if not ready:
+            result.put(None)  # stdout closed without a READY line
 
     threading.Thread(target=_read_stdout, daemon=True).start()
 
@@ -173,6 +243,7 @@ def start_gateway(proc: subprocess.Popen, timeout: float = 10.0) -> int:
         port = None
 
     if port is not None:
+        threading.Thread(target=_drain, args=(proc.stderr, "stderr"), daemon=True).start()
         return port
 
     proc.terminate()
