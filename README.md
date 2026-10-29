@@ -52,6 +52,8 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 │   ├── hypothesis_reasoner.py   # HypothesisReasoner — shared H-entailment component
 │   ├── reasoner_oracle.py       # ReasonerOracle — O-oracle backed by OWL API + ELK/HermiT
 │   ├── llm_oracle.py            # LLMOracle — O-oracle backed by a local HuggingFace model
+│   ├── pac.py                   # PACOracle — PAC-sampling equivalence queries, as the original paper
+│   ├── evaluation.py            # The paper's ontology score (H vs O on four statement shapes)
 │   └── cache/
 │       ├── __init__.py
 │       ├── hashing.py           # stable_hash() — deterministic SHA-256 key generation
@@ -71,7 +73,11 @@ The `LLMOracle` additionally requires `transformers`, `accelerate`, and `torch`,
 ├── ontologies/
 │   ├── medical.ttl              # Example medical ontology
 │   ├── test_minimal.ttl         # Minimal ontology used by the test suite
-│   └── animals.owl              # Small Animal ontology 
+│   ├── animals.owl              # The original paper's five ontologies:
+│   ├── cell.owl                 #   cell.owl is upstream's cl.owl
+│   ├── football.owl
+│   ├── generations.owl
+│   └── university.owl
 ├── .github/workflows/
 │   └── check.yml                # CI workflow — runs tests with coverage on every push
 ├── demo.py                      # Unified demo entry point
@@ -356,6 +362,7 @@ Both oracle backends are accessed through a single entry point. Use `--oracle` t
 # ReasonerOracle (default)
 python demo.py                                     # ELK on ontologies/animals.owl
 python demo.py --reasoner hermit                   # HermiT instead of ELK
+python demo.py --seed 1                            # another seed for the oracle skills (default 0)
 python demo.py --ontology ontologies/medical.ttl   # explicit ontology path
 python demo.py -v                                  # verbose logging
 
@@ -423,6 +430,28 @@ Concepts are encoded as strings when passed to the Java gateway:
 | A ⊓ B        | `AND:(A),(B)`                 |
 | ∃r.A         | `SOME:r:(A)`                  |
 | A ⊓ ∃r.B    | `AND:(A),(SOME:r:(B))`        |
+
+---
+
+## Reproducing the original ExactLearner-LLM setup
+
+The original [ExactLearner-LLM](https://github.com/MatteoMagnini/ExactLearner-LLM) differs from this project's default LLM oracle in three ways. Each one is available here as an option:
+
+| | Default here | Original (option) |
+|---|---|---|
+| What the model is given | `--oracle taught`: the ontology's axioms in the system prompt | `--oracle parametric`: only the signature; the model answers from what it knows. The ontology file is still the reference the result is scored against |
+| MQ prompt | `--prompt ours`: a yes/no question naming the signature | `--prompt paper-simple` / `paper-advanced`: upstream's system prompts (verbatim); the axiom alone as the user message; an answer counts as True only if it reads exactly "true" (`paper_is_true`); 2 new tokens unless `--max-new-tokens` says otherwise. As upstream's `AxiomSimplifier`, an MQ that H already entails is answered True without the model, and a conjunction on the right is asked one conjunct at a time, skipping conjuncts H entails (its final desaturation step is not reproduced) |
+| Equivalence query | `--eq oracle`: ELK for `ReasonerOracle`; for an LLM, a yes/no judge and a model-written counterexample | `--eq pac`: PAC sampling (`learner/pac.py`, `PACOracle`) |
+
+```bash
+python demo.py --oracle parametric --ontology ontologies/animals.owl \
+               --prompt paper-advanced --eq pac --model <hf-path> --device cuda
+python demo.py --eq pac                              # PAC sampling with ELK as the oracle
+```
+
+**PAC sampling.** An equivalence query draws random statements of the shapes `A ⊓ B ⊑ C`, `B ⊑ ∃r.A` and `∃r.A ⊑ B` over the signature and roles. It returns the first statement that H does not entail and the oracle's MQ does. If no such statement turns up within the budget `round((h·ln|X| − ln δ)/ε)` (|X| = cn²(cn−1) + 2·cn²·rn; h = the number of GCIs in the ontology; defaults ε = 0.2, δ = 0.1, seed 0, as upstream), H is accepted. The budget is shared by all equivalence queries of a run. Sample *i* is drawn from `random.Random(seed + i)`, so the sequence is reproducible, though not the same statements as upstream's Java generator draws. The run report adds `PAC samples: used of budget | MQs while sampling`; these MQs are not counted in `MQ calls`.
+
+PAC learning guarantees only that H agrees with O on most randomly drawn statements, not that H ≡ O. Even with ELK as the oracle, axioms that are rarely drawn are usually missed. On `animals.owl` (|X| = 6936, budget 675) the learner finds 1 counterexample and misses 9 of the 15 axioms.
 
 ---
 

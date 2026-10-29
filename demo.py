@@ -18,6 +18,11 @@ Usage
   # LLMOracle in grounded mode (taught — ontology placed in system prompt)
   python demo.py --oracle taught --ontology ontologies/medical.ttl
   python demo.py --oracle taught --ontology ontologies/medical.ttl --model <hf-model> --device mps
+
+  # As the original ExactLearner-LLM paper: signature from the ontology, axioms
+  # withheld, its prompts and True/False answers, PAC-sampling equivalence queries
+  python demo.py --oracle parametric --ontology ontologies/animals.owl \\
+                 --prompt paper-advanced --eq pac --model <hf-model> --device cuda
 """
 
 from __future__ import annotations
@@ -40,6 +45,18 @@ def _section(title: str) -> None:
     print("=" * 60)
 
 
+def _with_eq(oracle: Oracle, eq: str, epsilon: float, delta: float, seed: int | None) -> Oracle:
+    """Wrap *oracle* in PAC-sampling equivalence queries when ``eq == "pac"``."""
+    if eq != "pac":
+        return oracle
+    from learner.pac import PACOracle
+    pac = PACOracle(oracle, epsilon=epsilon, delta=delta, seed=seed or 0)
+    s = pac.sampler
+    print(f"  EQ       : PAC sampling, ε={epsilon} δ={delta} seed={s.seed}, "
+          f"|X|={s.instance_space_size}, budget {s.budget} statements")
+    return pac
+
+
 # ---------------------------------------------------------------------------
 # ReasonerOracle demo
 # ---------------------------------------------------------------------------
@@ -49,6 +66,10 @@ def _run_reasoner_demo(
     reasoner: str,
     verbose: bool,
     output: str | None = None,
+    seed: int | None = 0,
+    eq: str = "oracle",
+    epsilon: float = 0.2,
+    delta: float = 0.1,
 ) -> bool:
     from learner.reasoner_oracle import ReasonerOracle
 
@@ -64,6 +85,7 @@ def _run_reasoner_demo(
             path=ontology_path,
             gateway_jar_dir=project_dir,
             reasoner=reasoner,
+            seed=seed,
             oracle_skills={
                 "saturate_left":    0.8,
                 "unsaturate_right": 0.5,
@@ -71,7 +93,7 @@ def _run_reasoner_demo(
                 "compose_right":    0.6,
             },
         ) as oracle:
-            _run_and_report(oracle, verbose=verbose, output=output)
+            _run_and_report(_with_eq(oracle, eq, epsilon, delta, seed), verbose=verbose, output=output)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -80,10 +102,13 @@ def _run_reasoner_demo(
 
 def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, judge: Callable[[GCI], bool] | None = None) -> None:
     """Run the learner and print a comparison report against oracle.axioms."""
+    # With PAC sampling the sample budget bounds the run; every counterexample is
+    # one iteration, so a cap of 50 would cut a yes-biased LLM's run short.
+    max_iterations = 100_000 if getattr(oracle, "sampler", None) is not None else 50
     if not verbose:
         logging.disable(logging.INFO)
     try:
-        H = learn_el_terminology(oracle, max_iterations=50)
+        H = learn_el_terminology(oracle, max_iterations=max_iterations)
     finally:
         logging.disable(logging.NOTSET)
 
@@ -107,6 +132,11 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
     extra   = [g for g in H if not O_MQ(g)]   # soundness:    O ⊨ H
     missing = [g for g in target_O if not H_MQ(g)] # completeness: H ⊨ O
 
+    # The original ExactLearner-LLM's score: H vs O on every statement of four shapes.
+    from learner.evaluation import score_ontology
+    from learner.pac import role_names
+    score = score_ontology(O_MQ, H_MQ, oracle.signature, role_names(target_O))
+
     if not missing and not extra:
         print("  ✓  H ≡ O")
     else:
@@ -115,6 +145,15 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
         for g in extra:   print(f"      extra:   {g}")
 
     print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
+    sampler = getattr(oracle, "sampler", None)
+    if sampler is not None:   # PACOracle
+        print(f"  PAC samples: {sampler.provided} of {sampler.budget}  |  "
+              f"MQs while sampling: {oracle.sample_mq_count}")
+
+    print(f"\n  Ontology score (paper metric, {score.total} statements, {score.tp + score.fn} entailed by O):")
+    print(f"    TP {score.tp}  FN {score.fn}  FP {score.fp}  TN {score.tn}")
+    print(f"    accuracy {score.accuracy:.3f}  recall {score.recall:.3f}  "
+          f"precision {score.precision:.3f}  F1 {score.f1:.3f}")
 
     if output:
         from utils.owl_parser import save_ontology
@@ -123,17 +162,28 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
 
 
 # ---------------------------------------------------------------------------
-# Grounded (taught) LLMOracle demo
+# Grounded (taught / parametric) LLMOracle demo
 # ---------------------------------------------------------------------------
 
-def _run_taught_llm_demo(
+def _run_grounded_llm_demo(
     ontology: str,
     model: str,
     device: str,
     verbose: bool,
     output: str | None = None,
     max_new_tokens: int | None = None,
+    include_axioms: bool = True,
+    prompt_style: str = "ours",
+    eq: str = "oracle",
+    epsilon: float = 0.2,
+    delta: float = 0.1,
+    seed: int | None = 0,
 ) -> bool:
+    """
+    LLM oracle over an ontology file, scored against it.  ``include_axioms``:
+    the axioms are in the system prompt ("taught") or withheld ("parametric",
+    the paper's setting: the file only gives the signature and the reference).
+    """
     from utils.java_utils import build_classpath
     from learner.hypothesis_reasoner import HypothesisReasoner
     from learner.llm_oracle import LLMOracle
@@ -141,9 +191,11 @@ def _run_taught_llm_demo(
     ontology_path   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ontology)
     gateway_jar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
 
-    _section(f"EL Learner — LLMOracle (grounded / taught)  ({model})")
+    mode = "taught" if include_axioms else "parametric"
+    _section(f"EL Learner — LLMOracle (grounded / {mode})  ({model})")
     print(f"\n  Ontology : {ontology}")
     print(f"  Device   : {device}")
+    print(f"  Prompt   : {prompt_style}")
     if max_new_tokens is not None:
         print(f"  Max new tokens : {max_new_tokens}")
 
@@ -159,6 +211,8 @@ def _run_taught_llm_demo(
             signature=None,
             h_reasoner=h_reasoner,
             ontology_path=ontology_path,
+            include_axioms=include_axioms,
+            prompt_style=prompt_style,
             device=device,
             verbose=verbose,
             # None keeps LLMOracle's default budget.
@@ -166,12 +220,13 @@ def _run_taught_llm_demo(
         ) as oracle:
             print("  Model loaded.")
             print(f"  Σ = {sorted(oracle.signature)}")
+            learner_oracle = _with_eq(oracle, eq, epsilon, delta, seed)
             print()
             # Soundness is judged by ELK on O's axioms, not by the model's own MQs.
             with HypothesisReasoner(classpath, "elk") as judge:
                 for gci in oracle.axioms:
                     judge.add(gci)
-                _run_and_report(oracle, verbose=verbose, output=output, judge=judge)
+                _run_and_report(learner_oracle, verbose=verbose, output=output, judge=judge)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -299,16 +354,30 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--oracle", choices=["reasoner", "llm", "taught"], default="reasoner",
-        help="Oracle backend: 'reasoner' (Java/ELK), 'llm' (parametric LLM), "
-             "'taught' (LLM grounded on the ontology file).",
+        "--oracle", choices=["reasoner", "llm", "taught", "parametric"], default="reasoner",
+        help="Oracle backend: 'reasoner' (Java/ELK); 'llm' (LLM on a fixed kinship "
+             "signature); 'taught' (LLM with the ontology's axioms in its prompt); "
+             "'parametric' (LLM given only the ontology's signature, as in the paper). "
+             "'taught' and 'parametric' are scored against --ontology.",
     )
+    parser.add_argument(
+        "--eq", choices=["oracle", "pac"], default="oracle",
+        help="Equivalence queries: the oracle's own ('oracle': ELK, or the LLM judge), "
+             "or PAC sampling as in the paper ('pac'; reasoner, taught, parametric).",
+    )
+    parser.add_argument("--epsilon", type=float, default=0.2, help="PAC accuracy ε (with --eq pac).")
+    parser.add_argument("--delta", type=float, default=0.1, help="PAC confidence δ (with --eq pac).")
 
     # --- ReasonerOracle options ---
     reasoner_grp = parser.add_argument_group("ReasonerOracle options")
     reasoner_grp.add_argument(
         "--reasoner", choices=["elk", "hermit"], default="elk",
         help="DL reasoner (only used with --oracle reasoner).",
+    )
+    reasoner_grp.add_argument(
+        "--seed", type=int, default=0,
+        help="Seed for the oracle skills' random choices (--oracle reasoner) "
+             "and for the PAC statement sequence (--eq pac).",
     )
     reasoner_grp.add_argument(
         "--ontology", default="ontologies/animals.owl",
@@ -327,9 +396,14 @@ if __name__ == "__main__":
     )
     llm_grp.add_argument(
         "--max-new-tokens", type=int, default=None, metavar="N",
-        help="Generation budget per LLM query.  Unset: 1024 for taught and "
-             "128 for --oracle llm.  Reasoning models need room to finish thinking "
-             "before their answer.",
+        help="Generation budget per LLM query.  Unset: 2 with a paper prompt "
+             "(as upstream), else 1024 for taught/parametric and 128 for --oracle llm.  "
+             "Reasoning models need room to finish thinking before their answer.",
+    )
+    llm_grp.add_argument(
+        "--prompt", choices=["ours", "paper-simple", "paper-advanced"], default="ours",
+        help="MQ prompts: this project's yes/no prompts, or the original "
+             "ExactLearner-LLM's True/False prompts (taught/parametric only).",
     )
     llm_grp.add_argument(
         "--dry-run", action="store_true",
@@ -358,15 +432,28 @@ if __name__ == "__main__":
             reasoner=args.reasoner,
             verbose=args.verbose,
             output=args.output,
+            seed=args.seed,
+            eq=args.eq,
+            epsilon=args.epsilon,
+            delta=args.delta,
         )
-    elif args.oracle == "taught":
-        ok = _run_taught_llm_demo(
+    elif args.oracle in ("taught", "parametric"):
+        max_new_tokens = args.max_new_tokens
+        if max_new_tokens is None and args.prompt != "ours":
+            max_new_tokens = 2   # upstream's maxTokens for its True/False prompts
+        ok = _run_grounded_llm_demo(
             ontology=args.ontology,
             model=args.model,
             device=args.device,
             verbose=args.verbose,
             output=args.output,
-            max_new_tokens=args.max_new_tokens,
+            max_new_tokens=max_new_tokens,
+            include_axioms=args.oracle == "taught",
+            prompt_style=args.prompt,
+            eq=args.eq,
+            epsilon=args.epsilon,
+            delta=args.delta,
+            seed=args.seed,
         )
     else:
         if args.dry_run:

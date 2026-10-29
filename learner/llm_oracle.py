@@ -12,7 +12,7 @@ T = TypeVar("T")
 
 from transformers import pipeline, GenerationConfig
 
-from learner.el_algorithm import Oracle, OracleError, ELConcept, GCI
+from learner.el_algorithm import Oracle, OracleError, ELConcept, GCI, existential_key
 from learner.hypothesis_reasoner import HypothesisReasoner
 
 
@@ -179,6 +179,44 @@ def _split_top_level_and(s: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Prompt styles
+# ---------------------------------------------------------------------------
+
+# System prompts of the original ExactLearner-LLM (src/main/java/org/configurations/
+# experiments/manchester-{simple,advanced}.yml), as the YAML folds and trims them.
+PAPER_SYSTEM_PROMPTS: dict[str, str] = {
+    "paper-simple": "Answer with only True or False.",
+    "paper-advanced": (
+        "You need to classify the following statements as True or False. The statement "
+        "will be provided in either Manchester OWL syntax or natural language. Strictly "
+        "follow these guidelines:\n"
+        "  1. answer with only True or False;\n"
+        "  2. entities with has part relation are not in a subclass relation;\n"
+        "  3. take a deep breath before answering;\n"
+        "  4. if you are unsure about the classification, answer with False."
+    ),
+}
+PROMPT_STYLES = ("ours", *PAPER_SYSTEM_PROMPTS)
+
+
+def paper_is_true(response: str) -> bool:
+    """
+    Upstream's ``Result.isStrictlyTrue``: True only if the response, lowercased,
+    without full stops and literal "\\n" and trimmed, is exactly "true".
+    Anything else, including an unparseable answer, counts as False.
+    """
+    return response.lower().replace(".", "").replace("\\n", "").strip() == "true"
+
+
+def rhs_conjuncts(concept: ELConcept) -> list[ELConcept]:
+    """The conjuncts of a concept: each atom and each existential on its own."""
+    return (
+        [ELConcept({a}) for a in sorted(concept.atoms)]
+        + [ELConcept(existentials={e}) for e in sorted(concept.existentials, key=existential_key)]
+    )
+
+
+# ---------------------------------------------------------------------------
 # LLMOracle
 # ---------------------------------------------------------------------------
 
@@ -216,6 +254,20 @@ class LLMOracle(Oracle):
         from the given axioms rather than from parametric knowledge.
         The signature and roles are also derived from the file, unless
         ``signature`` / ``roles`` are given.
+    include_axioms : bool
+        With ``ontology_path``: put O's axioms in the system prompt (True,
+        "taught") or only take the signature and roles from the file (False,
+        "parametric": the model answers from what it knows, as in the paper).
+    prompt_style : str
+        ``"ours"`` (default): this project's yes/no prompts.
+        ``"paper-simple"`` / ``"paper-advanced"``: the original ExactLearner-LLM's
+        MQ setup — its system prompt, the axiom alone as the user message,
+        True/False read with ``paper_is_true``, and its AxiomSimplifier: an MQ
+        that H already entails is answered True without the model, and a
+        conjunction on the right is asked one conjunct at a time, skipping the
+        conjuncts H entails.  (Upstream's final desaturation step is not
+        reproduced.)  EQ prompts stay this project's; use PACOracle for the
+        paper's equivalence queries.
     roles : set[str] | None
         Role names in scope.  ``None``: those in the file's parsed axioms, or
         none without ``ontology_path``.
@@ -230,9 +282,14 @@ class LLMOracle(Oracle):
         device: str | int = "cpu",
         verbose: bool = False,
         ontology_path: str | None = None,
+        include_axioms: bool = True,
+        prompt_style: str = "ours",
         roles: set[str] | None = None,
     ):
         super().__init__()
+        if prompt_style not in PROMPT_STYLES:
+            raise ValueError(f"prompt_style must be one of {PROMPT_STYLES}, not {prompt_style!r}")
+        self._prompt_style = prompt_style
         self._h_reasoner = h_reasoner
         self._max_new_tokens = max_new_tokens
         self._verbose = verbose
@@ -262,18 +319,30 @@ class LLMOracle(Oracle):
             parsed_sig, self._O = extract_ontology(ontology_path)
             self._sig = set(signature) if signature is not None else parsed_sig
             self._roles: set[str] = set(roles) if roles is not None else self._extract_roles(self._O)
-            self._system_msg = self._build_grounded_system_message(self._sig, self._roles, self._O)
+            if include_axioms:
+                self._system_msg = self._build_grounded_system_message(self._sig, self._roles, self._O)
+            else:
+                self._system_msg = self._PARAMETRIC_SYSTEM_MSG
         else:
             if signature is None:
                 raise ValueError("Either 'signature' or 'ontology_path' must be provided.")
             self._sig = signature
             self._O: set[GCI] | None = None
             self._roles = set(roles or ())
-            self._system_msg = (
-                "You are a precise ontology reasoning assistant. "
-                "Follow the output format exactly as specified. "
-                "Do not add any explanation, preamble, or punctuation beyond what is asked."
-            )
+            self._system_msg = self._PARAMETRIC_SYSTEM_MSG
+
+        if prompt_style in PAPER_SYSTEM_PROMPTS:
+            system = PAPER_SYSTEM_PROMPTS[prompt_style]
+            if ontology_path is not None and include_axioms:
+                axioms = "\n".join(f"  {gci_to_manchester(g)}" for g in sorted(self._O, key=str))
+                system += f"\n\nOntology axioms:\n{axioms}"
+            self._system_msg = system
+
+    _PARAMETRIC_SYSTEM_MSG = (
+        "You are a precise ontology reasoning assistant. "
+        "Follow the output format exactly as specified. "
+        "Do not add any explanation, preamble, or punctuation beyond what is asked."
+    )
 
     # ------------------------------------------------------------------
     # Grounded system message (teaching step)
@@ -515,12 +584,32 @@ class LLMOracle(Oracle):
 
         The LLM is prompted for a yes/no answer in Manchester syntax.
         Raises ValueError if the response cannot be parsed as yes or no.
+        With a paper prompt style, see ``_paper_MQ``.
         """
+        if self._prompt_style in PAPER_SYSTEM_PROMPTS:
+            return self._paper_MQ(gci)
         return self._query(
             self._build_mq_prompt(self._sig, self._roles, gci),
             parse=lambda r: self._parse_yes_no(r, f"MQ for '{gci_to_manchester(gci)}'"),
             label="MQ",
         )
+
+    def _paper_MQ(self, gci: GCI) -> bool:
+        """
+        MQ as the original ExactLearner-LLM's LLMEngine with its AxiomSimplifier:
+        True without asking if H entails the GCI; otherwise each right-hand
+        conjunct H does not entail is asked on its own (the axiom alone as the
+        user message), stopping at the first that is not True.
+        """
+        if self._h_reasoner(gci):
+            return True
+        for conjunct in rhs_conjuncts(gci.rhs):
+            part = GCI(gci.lhs, conjunct)
+            if self._h_reasoner(part):
+                continue
+            if not self._query(gci_to_manchester(part), parse=paper_is_true, label="MQ"):
+                return False
+        return True
 
     # Attempts at a usable counterexample per EQ (the first ask and two retries).
     _EQ_ATTEMPTS = 3
