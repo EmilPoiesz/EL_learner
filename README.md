@@ -52,10 +52,10 @@ The `LLMOracle` needs `transformers`, `accelerate` and `torch`, which are runtim
 │   ├── el_algorithm.py          # Core learning algorithm, EL concept data structures, Oracle ABC
 │   ├── hypothesis_reasoner.py   # HypothesisReasoner — shared H-entailment component
 │   ├── reasoner_oracle.py       # ReasonerOracle — O-oracle backed by OWL API + ELK/HermiT
-│   ├── llm_oracle.py            # LLMOracle — O-oracle backed by a local HuggingFace model
-│   ├── llm_prompts.py           # This project's prompts: system messages, MQ and EQ prompts
+│   ├── llm_oracle.py            # LLMOracle — O-oracle backed by a local HuggingFace model; EQSettings
+│   ├── llm_prompts.py           # This project's prompts: system messages, MQ/EQ prompts, check variants
 │   ├── upstream.py              # The original ExactLearner-LLM: its system prompts, answer reading, AxiomSimplifier
-│   ├── el_syntax.py             # EL as text: Manchester syntax, written and parsed
+│   ├── el_syntax.py             # EL as text: Manchester syntax and natural language, written and parsed
 │   ├── pac.py                   # PACOracle — PAC-sampling equivalence queries, as the original paper
 │   ├── evaluation.py            # The paper's ontology score (H vs O on four statement shapes)
 │   └── cache/
@@ -299,7 +299,7 @@ In this parametric mode (no `ontology_path`) the prompts list no object properti
 
 #### Manchester syntax
 
-`el_syntax.py` has the functions for converting between `ELConcept`/`GCI` objects and Manchester syntax strings:
+`el_syntax.py` has the functions for converting between `ELConcept`/`GCI` objects and Manchester syntax strings (and the natural language of the EQs, `gci_to_nl` and `parse_nl_gci`):
 
 ```python
 from learner.el_syntax import concept_to_manchester, gci_to_manchester, parse_manchester_gci, parse_manchester_concept
@@ -447,7 +447,12 @@ Concepts are encoded as strings when passed to the Java gateway:
 
 ## Reproducing the original ExactLearner-LLM setup
 
-The original [ExactLearner-LLM](https://github.com/MatteoMagnini/ExactLearner-LLM) differs from this project's default LLM oracle in three ways. Each one is available here as an option:
+This project runs two experiments with an LLM as the oracle:
+
+1. **Reproducing the paper.** The original [ExactLearner-LLM](https://github.com/MatteoMagnini/ExactLearner-LLM) setup: the model answers MQs with the paper's prompts (Manchester or natural language), and equivalence queries are PAC sampling, which draws random statements and returns the first that H misses and the model accepts as a counterexample (`--oracle parametric --prompt paper-* --eq pac`).
+2. **Asking for counterexamples.** The model itself is the equivalence oracle: asked whether H is complete, it writes a counterexample (`--prompt ours --eq oracle`).
+
+The original setup differs from this project's default LLM oracle in three ways. Each one is available here as an option:
 
 | | Default here | Original (option) |
 |---|---|---|
@@ -473,6 +478,32 @@ Names are identified by their local name (the part after `#`, or after the last 
 **PAC sampling.** An equivalence query draws random statements of the shapes `A ⊓ B ⊑ C`, `B ⊑ ∃r.A` and `∃r.A ⊑ B` over the signature and roles. It returns the first statement that H does not entail and the oracle's MQ does. If no such statement turns up within the budget `round((h·ln|X| − ln δ)/ε)` (|X| = cn²(cn−1) + 2·cn²·rn; h = upstream's ontology size, its SubClassOf, EquivalentClasses and a few other axioms with an equivalence counted once; defaults ε = 0.2, δ = 0.1, seed 0, as upstream), H is accepted. The budget is shared by all equivalence queries of a run. Sample *i* is drawn from `random.Random(seed + i)`, so the sequence is reproducible, though not the same statements as upstream's Java generator draws. The run report adds `PAC samples: used of budget | MQs while sampling`; these MQs are not counted in `MQ calls`.
 
 PAC learning guarantees only that H agrees with O on most randomly drawn statements, not that H ≡ O. Even with ELK as the oracle, axioms that are rarely drawn are usually missed. On `animals.owl` (|X| = 6936, h = 12, budget 542) the learner finds 1 counterexample and misses 9 of the 15 axioms.
+
+### The model as the equivalence oracle
+
+With `--eq oracle` and an LLM oracle (`taught` or `parametric`), the model answers the EQs itself: it judges whether H is complete, then names a counterexample. A counterexample is used only when it parses, uses names in scope, does not already follow from H, and the model's own check accepts it. An unusable answer is asked for again, with the reasons the earlier ones failed added to the prompt. With a `paper-nl-*` prompt style the EQs are asked in natural language, otherwise in Manchester syntax. The settings are the fields of `EQSettings` (`learner/llm_oracle.py`); the prompt texts are in `learner/llm_prompts.py`.
+
+| Flag | Effect |
+|---|---|
+| `--eq-mode judge\|combined` | `judge` (default): a yes/no question whether H is complete, then one for a counterexample. `combined`: one prompt asks for a counterexample, or "yes" |
+| `--eq-generation default\|g1\|g2\|g3\|g2b\|g3b` | How the counterexample is asked for: placeholder examples; the EL forms as rules (G1); examples about cars (G2, G2b without brackets); a `Subject \| relation \| Object` triple (G3, G3b with the format in prose) |
+| `--eq-check mq\|nl` | With a paper prompt: check a counterexample by an MQ in the run's own style, or by the paper's natural-language MQ |
+| `--eq-check-system paper\|s1\|s2\|s3\|s4` | With a paper prompt: the check's system prompt (`CHECK_SYSTEM_PROMPTS`): the MQs' own, the paper's simple one, or variants of the advanced one |
+| `--eq-check-question paper\|every` | With a paper prompt: ask the check as the paper's MQ, or as "Is it true that every C …?" |
+| `--eq-memory` | List the counterexamples the check rejected at earlier EQs in later EQs' prompts |
+| `--eq-temperature T` | Sample only the counterexample prompts at T; the MQs, the check and the judge keep `--temperature` |
+| `--eq-attempts N` | Attempts at a usable counterexample per EQ (default 3) |
+| `--max-eqs N` | Stop after N EQs (default 50, or the PAC budget) |
+| `--max-failed-eqs N` | Tolerate N EQs in a row without a usable answer (default 0); the next EQ asks again, with the earlier failures in its prompt |
+| `--no-precompute` | Skip Phase 1 (an MQ for every ordered pair of concept names), so that H grows only from counterexamples and the score measures the EQs |
+
+A reasoning model whose chat template opens `<think>` is read after `</think>`; a response without it (the budget ran out while reasoning) counts as no answer, and the run reports how many were cut off. Give such models room with `--max-new-tokens`.
+
+```bash
+python demo.py --oracle parametric --ontology ontologies/animals.owl --prompt paper-advanced \
+               --eq oracle --eq-generation g2b --eq-check-system s4 --eq-memory --eq-temperature 1.0 \
+               --no-precompute --max-eqs 50 --max-failed-eqs 5 --model <hf-path> --device cuda
+```
 
 ---
 
