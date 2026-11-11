@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass
 from functools import partial
@@ -19,7 +20,7 @@ from typing import Callable, Optional, TypeVar
 from transformers import pipeline, GenerationConfig, set_seed
 
 from learner.cache.cache import LLMCache
-from learner.el_algorithm import Oracle, OracleError, ELConcept, GCI
+from learner.el_algorithm import Oracle, OracleError, ELConcept, GCI, current_step
 from learner.el_syntax import (IS_A_PATTERN, NAME_PATTERN, gci_names, gci_to_manchester, gci_to_nl,
                                gci_to_triple, parse_manchester_gci, parse_nl_gci, parse_triple,
                                without_brackets)
@@ -48,6 +49,14 @@ EQ_CHECKS = ("mq", "nl")
 # Generation budget of an EQ answer, at least: a counterexample is a line of text,
 # which the 2 tokens of the paper's MQs would cut off.
 EQ_MIN_NEW_TOKENS = 128
+# LLMOracle.query_stats: per step of the algorithm and kind of query (query_kind), these counts.
+QUERY_STATS = ("asked", "cached", "generated", "prompt_tokens", "new_tokens", "seconds")
+
+
+def query_kind(label: str) -> str:
+    """The kind of a query, from its log label: "MQ (check, s4 system prompt)"
+    is "MQ (check)"."""
+    return re.sub(r",[^()]*\)$", ")", label)
 
 
 def after_think(text: str) -> str:
@@ -269,6 +278,7 @@ class LLMOracle(Oracle):
     _mq_as_check = False          # mq_asked_as == "check"
     _truth: Callable[[GCI], bool] | None = None   # labels proposals for the log only
     eq_outcomes: Counter | None = None            # what each counterexample attempt came to
+    query_stats: dict | None = None               # per (step, query kind), see _record
 
     def __init__(
         self,
@@ -423,6 +433,7 @@ class LLMOracle(Oracle):
         params = {"max_new_tokens": max_new_tokens or self._max_new_tokens,
                   **(sampling or self._sampling or {"do_sample": False})}
 
+        kind = (current_step(), query_kind(label))
         # Cache lookup
         cached = self._cache.get(self._model_name, messages, params)
         if cached is not None and self._cut_off(cached):
@@ -434,7 +445,9 @@ class LLMOracle(Oracle):
                 print("[PROMPT]\n" + shown)
                 print("[RESPONSE]\n" + cached)
             try:
-                return parse(self._answer(cached))
+                result = parse(self._answer(cached))
+                self._record(kind, asked=1, cached=1)
+                return result
             except ValueError:
                 logger.warning("Cached %s response does not parse; regenerating.", label)
 
@@ -442,8 +455,11 @@ class LLMOracle(Oracle):
         config = {k: v for k, v in params.items() if k != "seed"}
         generation_config = GenerationConfig(**config, pad_token_id=self._pad_token_id)
 
+        start = time.perf_counter()
         outputs = self._pipe(messages, generation_config=generation_config, **self._generate_kwargs)
+        seconds = time.perf_counter() - start
         response = outputs[0]["generated_text"][-1]["content"].strip()
+        self._record(kind, asked=1, generated=1, seconds=seconds, **self._tokens(messages, response))
 
         if self._verbose:
             print(f"\n--- {label} ---")
@@ -459,6 +475,31 @@ class LLMOracle(Oracle):
         if not self._cut_off(response):
             self._cache.set(self._model_name, messages, response, params)
         return result
+
+    def _record(self, kind: tuple[str, str], **counts) -> None:
+        """Add *counts* to ``query_stats[(step, kind)]`` (the algorithm's step,
+        ``el_algorithm.step``; ``query_kind``): asked (queries), cached (answered
+        from the cache), generated (model calls), prompt_tokens, new_tokens and
+        seconds (of the model calls).  A query whose answer does not parse is
+        still counted: it cost a model call."""
+        if self.query_stats is None:
+            self.query_stats = {}
+        stats = self.query_stats.setdefault(kind, dict.fromkeys(QUERY_STATS, 0))
+        for key, value in counts.items():
+            stats[key] += value
+
+    def _tokens(self, messages: list[dict], response: str) -> dict:
+        """The prompt's and the response's length in tokens; {} without a tokenizer."""
+        tokenizer = getattr(self._pipe, "tokenizer", None)
+        if tokenizer is None:
+            return {}
+        try:
+            prompt = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+            return {"prompt_tokens": len(prompt),
+                    "new_tokens": len(tokenizer(response, add_special_tokens=False)["input_ids"])}
+        except Exception:   # a count is not worth a failed run
+            logger.debug("Could not count tokens", exc_info=True)
+            return {}
 
     # ------------------------------------------------------------------
     # Reading answers
@@ -831,7 +872,7 @@ class LLMOracle(Oracle):
         check, system, question = self._eq.check, self._eq.check_system, self._eq.check_question
         if self._prompt_style in PAPER_SYSTEM_PROMPTS and (
                 check == "nl" or system != "paper" or question != "paper"):
-            self.mq_count += 1
+            self.count_mq()
             return self._check_style_MQ(gci, "MQ (check")
         return self.MQ(gci)
 

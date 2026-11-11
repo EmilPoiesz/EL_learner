@@ -29,10 +29,10 @@ import re
 import pytest
 
 from learner.cache.cache import LLMCache
-from learner.el_algorithm import ELConcept, GCI, OracleError
+from learner.el_algorithm import ELConcept, GCI, OracleError, step
 from learner import llm_prompts as prompts
 from learner.el_syntax import gci_to_nl, parse_manchester_gci, parse_nl_gci
-from learner.llm_oracle import EQ_MIN_NEW_TOKENS, EQSettings, LLMOracle
+from learner.llm_oracle import EQ_MIN_NEW_TOKENS, EQSettings, LLMOracle, query_kind
 from learner.llm_prompts import CHECK_SYSTEM_PROMPTS
 from learner.upstream import OLLAMA_SAMPLING, PAPER_SYSTEM_PROMPTS, upstream_natural_language
 
@@ -712,3 +712,22 @@ def test_44_counterexample_budget(tmp_path):
     with pytest.raises(ValueError, match="max_new_tokens must be at least 1"):
         EQSettings(max_new_tokens=0)
     assert "4096 tokens per counterexample" in EQSettings(max_new_tokens=4096).describe()
+
+
+def test_45_query_stats(tmp_path):
+    # For estimating the cost on other models: model calls by step of the algorithm
+    # and kind of query, with cache hits apart; MQs by step on the oracle.
+    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "yes"])
+    with step("EQ"):
+        assert oracle.EQ(set()) == _GCI                 # judge, counterexample, check (an MQ)
+    with step("saturation"):
+        assert oracle.MQ(_GCI) is True                  # the check's answer, from the cache
+    stats = oracle.query_stats
+    assert set(stats) == {("EQ", "EQ (judge)"), ("EQ", "EQ (counterexample)"), ("EQ", "MQ"),
+                          ("saturation", "MQ")}
+    assert stats[("EQ", "MQ")]["generated"] == 1 and stats[("EQ", "MQ")]["seconds"] >= 0
+    assert (stats[("saturation", "MQ")]["asked"], stats[("saturation", "MQ")]["cached"],
+            stats[("saturation", "MQ")]["generated"]) == (1, 1, 0)
+    assert oracle.mq_by_step == {"EQ": 1, "saturation": 1}
+    assert query_kind("MQ (check, s4 system prompt, every question)") == "MQ (check)"
+    assert query_kind("EQ (counterexample or yes)") == "EQ (counterexample or yes)"

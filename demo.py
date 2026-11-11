@@ -28,12 +28,14 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
+import time
 from typing import TYPE_CHECKING, Callable
 
-from learner.el_algorithm import ELConcept, GCI, Oracle, learn_el_terminology
+from learner.el_algorithm import STEPS, ELConcept, GCI, Oracle, learn_el_terminology
 
 if TYPE_CHECKING:
     from learner.llm_oracle import EQSettings
@@ -122,6 +124,32 @@ def format_outcomes(outcomes) -> str:
     return "Counterexample attempts: " + " · ".join(parts) + "  (true/false: in O, by ELK; not seen by the learner)"
 
 
+def query_report(oracle: Oracle, seconds: float) -> list[str]:
+    """The report's lines on what learning asked: the MQs by step of the algorithm,
+    and for an LLM oracle its model calls by step and kind of query, with tokens and
+    time; then one line "QUERIES {json}" with all of it, for scripts."""
+    base = getattr(oracle, "inner", oracle)        # PAC: the inner oracle counts sampling too
+    by_step = dict(getattr(base, "mq_by_step", {}))
+    order = [s for s in (*STEPS, "other") if by_step.get(s)]
+    lines = [f"Learning took {seconds:.0f} s.  MQs by step: "
+             + (" · ".join(f"{s} {by_step[s]}" for s in order) or "none")]
+    stats = getattr(base, "query_stats", None) or {}
+    rank = {s: i for i, s in enumerate((*STEPS, "other"))}
+    rows = sorted(stats.items(), key=lambda kv: (rank.get(kv[0][0], len(rank)), kv[0][1]))
+    if rows:
+        total = {k: sum(v[k] for _, v in rows) for k in rows[0][1]}
+        head = f"    {'step / query':34} {'asked':>6} {'cached':>6} {'model':>6} {'prompt tok':>10} {'new tok':>8} {'seconds':>8} {'s/call':>6}"
+        lines += ["Model calls (model = generated; tokens and seconds of the model calls):", head]
+        for name, v in [(f"{s} / {k}", v) for (s, k), v in rows] + [("total", total)]:
+            per = v["seconds"] / v["generated"] if v["generated"] else 0
+            lines.append(f"    {name:34} {v['asked']:6} {v['cached']:6} {v['generated']:6} "
+                         f"{v['prompt_tokens']:10} {v['new_tokens']:8} {v['seconds']:8.1f} {per:6.2f}")
+    record = {"seconds": round(seconds, 1), "mq_by_step": by_step,
+              "model_calls": [{"step": s, "query": k, **{f: round(x, 2) for f, x in v.items()}}
+                              for (s, k), v in rows]}
+    return lines + ["QUERIES " + json.dumps(record, ensure_ascii=False)]
+
+
 def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, judge: Callable[[GCI], bool] | None = None,
                     info: OntologyInfo | None = None, max_eqs: int | None = None,
                     precomputation: bool = True, max_failed_eqs: int = 0) -> None:
@@ -139,11 +167,14 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
         max_iterations = max_eqs
     if not verbose:
         logging.disable(logging.INFO)
+    start = time.perf_counter()
     try:
         H = learn_el_terminology(oracle, max_iterations=max_iterations, precomputation=precomputation,
                                  max_failed_eqs=max_failed_eqs)
     finally:
         logging.disable(logging.NOTSET)
+    # Before scoring, which may ask the oracle again.
+    queries = query_report(oracle, time.perf_counter() - start)
 
     mq_calls = oracle.mq_count
     eq_calls = oracle.eq_count
@@ -205,6 +236,8 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
     if sampler is not None:   # PACOracle
         print(f"  PAC samples: {sampler.provided} of {sampler.budget}  |  "
               f"MQs while sampling: {oracle.sample_mq_count}")
+    for line in queries:
+        print("  " + line)
 
     print(f"\n  Ontology score (paper metric, {score.total} statements, {score.tp + score.fn} entailed by O):")
     print(f"    TP {score.tp}  FN {score.fn}  FP {score.fp}  TN {score.tn}")
@@ -514,6 +547,12 @@ def build_parser() -> argparse.ArgumentParser:
              "check and the judge keep --temperature.  0 (default): as the other queries.",
     )
     parser.add_argument(
+        "--eq-max-new-tokens", type=int, default=None, metavar="N",
+        help="With an LLM's own equivalence queries: the generation budget of the "
+             "counterexample prompts only; the MQs, the judge and the check keep "
+             "--max-new-tokens.  Unset: --max-new-tokens, but at least 128.",
+    )
+    parser.add_argument(
         "--eq-generation", choices=["default", "g1", "g2", "g3", "g2b", "g3b"], default="default",
         help="With an LLM's own equivalence queries (judge mode): how the counterexample "
              "is asked for.  'default': placeholder examples; 'g1': with the EL forms "
@@ -541,12 +580,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="With an LLM over an ontology (axioms, signature): skip Phase 1, the MQ for "
              "every ordered pair of concept names, so H starts empty and grows only from "
              "counterexamples.",
-    )
-    parser.add_argument(
-        "--eq-max-new-tokens", type=int, default=None, metavar="N",
-        help="With an LLM's own equivalence queries: the generation budget of the "
-             "counterexample prompts only; the MQs, the judge and the check keep "
-             "--max-new-tokens.  Unset: --max-new-tokens, but at least 128.",
     )
     parser.add_argument(
         "--precompute", dest="no_precompute", action="store_false",

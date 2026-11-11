@@ -1,11 +1,43 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Tuple
+from typing import Callable, Iterator, Optional, Tuple
 from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
+
+# The step of the algorithm that is asking, for counting MQs by step
+# (Oracle.mq_by_step).  Set with ``step(name)``; the innermost step counts.
+STEPS = ("Phase 1", "EQ", "normalisation", "saturation", "sibling merge", "decomposition",
+         "left decomposition", "left desaturation")
+_step = "other"
+
+
+@contextmanager
+def step(name: str) -> Iterator[None]:
+    """MQs asked inside this block count towards step *name*."""
+    global _step
+    outer, _step = _step, name
+    try:
+        yield
+    finally:
+        _step = outer
+
+
+def current_step() -> str:
+    """The step asking now (``step``), "other" outside the algorithm."""
+    return _step
+
+
+def _in_step(name: str, MQ: Callable[[GCI], bool]) -> Callable[[GCI], bool]:
+    """*MQ*, counted towards step *name*."""
+    def asked(gci: GCI) -> bool:
+        with step(name):
+            return MQ(gci)
+    return asked
 
 # ---------------------------------------------------------------------------
 # Data structures for EL concept expressions
@@ -120,18 +152,27 @@ class Oracle(ABC):
     count the calls and delegate.
 
     Call counts are tracked automatically.  After learning, inspect
-    ``oracle.mq_count`` and ``oracle.eq_count``, or call ``reset_counts()``
-    to zero them before a new run.
+    ``oracle.mq_count`` and ``oracle.eq_count``, and ``mq_by_step`` for the MQs
+    by the step of the algorithm that asked them (``STEPS``), or call
+    ``reset_counts()`` to zero them before a new run.
     """
 
     def __init__(self) -> None:
         self.mq_count: int = 0
         self.eq_count: int = 0
+        self.mq_by_step: Counter = Counter()
 
     def reset_counts(self) -> None:
         """Reset MQ and EQ call counters to zero."""
         self.mq_count = 0
         self.eq_count = 0
+        self.mq_by_step = Counter()
+
+    def count_mq(self) -> None:
+        """Count one MQ, towards the current step."""
+        self.mq_count += 1
+        # Set here too: subclasses that skip __init__ (tests) still count.
+        self.__dict__.setdefault("mq_by_step", Counter())[current_step()] += 1
 
     @property
     @abstractmethod
@@ -147,7 +188,7 @@ class Oracle(ABC):
 
         Increments ``mq_count`` and delegates to ``_MQ``.
         """
-        self.mq_count += 1
+        self.count_mq()
         return self._MQ(gci)
 
     def EQ(self, hypothesis: set[GCI]) -> Optional[GCI]:
@@ -597,14 +638,16 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
     )
 
     # 1) Concept Saturation
-    rhs_saturated = saturate_concept_rhs(rhs_refined, signature, MQ, lhs=lhs)
+    saturate, merge = _in_step("saturation", MQ), _in_step("sibling merge", MQ)
+    decompose = _in_step("decomposition", MQ)
+    rhs_saturated = saturate_concept_rhs(rhs_refined, signature, saturate, lhs=lhs)
 
     # 2) Sibling Merge — each merge step is validated against T via MQ so that
     #    merging two same-role existentials (e.g. ∃r.D1 and ∃r.D2) is only
     #    accepted when O actually entails lhs ⊑ ∃r.(D1 ⊓ D2).  This mirrors
     #    the original ExactLearner's merging() guard:
     #        T.entailed(cl ⊑ merged_expression)
-    rhs_merged = sibling_merge(rhs_saturated, lhs=lhs, MQ=MQ)
+    rhs_merged = sibling_merge(rhs_saturated, lhs=lhs, MQ=merge)
 
     logger.info(f"refined {rhs_refined}")
     logger.info(f"saturated {rhs_saturated}")
@@ -621,11 +664,11 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
     visited = {GCI(current_lhs, current_rhs)}
 
     while True:
-        candidate = decompose_rhs(current_lhs, current_rhs, MQ, H_MQ)
+        candidate = decompose_rhs(current_lhs, current_rhs, decompose, H_MQ)
         if candidate is None:
             break
         # By EL monotonicity the result is always O-entailed; safety-net check.
-        if not MQ(candidate):
+        if not decompose(candidate):
             logger.debug(
                 "Decomposed candidate %s not confirmed by O; stopping.", candidate
             )
@@ -638,8 +681,8 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
             break
         visited.add(candidate)
 
-        current_rhs = saturate_concept_rhs(current_rhs, signature, MQ, lhs=current_lhs)
-        current_rhs = sibling_merge(current_rhs, lhs=current_lhs, MQ=MQ)
+        current_rhs = saturate_concept_rhs(current_rhs, signature, saturate, lhs=current_lhs)
+        current_rhs = sibling_merge(current_rhs, lhs=current_lhs, MQ=merge)
         logger.info(f"re-saturated/merged: {current_lhs} ⊑ {current_rhs}")
 
     # Strip the LHS atom from the RHS — A ⊑ A is always trivially true and adds
@@ -677,7 +720,8 @@ def compute_left_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI],
     # further decomposition (see paper example: ∃hasChild.∃hasParent.> ⊑ Human
     # can only be decomposed after H-saturation adds Human to ∃hasParent.>).
     while True:
-        candidate = decompose_left(current_lhs, current_rhs, MQ, H_MQ, signature)
+        candidate = decompose_left(current_lhs, current_rhs, _in_step("left decomposition", MQ),
+                                   H_MQ, signature)
         if candidate is None:
             break
         logger.info(f"decomposed left: {candidate}")
@@ -687,7 +731,7 @@ def compute_left_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI],
         logger.info(f"re-saturated left: {current_lhs} ⊑ {current_rhs}")
 
     # Step 3: Desaturate — remove atoms from the LHS that are redundant under O.
-    lhs_essential = unsaturate_left(current_lhs, current_rhs, MQ)
+    lhs_essential = unsaturate_left(current_lhs, current_rhs, _in_step("left desaturation", MQ))
     return GCI(lhs=lhs_essential, rhs=current_rhs)
 
 
@@ -858,6 +902,7 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
     H_MQ = oracle.make_H_MQ(H)
     sigma = sorted(oracle.signature)
 
+    # Check to allow us to skip the precomputation
     if precomputation:
         logger.info("  Precomputing all atomic subsumptions in Σ_O × Σ_O")
         for a_name in sigma:
@@ -869,7 +914,9 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
                     lhs=ELConcept(atoms=frozenset({a_name})),
                     rhs=ELConcept(atoms=frozenset({b_name})),
                 )
-                if oracle.MQ(gci):
+                with step("Phase 1"):
+                    entailed = oracle.MQ(gci)
+                if entailed:
                     logger.debug("  Adding atomic subsumption: %s", gci)
                     H.add(gci)
                     oracle.on_H_add(gci)
@@ -890,7 +937,8 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
 
         # Line 3: Ask the oracle for a positive counterexample
         try:
-            counterexample = oracle.EQ(H)
+            with step("EQ"):   # the EQ's own MQs: the check, PAC sampling
+                counterexample = oracle.EQ(H)
         except OracleError as exc:
             failed_eqs += 1
             if failed_eqs > max_failed_eqs:
@@ -923,7 +971,7 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
         normalised = normalise_counterexample(
             counterexample=counterexample,
             signature=oracle.signature,
-            MQ=oracle.MQ,
+            MQ=_in_step("normalisation", oracle.MQ),
             H_MQ=H_MQ,
         )
         # A consistent oracle always allows normalisation (Lemma 4).  None means the
