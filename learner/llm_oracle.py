@@ -361,8 +361,11 @@ class LLMOracle(Oracle):
 
         A response is cached only once ``parse`` accepts it, so a response that
         cannot be parsed (e.g. reasoning cut off by max_new_tokens) is never
-        replayed from the cache.  A cached response that no longer parses, left
-        by an older version, is treated as a miss and regenerated.  *axiom*: the
+        replayed from the cache.  Nor is a reasoning model's response cut off
+        before </think>, even where ``parse`` reads "no answer" as False (the
+        paper's MQ): it is that query's answer, but not one to replay.  A cached
+        response that no longer parses or was cut off, left by an older version,
+        is treated as a miss and regenerated.  *axiom*: the
         query's GCI, shown after the prompt in verbose output.  *system*,
         *max_new_tokens*, *sampling*: instead of the oracle's own (for EQs).
         """
@@ -377,6 +380,9 @@ class LLMOracle(Oracle):
 
         # Cache lookup
         cached = self._cache.get(self._model_name, messages, params)
+        if cached is not None and self._cut_off(cached):
+            logger.warning("Cached %s response was cut off while reasoning; regenerating.", label)
+            cached = None
         if cached is not None:
             if self._verbose:
                 print(f"\n--- {label} (CACHED) ---")
@@ -405,12 +411,17 @@ class LLMOracle(Oracle):
         result = parse(answer)  # raises ValueError before anything is cached
 
         # Cache store
-        self._cache.set(self._model_name, messages, response, params)
+        if not self._cut_off(response):
+            self._cache.set(self._model_name, messages, response, params)
         return result
 
     # ------------------------------------------------------------------
     # Reading answers
     # ------------------------------------------------------------------
+
+    def _cut_off(self, response: str) -> bool:
+        """A reasoning model's *response* that ends before </think>: no answer."""
+        return self._thinks and "</think>" not in response
 
     def _answer(self, response: str) -> str:
         """The answer in *response*: all of it, or for a model that reasons in
@@ -418,7 +429,7 @@ class LLMOracle(Oracle):
         none (counted in ``truncated``)."""
         if not self._thinks:
             return response
-        if "</think>" not in response:
+        if self._cut_off(response):
             self.truncated += 1
             return ""
         return response.rsplit("</think>", 1)[-1].strip()

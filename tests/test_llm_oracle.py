@@ -592,3 +592,28 @@ def test_38_model_generation_defaults_off(tmp_path):
     oracle._generate_kwargs = model_defaults_off(Old())
     assert oracle.MQ(_GCI) is True
     assert oracle._pipe.kwargs == [{"use_model_defaults": False}]
+
+
+def test_39_cut_off_reasoning_not_cached(tmp_path):
+    # Under the paper's MQ a reply cut off before </think> reads as False; that is the
+    # answer to this query, but it is not cached, so the next ask goes to the model.
+    oracle = _oracle(tmp_path, ["Let me think about whether every",
+                                "Birds are animals. </think> True"])
+    oracle._prompt_style = "paper-advanced"
+    oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
+    oracle._thinks = True
+    assert oracle.MQ(_GCI) is False
+    assert oracle.MQ(_GCI) is True            # asked again, not replayed as False
+    assert oracle.MQ(_GCI) is True            # the full answer is cached
+    assert (oracle._pipe.calls, oracle.truncated) == (2, 1)
+
+    # A cut-off reply cached by an older version counts as a miss.
+    (tmp_path / "stale").mkdir()
+    stale = _oracle(tmp_path / "stale", ["Done. </think> True"])
+    stale._prompt_style, stale._system_msg = "paper-advanced", PAPER_SYSTEM_PROMPTS["paper-advanced"]
+    stale._thinks = True
+    from learner.upstream import upstream_gci_text
+    messages = [{"role": "system", "content": stale._system_msg},
+                {"role": "user", "content": upstream_gci_text(_GCI)}]
+    stale._cache.set("stub", messages, "cut off mid-thought", {"max_new_tokens": 16, "do_sample": False})
+    assert stale.MQ(_GCI) is True and stale._pipe.calls == 1
