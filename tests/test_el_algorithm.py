@@ -63,6 +63,8 @@ Test catalogue
 43  learn_el_terminology    — an OracleError (EQ or MQ) stops learning and returns the H learned so far
 44  remove_subtree          — removes at the one position its path names, also when the tree shares objects
 45  compute_right_essential — an inconsistent oracle's decomposition cycle stops at the first repeat
+46  learn_el_terminology    — precomputation=False skips Phase 1: no MQ before the first EQ, H starts empty
+47  learn_el_terminology    — max_failed_eqs: an EQ's OracleError is tolerated that many times in a row
 """
 
 from __future__ import annotations
@@ -815,3 +817,68 @@ def test_45_right_essential_stops_at_decomposition_cycle():
 
     result = compute_right_essential(A, rC, set(), inconsistent_mq, {"A", "B", "C"}, lambda _: False)
     assert result == GCI(B, rC)
+
+
+@pytest.mark.parametrize("precomputation, expected_mqs", [(True, 6), (False, 0)])
+def test_46_precomputation_off_skips_phase1(precomputation, expected_mqs):
+    class MockOracle:
+        signature = {"A", "B", "C"}
+
+        def __init__(self):
+            self.mq_count = 0
+            self.hypotheses = []
+
+        def MQ(self, gci):
+            self.mq_count += 1
+            return gci == GCI(A, B)
+
+        def EQ(self, H):
+            self.hypotheses.append(set(H))
+            return None
+
+        def make_H_MQ(self, H):
+            return lambda gci: gci in H
+
+        def on_H_add(self, gci):
+            pass
+
+    oracle = MockOracle()
+    learn_el_terminology(oracle, max_iterations=10, precomputation=precomputation)
+    assert oracle.mq_count == expected_mqs   # Phase 1: one MQ per ordered pair of the 3 names
+    assert oracle.hypotheses == [{GCI(A, B)} if precomputation else set()]
+
+
+@pytest.mark.parametrize("max_failed_eqs, expected_eqs, expected_h", [
+    (0, 1, set()),            # the first failed EQ ends learning, as before
+    (1, 3, {GCI(A, B)}),      # EQ 1 fails, EQ 2 gives A ⊑ B, EQ 3 says H ≡ O
+])
+def test_47_failed_eqs_tolerated(caplog, max_failed_eqs, expected_eqs, expected_h):
+    from learner.el_algorithm import OracleError
+
+    class MockOracle:
+        signature = {"A", "B"}
+
+        def __init__(self):
+            self.eq_count = 0
+
+        def MQ(self, gci):
+            return gci == GCI(A, B)
+
+        def EQ(self, H):
+            self.eq_count += 1
+            if self.eq_count == 1:
+                raise OracleError("no usable counterexample")
+            return None if H else GCI(A, B)
+
+        def make_H_MQ(self, H):
+            return lambda gci: gci in H
+
+        def on_H_add(self, gci):
+            pass
+
+    oracle = MockOracle()
+    with caplog.at_level("WARNING", logger="learner.el_algorithm"):
+        H = learn_el_terminology(oracle, max_iterations=10, precomputation=False,
+                                 max_failed_eqs=max_failed_eqs)
+    assert oracle.eq_count == expected_eqs
+    assert H == expected_h

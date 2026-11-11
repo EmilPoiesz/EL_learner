@@ -786,7 +786,8 @@ def normalise_counterexample(
 # Algorithm 1 – main learning procedure
 # ---------------------------------------------------------------------------
 
-def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]:
+def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000, precomputation: bool = True,
+                         max_failed_eqs: int = 0) -> set[GCI]:
     """
     Algorithm 1: Learn an EL terminology from an equivalence oracle.
 
@@ -829,11 +830,13 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
 
     An ``OracleError`` (the oracle has no usable answer, e.g. an LLM reply that
     does not parse) stops learning with a warning; the H learned so far is
-    returned, minimised as usual.
+    returned, minimised as usual.  ``max_failed_eqs``: an EQ that raises it is
+    tolerated this many times in a row (the next iteration asks again, with H
+    unchanged); each failed EQ counts towards ``max_iterations``.
     """
     H: set[GCI] = set()
     try:
-        _learn(oracle, H, max_iterations)
+        _learn(oracle, H, max_iterations, precomputation, max_failed_eqs)
     except OracleError as exc:
         logger.warning(
             "Stopping: the oracle could not give a usable answer (%s). "
@@ -843,7 +846,8 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000) -> set[GCI]
     return _minimise(H)
 
 
-def _learn(oracle: Oracle, H: set[GCI], max_iterations: int) -> None:
+def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: bool = True,
+           max_failed_eqs: int = 0) -> None:
     """Phase 1 and the refinement loop of ``learn_el_terminology``, adding to *H*
     in place, so that what was learned survives an ``OracleError``."""
 
@@ -854,19 +858,23 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int) -> None:
     H_MQ = oracle.make_H_MQ(H)
     sigma = sorted(oracle.signature)
 
-    for a_name in sigma:
-        for b_name in sigma:
-            if a_name == b_name:
-                # A ⊑ A is trivially true; no need to add to H
-                continue
-            gci = GCI(
-                lhs=ELConcept(atoms=frozenset({a_name})),
-                rhs=ELConcept(atoms=frozenset({b_name})),
-            )
-            if oracle.MQ(gci):
-                logger.debug("  Adding atomic subsumption: %s", gci)
-                H.add(gci)
-                oracle.on_H_add(gci)
+    if precomputation:
+        logger.info("  Precomputing all atomic subsumptions in Σ_O × Σ_O")
+        for a_name in sigma:
+            for b_name in sigma:
+                if a_name == b_name:
+                    # A ⊑ A is trivially true; no need to add to H
+                    continue
+                gci = GCI(
+                    lhs=ELConcept(atoms=frozenset({a_name})),
+                    rhs=ELConcept(atoms=frozenset({b_name})),
+                )
+                if oracle.MQ(gci):
+                    logger.debug("  Adding atomic subsumption: %s", gci)
+                    H.add(gci)
+                    oracle.on_H_add(gci)
+    else:
+        logger.info("  Enumerating atomic subsumptions in Σ_O × Σ_O on demand")
 
     logger.info("  |H| after atomic init = %d", len(H))
 
@@ -877,10 +885,20 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int) -> None:
     # The last counterexample whose O-essential H already entailed (see the
     # progress guard below); None after a round that extended H.
     unproductive_counterexample: Optional[GCI] = None
+    failed_eqs = 0   # EQs in a row that raised OracleError
     for iteration in range(max_iterations):
 
         # Line 3: Ask the oracle for a positive counterexample
-        counterexample = oracle.EQ(H)
+        try:
+            counterexample = oracle.EQ(H)
+        except OracleError as exc:
+            failed_eqs += 1
+            if failed_eqs > max_failed_eqs:
+                raise
+            logger.warning("EQ %d gave no usable answer (%s); failed EQ %d of %d allowed in a "
+                           "row, asking again.", iteration + 1, exc, failed_eqs, max_failed_eqs)
+            continue
+        failed_eqs = 0
 
         if counterexample is None:
             # oracle says H ≡ O  →  we are done
