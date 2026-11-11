@@ -9,19 +9,19 @@ Usage
   python demo.py --ontology ontologies/medical.ttl
   python demo.py -v
 
-  # LLMOracle (parametric — uses the model's training knowledge)
+  # LLMOracle on a fixed kinship signature (the model's own knowledge)
   python demo.py --oracle llm
   python demo.py --oracle llm --device mps
   python demo.py --oracle llm --dry-run
   python demo.py --oracle llm -v
 
-  # LLMOracle in grounded mode (taught — ontology placed in system prompt)
-  python demo.py --oracle taught --ontology ontologies/medical.ttl
-  python demo.py --oracle taught --ontology ontologies/medical.ttl --model <hf-model> --device mps
+  # LLMOracle with the ontology's axioms in the system prompt (--oracle axioms)
+  python demo.py --oracle axioms --ontology ontologies/medical.ttl
+  python demo.py --oracle axioms --ontology ontologies/medical.ttl --model <hf-model> --device mps
 
   # As the original ExactLearner-LLM paper: signature from the ontology, axioms
   # withheld, its prompts and True/False answers, PAC-sampling equivalence queries
-  python demo.py --oracle parametric --ontology ontologies/animals.owl \\
+  python demo.py --oracle signature --ontology ontologies/animals.owl \\
                  --prompt paper-advanced --eq pac --model <hf-model> --device cuda
 """
 
@@ -203,7 +203,7 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
 
 
 # ---------------------------------------------------------------------------
-# Grounded (taught / parametric) LLMOracle demo
+# LLMOracle over an ontology file (--oracle axioms / signature)
 # ---------------------------------------------------------------------------
 
 def _run_grounded_llm_demo(
@@ -227,7 +227,7 @@ def _run_grounded_llm_demo(
 ) -> bool:
     """
     LLM oracle over an ontology file, scored against it.  ``include_axioms``:
-    the axioms are in the system prompt ("taught") or withheld ("parametric",
+    the axioms are in the system prompt ("axioms") or withheld ("signature",
     the paper's setting: the file only gives the signature and the reference).
     """
     from utils.java_utils import build_classpath
@@ -238,7 +238,7 @@ def _run_grounded_llm_demo(
     ontology_path   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ontology)
     gateway_jar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
 
-    mode = "taught" if include_axioms else "parametric"
+    mode = "axioms" if include_axioms else "signature"
     _section(f"EL Learner — LLMOracle (grounded / {mode})  ({model})")
     print(f"\n  Ontology : {ontology}")
     print(f"  Device   : {device}")
@@ -348,11 +348,11 @@ def _llm_dry_run() -> None:
     print("-" * 40)
     print(prompts.eq_counterexample_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
 
-    # --oracle taught/parametric: EQs have their own system message, and can be
+    # --oracle axioms/signature: EQs have their own system message, and can be
     # asked in one prompt (--eq-mode combined) or in natural language (paper-nl-*).
-    print("\n[EQ system message, --oracle parametric]")
+    print("\n[EQ system message, --oracle signature]")
     print("-" * 40)
-    print(prompts.EQ_SYSTEM_PARAMETRIC)
+    print(prompts.EQ_SYSTEM_SIGNATURE)
     print("\n[--eq-mode combined — counterexample or yes]")
     print("-" * 40)
     print(prompts.eq_combined_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
@@ -427,6 +427,14 @@ def _run_llm_demo(
 # Entry point
 # ---------------------------------------------------------------------------
 
+# The oracle kinds' names before 2026-11-11, still accepted.
+ORACLE_ALIASES = {"taught": "axioms", "parametric": "signature"}
+
+
+def _oracle_kind(name: str) -> str:
+    return ORACLE_ALIASES.get(name, name)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """demo.py's command line (learner/run_config.py's catalogue mirrors its LLM options)."""
     parser = argparse.ArgumentParser(
@@ -434,20 +442,21 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--oracle", choices=["reasoner", "llm", "taught", "parametric"], default="reasoner",
+        "--oracle", type=_oracle_kind, choices=["reasoner", "llm", "axioms", "signature"], default="reasoner",
         help="Oracle backend: 'reasoner' (Java/ELK); 'llm' (LLM on a fixed kinship "
-             "signature); 'taught' (LLM with the ontology's axioms in its prompt); "
-             "'parametric' (LLM given only the ontology's signature, as in the paper). "
-             "'taught' and 'parametric' are scored against --ontology.",
+             "signature); 'axioms' (LLM with the ontology's axioms in its prompt); "
+             "'signature' (LLM given only the ontology's concept and role names, answering "
+             "from its own knowledge, as in the paper).  'axioms' and 'signature' are scored "
+             "against --ontology.  The old names 'taught' and 'parametric' still work.",
     )
     parser.add_argument(
         "--eq", choices=["oracle", "pac"], default="oracle",
         help="Equivalence queries: the oracle's own ('oracle': ELK, or the LLM judge), "
-             "or PAC sampling as in the paper ('pac'; reasoner, taught, parametric).",
+             "or PAC sampling as in the paper ('pac'; reasoner, axioms, signature).",
     )
     parser.add_argument(
         "--eq-mode", choices=["judge", "combined"], default="judge",
-        help="With an LLM's own equivalence queries (--eq oracle; taught, parametric): "
+        help="With an LLM's own equivalence queries (--eq oracle; axioms, signature): "
              "'judge' asks yes/no whether H is complete, then for a counterexample; "
              "'combined' asks once for a counterexample, or yes if H is complete.  "
              "In natural language with --prompt paper-nl-*, else in Manchester syntax.",
@@ -501,14 +510,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-failed-eqs", type=int, default=0, metavar="N",
-        help="With an LLM over an ontology (taught, parametric): tolerate N EQs in a row "
+        help="With an LLM over an ontology (axioms, signature): tolerate N EQs in a row "
              "without a usable answer before learning stops (default 0: stop at the first); "
              "the next EQ asks again, with the earlier failures in its prompt.  Failed EQs "
              "count towards --max-eqs.",
     )
     parser.add_argument(
         "--no-precompute", action="store_true",
-        help="With an LLM over an ontology (taught, parametric): skip Phase 1, the MQ for "
+        help="With an LLM over an ontology (axioms, signature): skip Phase 1, the MQ for "
              "every ordered pair of concept names, so H starts empty and grows only from "
              "counterexamples.",
     )
@@ -544,7 +553,7 @@ def build_parser() -> argparse.ArgumentParser:
     llm_grp.add_argument(
         "--max-new-tokens", type=int, default=None, metavar="N",
         help="Generation budget per LLM query.  Unset: 2 with a paper prompt "
-             "(as upstream), else 1024 for taught/parametric and 128 for --oracle llm.  "
+             "(as upstream), else 1024 for axioms/signature and 128 for --oracle llm.  "
              "Reasoning models need room to finish thinking before their answer.",
     )
     llm_grp.add_argument(
@@ -552,12 +561,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="ours",
         help="MQ prompts: this project's yes/no prompts, or the original "
              "ExactLearner-LLM's True/False prompts, the axiom in Manchester syntax or, "
-             "with paper-nl-*, in its natural-language form (taught/parametric only).",
+             "with paper-nl-*, in its natural-language form (axioms/signature only).",
     )
     llm_grp.add_argument(
         "--temperature", type=float, default=0.0, metavar="T",
         help="0 (default): greedy decoding.  Above 0: sample at T with Ollama's other "
-             "defaults, as the paper's runs were answered (taught/parametric only); "
+             "defaults, as the paper's runs were answered (axioms/signature only); "
              "--seed then also seeds the sampling.",
     )
     llm_grp.add_argument(
@@ -618,7 +627,7 @@ if __name__ == "__main__":
             epsilon=args.epsilon,
             delta=args.delta,
         )
-    elif args.oracle in ("taught", "parametric"):
+    elif args.oracle in ("axioms", "signature"):
         max_new_tokens = args.max_new_tokens
         if max_new_tokens is None and args.prompt != "ours":
             max_new_tokens = 2   # upstream's maxTokens for its True/False prompts
@@ -630,7 +639,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             output=args.output,
             max_new_tokens=max_new_tokens,
-            include_axioms=args.oracle == "taught",
+            include_axioms=args.oracle == "axioms",
             prompt_style=args.prompt,
             eq=args.eq,
             epsilon=args.epsilon,

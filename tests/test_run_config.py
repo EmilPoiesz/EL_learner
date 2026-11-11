@@ -8,6 +8,7 @@ Tests for learner/run_config.py and demo.py --config.
 5  demo.py --config: the config's flags, then the command line's, which win
 6  a run must be one of the config's ontologies and seeds, and must pick when there are several
 7  the command line for the batch script: get KEY, and errors as exit status 1
+8  the oracle kinds' old names (taught, parametric) still work, as the new ones
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ STANDARD = {
     "ontologies": ["animals", "university"], "seeds": [0, 1, 2, 3, 4],
     "learner": {"phase1": False, "max_eqs": 50, "max_failed_eqs": 5},
     "oracle": {
-        "kind": "parametric",
+        "kind": "signature",
         "mq": {"prompt": "paper-advanced"},
         "eq": {"kind": "oracle", "mode": "judge",
                "counterexample": {"prompt": "g2b", "temperature": 1.0, "memory": True, "attempts": 3},
@@ -74,12 +75,12 @@ def test_2_choices_are_the_codes():
 
 
 @pytest.mark.parametrize("change, message", [
-    ({"oracle": {"kind": "parametric", "eq": {"chek": {}}}}, "oracle.eq.chek: unknown key; expected one of"),
-    ({"oracle": {"kind": "parametric", "eq": {"check": {"system": "s5"}}}}, "oracle.eq.check.system: 's5' is not one of"),
+    ({"oracle": {"kind": "signature", "eq": {"chek": {}}}}, "oracle.eq.chek: unknown key; expected one of"),
+    ({"oracle": {"kind": "signature", "eq": {"check": {"system": "s5"}}}}, "oracle.eq.check.system: 's5' is not one of"),
     ({"learner": {"phase1": "no"}}, "learner.phase1: expected true or false"),
     ({"learner": {"max_eqs": -1}}, "learner.max_eqs: expected a whole number"),
     ({"seeds": []}, "seeds: expected a non-empty list"),
-    ({"oracle": "parametric"}, "oracle: expected an object"),
+    ({"oracle": "signature"}, "oracle: expected an object"),
     ({"ontologies": None}, "ontologies: may not be null"),
 ])
 def test_3_load_errors_name_the_key(tmp_path, change, message):
@@ -104,7 +105,7 @@ def test_4_to_argv():
     assert "--no-precompute" in argv and "--eq-memory" in argv
     for flag in ("--model", "--ontology", "--seed", "--cluster"):
         assert flag not in argv                     # job options, or several to pick from
-    expected = {"--max-eqs": "50", "--max-failed-eqs": "5", "--oracle": "parametric",
+    expected = {"--max-eqs": "50", "--max-failed-eqs": "5", "--oracle": "signature",
                 "--prompt": "paper-advanced", "--eq": "oracle", "--eq-mode": "judge",
                 "--eq-generation": "g2b", "--eq-temperature": "1.0", "--eq-attempts": "3",
                 "--eq-check": "nl", "--eq-check-system": "s4", "--eq-check-question": "paper"}
@@ -113,9 +114,9 @@ def test_4_to_argv():
     rest = [a for a in argv if a not in ("--no-precompute", "--eq-memory")]
     assert dict(zip(rest[::2], rest[1::2])) == expected
     one = {**STANDARD, "ontologies": ["animals"], "seeds": [3],
-           "learner": {"phase1": True}, "oracle": {"kind": "taught", "max_new_tokens": None}}
+           "learner": {"phase1": True}, "oracle": {"kind": "axioms", "max_new_tokens": None}}
     assert run_config.to_argv(one) == ["--ontology", "ontologies/animals.owl", "--seed", "3",
-                                       "--oracle", "taught"]
+                                       "--oracle", "axioms"]
 
 
 def test_5_demo_config_then_command_line(tmp_path):
@@ -124,11 +125,11 @@ def test_5_demo_config_then_command_line(tmp_path):
     args = demo.parse_args(parser, ["--config", path, "--ontology", "ontologies/university.owl",
                                     "--seed", "2", "--eq-check-system", "s2"])
     assert (args.oracle, args.prompt, args.eq_generation, args.eq_temperature) == \
-        ("parametric", "paper-advanced", "g2b", 1.0)
+        ("signature", "paper-advanced", "g2b", 1.0)
     assert args.no_precompute and args.eq_memory and args.max_failed_eqs == 5
     assert args.eq_check_system == "s2"              # the command line wins
     assert (args.ontology, args.seed) == ("ontologies/university.owl", 2)
-    plain = demo.parse_args(parser, ["--oracle", "taught"])
+    plain = demo.parse_args(parser, ["--oracle", "axioms"])
     assert plain.prompt == "ours" and not plain.no_precompute
 
 
@@ -155,3 +156,15 @@ def test_7_command_line(tmp_path, capsys):
     bad = _write(tmp_path, {**STANDARD, "seeds": "all"}, "bad.json")
     assert run_config.main([bad, "get", "seeds"]) == 1
     assert "seeds: expected" in capsys.readouterr().err
+
+
+def test_8_old_oracle_names(tmp_path):
+    old = {**STANDARD, "oracle": {**STANDARD["oracle"], "kind": "parametric"}}
+    path = _write(tmp_path, old)
+    assert run_config.value(run_config.load(path), "oracle.kind") == "signature"
+    assert run_config.to_argv(old)[run_config.to_argv(old).index("--oracle") + 1] == "signature"
+    parser = demo.build_parser()
+    assert demo.parse_args(parser, ["--oracle", "taught"]).oracle == "axioms"
+    assert demo.parse_args(parser, ["--oracle", "parametric"]).oracle == "signature"
+    with pytest.raises(SystemExit):
+        demo.parse_args(parser, ["--oracle", "grounded"])

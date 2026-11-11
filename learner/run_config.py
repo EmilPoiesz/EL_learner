@@ -9,7 +9,7 @@ A configuration nests like the setup it describes:
       "ontologies": ["animals", "university"], "seeds": [0, 1, 2, 3, 4],
       "learner": {"phase1": false, "max_eqs": 50, "max_failed_eqs": 5},
       "oracle": {
-        "kind": "parametric",
+        "kind": "signature",
         "mq": {"prompt": "paper-advanced"},
         "eq": {"kind": "oracle", "mode": "judge",
                "counterexample": {"prompt": "g2b", "temperature": 1.0, "memory": true},
@@ -55,6 +55,7 @@ class Option:
     nullable: bool = False
     required: bool = False
     invert: bool = False            # bool whose *false* sets the flag (phase1 -> --no-precompute)
+    aliases: tuple[tuple[str, str], ...] = ()   # (old name, choice it now is)
     see: tuple[str, ...] = field(default=())   # experiments that tell its story
 
 
@@ -119,10 +120,13 @@ OPTIONS: tuple[Option, ...] = (
            flag="--max-failed-eqs", default=0, env="MAX_FAILED_EQS", see=("cex19",)),
     # --- Oracle ----------------------------------------------------------------
     Option("oracle.kind", "Oracle", "choice",
-           "What the model is given.", flag="--oracle", default="reasoner", env="ORACLE", required=True,
-           choices=(("taught", "The ontology's axioms are in the system prompt; the model answers from them."),
-                    ("parametric", "Only the concept and role names; the model answers from its own knowledge, "
-                                   "as in the paper. The ontology is only what the result is scored against."))),
+           "What the model is given. Before 2026-11-11 these were called taught (axioms) and "
+           "parametric (signature); the old names are still accepted.",
+           flag="--oracle", default="reasoner", env="ORACLE", required=True,
+           choices=(("axioms", "The ontology's axioms are in the system prompt; the model answers from them."),
+                    ("signature", "Only the concept and role names; the model answers from its own knowledge, "
+                                  "as in the paper. The ontology is only what the result is scored against.")),
+           aliases=(("taught", "axioms"), ("parametric", "signature"))),
     Option("oracle.temperature", "Decoding", "float",
            "0: greedy. Above 0: sampled at this temperature with Ollama's other defaults (top-k 40, top-p "
            "0.9, repeat penalty 1.1), seeded by the seed. Applies to the MQs, the judge and the check; the "
@@ -265,6 +269,7 @@ def flatten(config: dict, prefix: str = "") -> dict[str, Any]:
         if not prefix and name in META_KEYS:
             continue
         if key in BY_KEY:
+            value = dict(BY_KEY[key].aliases).get(value, value) if isinstance(value, str) else value
             _check_value(BY_KEY[key], value)
             out[key] = value
         elif key in groups:

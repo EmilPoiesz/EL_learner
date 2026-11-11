@@ -295,7 +295,7 @@ with LLMOracle(
 
 `learn_el_terminology` returns a `set[GCI]` representing what the language model knows about the domain.
 
-In this parametric mode (no `ontology_path`) the prompts list no object properties, so the model is effectively limited to atomic subsumptions. Pass `ontology_path` for grounded mode, where the signature, roles and axioms are taken from the ontology file and placed in the system prompt.
+In this mode (no `ontology_path`) the prompts list no object properties, so the model is effectively limited to atomic subsumptions. Pass `ontology_path` for grounded mode, where the signature, roles and axioms are taken from the ontology file and placed in the system prompt.
 
 #### Manchester syntax
 
@@ -386,16 +386,16 @@ python demo.py --oracle llm -v                     # print all prompts and respo
 python demo.py --oracle llm --dry-run              # preview prompts without loading the model
 python demo.py --oracle llm --model <hf-path>      # use a different HuggingFace model
 
-# LLMOracle, grounded ("taught"): the ontology is placed in the system prompt
-python demo.py --oracle taught --ontology ontologies/medical.ttl
-python demo.py --oracle taught --ontology ontologies/animals.owl --model <hf-path> --device mps
-python demo.py --oracle taught --max-new-tokens 4096  # more room for a reasoning model (default 1024; 128 for --oracle llm)
+# LLMOracle with the ontology's axioms in the system prompt (--oracle axioms)
+python demo.py --oracle axioms --ontology ontologies/medical.ttl
+python demo.py --oracle axioms --ontology ontologies/animals.owl --model <hf-path> --device mps
+python demo.py --oracle axioms --max-new-tokens 4096  # more room for a reasoning model (default 1024; 128 for --oracle llm)
 
 # Save the learned ontology (.ttl → Turtle, .owl/.xml → RDF/XML)
 python demo.py --output learned.ttl                # bare filename → ontologies/learned/learned.ttl
 ```
 
-The reasoner and taught demos finish with an equivalence check: every axiom of O must be entailed by H (completeness, checked with the H-reasoner) and every axiom of H must be entailed by O (soundness, checked with the oracle's MQ). Any missing or extra axioms are listed. `demo.py` exits with status 1 when a run fails (an exception such as an unparseable LLM response), so scripts and batch jobs can detect it.
+The reasoner and axioms demos finish with an equivalence check: every axiom of O must be entailed by H (completeness, checked with the H-reasoner) and every axiom of H must be entailed by O (soundness, checked with the oracle's MQ). Any missing or extra axioms are listed. `demo.py` exits with status 1 when a run fails (an exception such as an unparseable LLM response), so scripts and batch jobs can detect it.
 
 The LLM demo uses `HuggingFaceTB/SmolLM2-1.7B-Instruct` on a kinship domain (`{Person, Male, Female, Parent, Father, Mother}`). The model is downloaded automatically on first run and cached in `~/.cache/huggingface/`. To pre-download:
 
@@ -449,19 +449,21 @@ Concepts are encoded as strings when passed to the Java gateway:
 
 This project runs two experiments with an LLM as the oracle:
 
-1. **Reproducing the paper.** The original [ExactLearner-LLM](https://github.com/MatteoMagnini/ExactLearner-LLM) setup: the model answers MQs with the paper's prompts (Manchester or natural language), and equivalence queries are PAC sampling, which draws random statements and returns the first that H misses and the model accepts as a counterexample (`--oracle parametric --prompt paper-* --eq pac`).
+1. **Reproducing the paper.** The original [ExactLearner-LLM](https://github.com/MatteoMagnini/ExactLearner-LLM) setup: the model answers MQs with the paper's prompts (Manchester or natural language), and equivalence queries are PAC sampling, which draws random statements and returns the first that H misses and the model accepts as a counterexample (`--oracle signature --prompt paper-* --eq pac`).
 2. **Asking for counterexamples.** The model itself is the equivalence oracle: asked whether H is complete, it writes a counterexample (`--prompt ours --eq oracle`).
 
 The original setup differs from this project's default LLM oracle in three ways. Each one is available here as an option:
 
 | | Default here | Original (option) |
 |---|---|---|
-| What the model is given | `--oracle taught`: the ontology's axioms in the system prompt | `--oracle parametric`: only the signature; the model answers from what it knows. The ontology file is still the reference the result is scored against |
+| What the model is given | `--oracle axioms`: the ontology's axioms in the system prompt | `--oracle signature`: only the signature; the model answers from what it knows. The ontology file is still the reference the result is scored against |
 | MQ prompt | `--prompt ours`: a yes/no question naming the signature | `--prompt paper-simple` / `paper-advanced` (Manchester) or `paper-nl-simple` / `paper-nl-advanced` (upstream's natural-language rewrite): upstream's system prompts (verbatim); the axiom alone as the user message; an answer counts as True only if it reads exactly "true" (`paper_is_true`); 2 new tokens unless `--max-new-tokens` says otherwise. As upstream's `AxiomSimplifier`, an MQ that H already entails is answered True without the model; otherwise the conjuncts on the right that H entails are dropped, both sides are desaturated (each concept name that H makes redundant in a node is removed, `desaturate`), and the remaining conjuncts are asked one at a time. With `--prompt ours` the model gets the whole GCI, without any of these steps |
 | Equivalence query | `--eq oracle`: ELK for `ReasonerOracle`; for an LLM, a yes/no judge and a model-written counterexample | `--eq pac`: PAC sampling (`learner/pac.py`, `PACOracle`) |
 
+The two LLM oracles over an ontology file are `--oracle axioms` (the axioms in the prompt) and `--oracle signature` (only the concept and role names). Before 2026-11-11 they were called `taught` and `parametric`; the old names still work.
+
 ```bash
-python demo.py --oracle parametric --ontology ontologies/animals.owl \
+python demo.py --oracle signature --ontology ontologies/animals.owl \
                --prompt paper-advanced --eq pac --model <hf-path> --device cuda
 python demo.py --eq pac                              # PAC sampling with ELK as the oracle
 ```
@@ -471,7 +473,7 @@ python demo.py --eq pac                              # PAC sampling with ELK as 
 **Reading the ontology.** As upstream, the ontology file is read through the OWL API (`utils.java_utils.load_ontology`, which returns an `OntologyInfo`). The signature, the roles and the ontology size come from that read, and the O-reasoner and the soundness judge reason over the whole file. ELK uses what it supports of it, including the single-individual nominals of `generations.owl` (`Female ≡ ∃hasSex.{FemaleSex}`), which plain EL cannot express. Our EL parser leaves such axioms out of the parsed GCIs (`oracle.axioms`), with a warning, and lists them in `oracle.skipped_axioms`: for `generations.owl`, the 13 nominal definitions and 4 role axioms (a range, an inverse, a functional and a symmetric role). Where the parsed GCIs are used, this is accounted for:
 - `ReasonerOracle`'s own equivalence query (`--eq oracle`) does not stop when H entails every parsed GCI: if the file has skipped axioms, it then looks for a statement of the paper's four shapes that O entails and H does not, and returns that as the counterexample. With ELK on `generations.owl`, H then entails all 1159 statements, not 88% of them.
 - The demo's completeness check also requires H to entail every such statement, and notes how many axioms were left out.
-- **Limitation:** the taught prompt (`--oracle taught`) lists only the parsed GCIs, so the model is not shown the skipped axioms.
+- **Limitation:** the axioms prompt (`--oracle axioms`) lists only the parsed GCIs, so the model is not shown the skipped axioms.
 
 Names are identified by their local name (the part after `#`, or after the last `/`). A file in which two IRIs share a local name is refused, by the parser and by the gateway, rather than merging them. When the file mentions `owl:Thing`, upstream counts it among the classes; so do the PAC sampler and the score here (football, generations).
 
@@ -481,7 +483,7 @@ PAC learning guarantees only that H agrees with O on most randomly drawn stateme
 
 ### The model as the equivalence oracle
 
-With `--eq oracle` and an LLM oracle (`taught` or `parametric`), the model answers the EQs itself: it judges whether H is complete, then names a counterexample. A counterexample is used only when it parses, uses names in scope, does not already follow from H, and the model's own check accepts it. An unusable answer is asked for again, with the reasons the earlier ones failed added to the prompt. With a `paper-nl-*` prompt style the EQs are asked in natural language, otherwise in Manchester syntax. The settings are the fields of `EQSettings` (`learner/llm_oracle.py`); the prompt texts are in `learner/llm_prompts.py`.
+With `--eq oracle` and an LLM oracle (`axioms` or `signature`), the model answers the EQs itself: it judges whether H is complete, then names a counterexample. A counterexample is used only when it parses, uses names in scope, does not already follow from H, and the model's own check accepts it. An unusable answer is asked for again, with the reasons the earlier ones failed added to the prompt. With a `paper-nl-*` prompt style the EQs are asked in natural language, otherwise in Manchester syntax. The settings are the fields of `EQSettings` (`learner/llm_oracle.py`); the prompt texts are in `learner/llm_prompts.py`.
 
 | Flag | Effect |
 |---|---|
@@ -506,7 +508,7 @@ python demo.py --config run.json --ontology ontologies/animals.owl --seed 0 --mo
 A reasoning model whose chat template opens `<think>` is read after `</think>`; a response without it (the budget ran out while reasoning) counts as no answer, and the run reports how many were cut off. Give such models room with `--max-new-tokens`.
 
 ```bash
-python demo.py --oracle parametric --ontology ontologies/animals.owl --prompt paper-advanced \
+python demo.py --oracle signature --ontology ontologies/animals.owl --prompt paper-advanced \
                --eq oracle --eq-generation g2b --eq-check-system s4 --eq-memory --eq-temperature 1.0 \
                --no-precompute --max-eqs 50 --max-failed-eqs 5 --model <hf-path> --device cuda
 ```

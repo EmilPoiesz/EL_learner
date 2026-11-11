@@ -190,13 +190,13 @@ class LLMOracle(Oracle):
         Optional path to a target ontology file (.ttl or .owl).  When
         provided the oracle operates in *grounded* mode: the full set of
         parsed GCIs is placed in the system prompt so the LLM reasons
-        from the given axioms rather than from parametric knowledge.
+        from the given axioms rather than from its own knowledge.
         The signature and roles are also derived from the file, unless
         ``signature`` / ``roles`` are given.
     include_axioms : bool
         With ``ontology_path``: put O's axioms in the system prompt (True,
-        "taught") or only take the signature and roles from the file (False,
-        "parametric": the model answers from what it knows, as in the paper).
+        ``--oracle axioms``) or only take the signature and roles from the file (False,
+        ``--oracle signature``: the model answers from what it knows, as in the paper).
     prompt_style : str
         ``"ours"`` (default): this project's yes/no prompts.
         ``"paper-simple"`` / ``"paper-advanced"``, and their natural-language
@@ -295,7 +295,7 @@ class LLMOracle(Oracle):
 
         if ontology_path is not None:
             from utils.owl_parser import extract_ontology
-            # Axioms the parsed GCIs leave out; the taught prompt does not show them.
+            # Axioms the parsed GCIs leave out; the axioms prompt does not show them.
             self.skipped_axioms: list[str] = []
             parsed_sig, self._O = extract_ontology(ontology_path, self.skipped_axioms)
             self._sig = set(signature) if signature is not None else parsed_sig
@@ -320,8 +320,8 @@ class LLMOracle(Oracle):
                 system += f"\n\nOntology axioms:\n{axioms}"
             self._system_msg = system
 
-        taught = ontology_path is not None and include_axioms
-        self._eq_system_msg = prompts.eq_system_message(self._O if taught else None,
+        with_axioms = ontology_path is not None and include_axioms
+        self._eq_system_msg = prompts.eq_system_message(self._O if with_axioms else None,
                                                         self._eq_language)
 
     # ------------------------------------------------------------------

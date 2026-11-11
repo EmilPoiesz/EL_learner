@@ -52,18 +52,18 @@ _EQ_SYSTEM_INTRO = (
     "counterexample is a statement that is true in O but does not follow from H."
 )
 _EQ_SYSTEM_OUTRO = "Follow the output format exactly as specified, without explanation."
-# The model's own knowledge of the domain is O (the paper's parametric setting).
-EQ_SYSTEM_PARAMETRIC = (
+# The model's own knowledge of the domain is O (--oracle signature, the paper's setting).
+EQ_SYSTEM_SIGNATURE = (
     f"{_EQ_SYSTEM_INTRO} O describes the domain that these names are about; answer "
     f"from your own knowledge of that domain. {_EQ_SYSTEM_OUTRO}"
 )
 
 
 def eq_system_message(axioms: set[GCI] | None, language: str = "manchester") -> str:
-    """The EQ system message: ``EQ_SYSTEM_PARAMETRIC``, or with *axioms* (taught)
+    """The EQ system message: ``EQ_SYSTEM_SIGNATURE``, or with *axioms* (--oracle axioms)
     O itself, in the EQ language."""
     if axioms is None:
-        return EQ_SYSTEM_PARAMETRIC
+        return EQ_SYSTEM_SIGNATURE
     render = gci_to_nl if language == "nl" else gci_to_manchester
     text = "\n".join(f"  {render(g)}" for g in sorted(axioms, key=str))
     return f"{_EQ_SYSTEM_INTRO} O is:\n{text}\n\n{_EQ_SYSTEM_OUTRO}"
