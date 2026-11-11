@@ -56,6 +56,7 @@ class Option:
     required: bool = False
     invert: bool = False            # bool whose *false* sets the flag (phase1 -> --no-precompute)
     aliases: tuple[tuple[str, str], ...] = ()   # (old name, choice it now is)
+    minimum: int = 0                # for an int
     see: tuple[str, ...] = field(default=())   # experiments that tell its story
 
 
@@ -192,7 +193,7 @@ OPTIONS: tuple[Option, ...] = (
            see=("cex10",)),
     Option("oracle.eq.counterexample.attempts", "Attempts per EQ", "int",
            "Attempts at a usable counterexample per EQ; each retry lists why the earlier answers "
-           "could not be used.", flag="--eq-attempts", default=3, env="EQ_ATTEMPTS"),
+           "could not be used.", flag="--eq-attempts", default=3, env="EQ_ATTEMPTS", minimum=1),
     Option("oracle.eq.check.asked_as", "Asked as", "choice",
            "The form of the check's membership query. With a paper prompt only.",
            flag="--eq-check", default="mq", env="EQ_CHECK",
@@ -243,8 +244,8 @@ def _check_value(opt: Option, value: Any) -> None:
         if not isinstance(value, bool):
             raise ConfigError(where + f"expected true or false, not {value!r}")
     elif opt.kind == "int":
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ConfigError(where + f"expected a whole number ≥ 0, not {value!r}")
+        if isinstance(value, bool) or not isinstance(value, int) or value < opt.minimum:
+            raise ConfigError(where + f"expected a whole number ≥ {opt.minimum}, not {value!r}")
     elif opt.kind == "float":
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
             raise ConfigError(where + f"expected a number ≥ 0, not {value!r}")
@@ -290,6 +291,8 @@ def load(path: str) -> dict:
             config = json.load(f)
     except json.JSONDecodeError as exc:
         raise ConfigError(f"{path}: not valid JSON ({exc})") from None
+    except OSError as exc:
+        raise ConfigError(f"{path}: cannot be read ({exc.strerror or exc})") from None
     if not isinstance(config, dict):
         raise ConfigError(f"{path}: expected a JSON object")
     flat = flatten(config)
@@ -339,13 +342,14 @@ def check_run(config: dict, ontology: str, seed: int, argv: list[str]) -> None:
     """Refuse a run outside the config's ontologies or seeds, or one that leaves the choice
     among several of them to demo.py's default."""
     flat = flatten(config)
+    given = lambda flag: any(a == flag or a.startswith(flag + "=") for a in argv)
     names = flat.get("ontologies", [])
-    if len(names) > 1 and "--ontology" not in argv:
+    if len(names) > 1 and not given("--ontology"):
         raise ConfigError(f"ontologies: the config names {', '.join(names)}; pick one with --ontology")
     if names and ontology not in {ontology_path(n) for n in names} | set(names):
         raise ConfigError(f"ontologies: {ontology} is not in the config ({', '.join(names)})")
     seeds = flat.get("seeds")
-    if seeds and len(seeds) > 1 and "--seed" not in argv:
+    if seeds and len(seeds) > 1 and not given("--seed"):
         raise ConfigError(f"seeds: the config names {seeds}; pick one with --seed")
     if seeds and seed not in seeds:
         raise ConfigError(f"seeds: {seed} is not in the config ({seeds})")

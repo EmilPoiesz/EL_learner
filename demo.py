@@ -482,9 +482,10 @@ def build_parser() -> argparse.ArgumentParser:
              "true that every C ...?\".",
     )
     parser.add_argument(
-        "--eq-memory", action="store_true",
+        "--eq-memory", action=argparse.BooleanOptionalAction, default=False,
         help="With an LLM's own equivalence queries: list the counterexamples the check "
-             "rejected at earlier EQs in every later counterexample prompt.",
+             "rejected at earlier EQs in every later counterexample prompt "
+             "(--no-eq-memory turns a config's memory off).",
     )
     parser.add_argument(
         "--eq-temperature", type=float, default=0.0, metavar="T",
@@ -520,6 +521,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="With an LLM over an ontology (axioms, signature): skip Phase 1, the MQ for "
              "every ordered pair of concept names, so H starts empty and grows only from "
              "counterexamples.",
+    )
+    parser.add_argument(
+        "--precompute", dest="no_precompute", action="store_false",
+        help="Run Phase 1 after all, when a config (or an earlier flag) skips it.",
     )
     parser.add_argument("--epsilon", type=float, default=0.2, help="PAC accuracy ε (with --eq pac).")
     parser.add_argument("--delta", type=float, default=0.1, help="PAC confidence δ (with --eq pac).")
@@ -632,6 +637,19 @@ if __name__ == "__main__":
         if max_new_tokens is None and args.prompt != "ours":
             max_new_tokens = 2   # upstream's maxTokens for its True/False prompts
         from learner.llm_oracle import EQSettings   # loads transformers
+        try:
+            eq_settings = EQSettings(
+                mode=args.eq_mode,
+                check=args.eq_check,
+                check_system=args.eq_check_system,
+                check_question=args.eq_check_question,
+                memory=args.eq_memory,
+                temperature=args.eq_temperature,
+                generation=args.eq_generation,
+                attempts=args.eq_attempts,
+            )
+        except ValueError as exc:   # a combination the settings refuse, e.g. combined + g2
+            parser.error(str(exc))
         ok = _run_grounded_llm_demo(
             ontology=args.ontology,
             model=args.model,
@@ -646,16 +664,7 @@ if __name__ == "__main__":
             delta=args.delta,
             seed=args.seed,
             temperature=args.temperature,
-            eq_settings=EQSettings(
-                mode=args.eq_mode,
-                check=args.eq_check,
-                check_system=args.eq_check_system,
-                check_question=args.eq_check_question,
-                memory=args.eq_memory,
-                temperature=args.eq_temperature,
-                generation=args.eq_generation,
-                attempts=args.eq_attempts,
-            ),
+            eq_settings=eq_settings,
             max_eqs=args.max_eqs,
             precomputation=not args.no_precompute,
             max_failed_eqs=args.max_failed_eqs,

@@ -9,6 +9,8 @@ Tests for learner/run_config.py and demo.py --config.
 6  a run must be one of the config's ontologies and seeds, and must pick when there are several
 7  the command line for the batch script: get KEY, and errors as exit status 1
 8  the oracle kinds' old names (taught, parametric) still work, as the new ones
+9  review fixes: a missing file and attempts 0 are config errors; --seed=N counts as picking
+   a seed; --no-eq-memory and --precompute undo the config's memory and skipped Phase 1
 """
 
 from __future__ import annotations
@@ -168,3 +170,23 @@ def test_8_old_oracle_names(tmp_path):
     assert demo.parse_args(parser, ["--oracle", "parametric"]).oracle == "signature"
     with pytest.raises(SystemExit):
         demo.parse_args(parser, ["--oracle", "grounded"])
+
+
+def test_9_review_fixes(tmp_path, capsys):
+    parser = demo.build_parser()
+    with pytest.raises(SystemExit):
+        demo.parse_args(parser, ["--config", str(tmp_path / "typo.json")])
+    assert "typo.json: cannot be read" in capsys.readouterr().err
+
+    zero = {**STANDARD, "oracle": {**STANDARD["oracle"], "eq": {"counterexample": {"attempts": 0}}}}
+    with pytest.raises(ConfigError, match="attempts: expected a whole number ≥ 1"):
+        run_config.load(_write(tmp_path, zero))
+
+    path = _write(tmp_path, STANDARD)
+    args = demo.parse_args(parser, ["--config", path, "--ontology=ontologies/animals.owl", "--seed=1"])
+    assert (args.ontology, args.seed) == ("ontologies/animals.owl", 1)
+
+    args = demo.parse_args(parser, ["--config", path, "--ontology", "ontologies/animals.owl", "--seed", "0",
+                                    "--no-eq-memory", "--precompute"])
+    assert not args.eq_memory and not args.no_precompute
+    assert demo.parse_args(parser, ["--eq-memory", "--no-precompute"]).no_precompute
