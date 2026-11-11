@@ -46,6 +46,9 @@ EQ_MODES = ("judge", "combined")
 # check_system, check_question), so that one statement gets one answer within a run.
 MQ_ASKED_AS = ("paper", "check")
 EQ_CHECKS = ("mq", "nl")
+# The language of the EQ prompts and answers (EQSettings.language): "style", as the MQ
+# prompt style (natural language with paper-nl-*, else Manchester syntax), or either.
+EQ_LANGUAGES = ("style", "manchester", "nl")
 # Generation budget of an EQ answer, at least: a counterexample is a line of text,
 # which the 2 tokens of the paper's MQs would cut off.
 EQ_MIN_NEW_TOKENS = 128
@@ -126,6 +129,12 @@ class EQSettings:
     attempts : int
         Attempts at a usable counterexample per EQ (default 3: the first ask and
         two retries).
+    language : str
+        The language of both EQ prompts (H, the counterexample asked for, the
+        feedback) and of the answer: ``"style"`` (default), natural language with
+        a ``paper-nl-*`` prompt style and Manchester syntax otherwise;
+        ``"manchester"``; or ``"nl"``, the paper's "C is a subcategory of D"
+        (``el_syntax.gci_to_nl``), whatever the MQ prompt style.
     max_new_tokens : int or None
         The generation budget of the counterexample prompts only.  None
         (default): the oracle's, but at least ``EQ_MIN_NEW_TOKENS``.  The judge
@@ -150,6 +159,7 @@ class EQSettings:
     attempts: int = 3
     generation: str = "default"
     max_new_tokens: int | None = None
+    language: str = "style"
 
     def __post_init__(self):
         if self.mode not in EQ_MODES:
@@ -164,6 +174,8 @@ class EQSettings:
                              f"not {self.check_question!r}")
         if self.attempts < 1:
             raise ValueError(f"attempts must be at least 1, not {self.attempts}")
+        if self.language not in EQ_LANGUAGES:
+            raise ValueError(f"language must be one of {EQ_LANGUAGES}, not {self.language!r}")
         if self.max_new_tokens is not None and self.max_new_tokens < 1:
             raise ValueError(f"max_new_tokens must be at least 1, not {self.max_new_tokens}")
         if self.generation not in GENERATIONS:
@@ -182,7 +194,9 @@ class EQSettings:
                    if self.temperature > 0 else "")
                 + (f", {self.attempts} attempts per EQ" if self.attempts != 3 else "")
                 + (f", counterexample prompt {self.generation}" if self.generation != "default" else "")
-                + (f", {self.max_new_tokens} tokens per counterexample" if self.max_new_tokens else ""))
+                + (f", {self.max_new_tokens} tokens per counterexample" if self.max_new_tokens else "")
+                + ({"manchester": ", EQs in Manchester syntax", "nl": ", EQs in natural language"}
+                   .get(self.language, "")))
 
 
 # ---------------------------------------------------------------------------
@@ -310,10 +324,11 @@ class LLMOracle(Oracle):
         self._eq = eq_settings
         self._truth = truth
         self.eq_outcomes = Counter()
-        self._eq_language = "nl" if prompt_style in PAPER_NL_STYLES else "manchester"
+        self._eq_language = (eq_settings.language if eq_settings.language != "style"
+                             else "nl" if prompt_style in PAPER_NL_STYLES else "manchester")
         if eq_settings.generation in MANCHESTER_ONLY_GENERATIONS and self._eq_language != "manchester":
             raise ValueError(f"generation {eq_settings.generation} is written in Manchester "
-                             f"syntax only, not with prompt style {prompt_style}")
+                             f"syntax only, not in natural language")
         self._rejected: tuple[str, ...] = ()   # with memory: the check's rejections so far
         self._failed: tuple[str, ...] = ()     # why the answers of the EQs that just failed could not be used
         self._h_reasoner = h_reasoner

@@ -512,7 +512,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="With an LLM's own equivalence queries (--eq oracle; axioms, signature): "
              "'judge' asks yes/no whether H is complete, then for a counterexample; "
              "'combined' asks once for a counterexample, or yes if H is complete.  "
-             "In natural language with --prompt paper-nl-*, else in Manchester syntax.",
+             "In the language --eq-language says.",
+    )
+    parser.add_argument(
+        "--eq-language", choices=["style", "manchester", "nl"], default="style",
+        help="With an LLM's own equivalence queries: the language of the EQ prompts and "
+             "answers.  'style' (default): natural language with --prompt paper-nl-*, else "
+             "Manchester syntax; 'nl': the paper's 'C is a subcategory of D' whatever the "
+             "MQ prompt.",
     )
     parser.add_argument(
         "--eq-check", choices=["mq", "nl"], default="mq",
@@ -709,6 +716,7 @@ if __name__ == "__main__":
         try:
             eq_settings = EQSettings(
                 mode=args.eq_mode,
+                language=args.eq_language,
                 check=args.eq_check,
                 check_system=args.eq_check_system,
                 check_question=args.eq_check_question,

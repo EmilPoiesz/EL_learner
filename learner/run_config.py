@@ -176,8 +176,17 @@ OPTIONS: tuple[Option, ...] = (
                     ("combined", "One prompt: a counterexample, or 'yes' if H is complete. Mistral said 'yes' "
                                  "at once, even to an empty H.")),
            see=("cex1", "cex4")),
+    Option("oracle.eq.language", "Language", "choice",
+           "The language of both EQ prompts (H, the counterexample asked for, the feedback) and of the "
+           "answer, which is parsed in it.", flag="--eq-language", default="style", env="EQ_LANGUAGE",
+           choices=(("style", "As the MQ prompt style: natural language with paper-nl-*, else Manchester "
+                              "syntax."),
+                    ("manchester", "Manchester syntax: \"Bird SubClassOf has_part some Wing\"."),
+                    ("nl", "The paper's natural language: \"Bird is a subcategory of something that "
+                           "has_part some Wing\", whatever the MQ prompt style.")),
+           see=("cex1-cex11", "cex23")),
     Option("oracle.eq.counterexample.prompt", "Prompt", "choice",
-           "How the counterexample is asked for. Only with mode judge; g1, g2 and g2b only in Manchester "
+           "How the counterexample is asked for. Only with mode judge; g1 and g2 only in Manchester "
            "syntax.", flag="--eq-generation", default="default", env="EQ_GENERATION",
            choices=(("default", "Placeholder examples: C SubClassOf D, C SubClassOf r some D, "
                                 "C and (r some D) SubClassOf E."),

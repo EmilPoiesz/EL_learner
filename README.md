@@ -488,6 +488,7 @@ With `--eq oracle` and an LLM oracle (`axioms` or `signature`), the model answer
 | Flag | Effect |
 |---|---|
 | `--eq-mode judge\|combined` | `judge` (default): a yes/no question whether H is complete, then one for a counterexample. `combined`: one prompt asks for a counterexample, or "yes" |
+| `--eq-language style\|manchester\|nl` | The language of the EQ prompts and answers: as the MQ prompt style (default), Manchester syntax, or the paper's "C is a subcategory of D" |
 | `--eq-generation default\|g1\|g2\|g3\|g2b\|g3b` | How the counterexample is asked for: placeholder examples; the EL forms as rules (G1); examples about cars (G2, G2b without brackets); a `Subject \| relation \| Object` triple (G3, G3b with the format in prose) |
 | `--eq-check mq\|nl` | With a paper prompt: check a counterexample by an MQ in the run's own style, or by the paper's natural-language MQ |
 | `--eq-check-system paper\|s1\|s2\|s3\|s4` | With a paper prompt: the check's system prompt (`CHECK_SYSTEM_PROMPTS`): the MQs' own, the paper's simple one, or variants of the advanced one |

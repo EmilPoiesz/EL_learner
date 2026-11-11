@@ -731,3 +731,26 @@ def test_45_query_stats(tmp_path):
     assert oracle.mq_by_step == {"EQ": 1, "saturation": 1}
     assert query_kind("MQ (check, s4 system prompt, every question)") == "MQ (check)"
     assert query_kind("EQ (counterexample or yes)") == "EQ (counterexample or yes)"
+
+
+def test_46_eq_language_apart_from_the_mq_style(tmp_path):
+    # cex23: MQs under paper-advanced (Manchester), EQs in the paper's natural language,
+    # with G2b's car examples in it; the answer is parsed in natural language.
+    oracle = _oracle(tmp_path, ["no", "A is a subcategory of B", "True"])
+    oracle._prompt_style = "paper-advanced"
+    oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
+    oracle._eq = EQSettings(language="nl", generation="g2b")
+    oracle._eq_language = "nl"
+    oracle._sig, oracle._roles = {"A", "B", "C"}, {"r"}
+    H = {GCI(ELConcept({"C"}), ELConcept(existentials={("r", ELConcept({"A"}))}))}
+    assert oracle.EQ(H) == _GCI
+    judge, counterexample = oracle._pipe.prompts[:2]
+    assert "C is a subcategory of something that r some A" in judge
+    assert "Car is a subcategory of something that has_component some Wheel" in counterexample
+    assert "SubClassOf" not in judge + counterexample
+    assert oracle._pipe.prompts[2] == "A SubClassOf B"           # the check: the paper's MQ
+    with pytest.raises(ValueError, match="language must be one of"):
+        EQSettings(language="french")
+    assert prompts.eq_counterexample_prompt({"A"}, set(), set(), language="nl", generation="g2b")
+    with pytest.raises(ValueError, match="Manchester syntax only"):
+        prompts.eq_counterexample_prompt({"A"}, set(), set(), language="nl", generation="g2")

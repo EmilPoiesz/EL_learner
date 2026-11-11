@@ -198,14 +198,20 @@ _EQ_FORMAT = {"manchester": "in Manchester syntax", "nl": "in this form"}
 #   g3b      G3 with the format explained in prose: in cex15 the model copied the shape
 #            "Subject | is-a | Object: every Subject is an Object", writing "Subject"
 #            itself, or the format line before its answer
-# G1, G2 and G2b are written in Manchester syntax; G3 and G3b ask the same in either language.
+# G1 and G2 are written in Manchester syntax; G2b, G3 and G3b ask the same in either
+# language (G2b's examples in natural language: gci_to_nl of the Manchester ones, cex23).
 GENERATIONS = ("default", "g1", "g2", "g3", "g2b", "g3b")
-MANCHESTER_ONLY_GENERATIONS = ("g1", "g2", "g2b")
+MANCHESTER_ONLY_GENERATIONS = ("g1", "g2")
 TRIPLE_GENERATIONS = ("g3", "g3b")         # the answer is a triple (el_syntax.parse_triple)
 EQ_EXAMPLES_G2 = ("Car SubClassOf Vehicle", "Car SubClassOf has_component some Wheel",
                   "Vehicle and (powered_by some Engine) SubClassOf MotorVehicle")
-EQ_EXAMPLES_G2B = ("Car SubClassOf Vehicle", "Car SubClassOf has_component some Wheel",
-                   "Vehicle and powered_by some Engine SubClassOf MotorVehicle")
+EQ_EXAMPLES_G2B = {
+    "manchester": ("Car SubClassOf Vehicle", "Car SubClassOf has_component some Wheel",
+                   "Vehicle and powered_by some Engine SubClassOf MotorVehicle"),
+    "nl": ("Car is a subcategory of Vehicle",
+           "Car is a subcategory of something that has_component some Wheel",
+           "Vehicle that is also something that powered_by some Engine is a subcategory of MotorVehicle"),
+}
 _G1_RULES = (
     "Rules:\n"
     "  - C, D, E and r stand for names in scope: replace them, do not write them.\n"
@@ -276,7 +282,7 @@ def eq_counterexample_prompt(sig: set[str], roles: set[str], H: set[GCI],
         return head + (f"Output exactly one line {_EQ_FORMAT[language]}, for example "
                        f"(about cars, not about O):\n{examples}Output nothing else.")
     if generation == "g2b":
-        examples = "".join(f"  {e}\n" for e in EQ_EXAMPLES_G2B)
+        examples = "".join(f"  {e}\n" for e in EQ_EXAMPLES_G2B[language])
         return head + (f"Output exactly one line {_EQ_FORMAT[language]}, for example, "
                        f"about cars:\n{examples}Output nothing else.")
     examples = "".join(f"  {e}\n" for e in EQ_EXAMPLES[language])
