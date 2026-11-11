@@ -22,7 +22,7 @@ jobs:
           - windows-latest
           - macos-latest
         python-version:
-          - '3.12.3'
+          - '3.12'
     runs-on: ${{ matrix.os }}
     name: Run tests on Python ${{ matrix.python-version }}, on ${{ matrix.os }}
     timeout-minutes: 60
