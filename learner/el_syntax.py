@@ -1,13 +1,13 @@
 """
-EL concepts and GCIs as text in Manchester syntax, written and parsed.  Pure
-functions, no model.
+EL concepts and GCIs as text: Manchester syntax and this project's natural
+language, written and parsed.  Pure functions, no model.
 """
 
 from __future__ import annotations
 
 import re
 
-from learner.el_algorithm import ELConcept, GCI
+from learner.el_algorithm import ELConcept, GCI, existential_key
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +56,108 @@ def hypothesis_to_manchester(H: set[GCI]) -> str:
     if not H:
         return "  (empty)"
     return "\n".join(f"  {gci_to_manchester(gci)}" for gci in sorted(H, key=str))
+
+
+# ---------------------------------------------------------------------------
+# Natural language for EQs
+# ---------------------------------------------------------------------------
+# Upstream's phrases ("that is also", "something that r some", "subcategory"), but
+# with a filler of several conjuncts in brackets, so that the text maps back to
+# Manchester syntax word for word (upstream_natural_language leaves brackets
+# half-rewritten, and the paper has no natural-language EQ to stay faithful to).
+
+def concept_to_nl(concept: ELConcept, nested: bool = False) -> str:
+    parts = sorted(concept.atoms) + [
+        f"something that {role} some {concept_to_nl(filler, nested=True)}"
+        for role, filler in sorted(concept.existentials, key=existential_key)
+    ]
+    if not parts:
+        return "owl:Thing"
+    text = " that is also ".join(parts)
+    return f"({text})" if nested and len(parts) > 1 else text
+
+
+def gci_to_nl(gci: GCI) -> str:
+    return f"{concept_to_nl(gci.lhs)} is a subcategory of {concept_to_nl(gci.rhs)}"
+
+
+def hypothesis_to_nl(H: set[GCI]) -> str:
+    if not H:
+        return "  (empty)"
+    return "\n".join(f"  {gci_to_nl(gci)}" for gci in sorted(H, key=str))
+
+
+def parse_nl_gci(s: str) -> GCI:
+    """The GCI of a statement written as gci_to_nl writes it.  Raises ValueError."""
+    sides = re.split(r"\s+is an? subcategory of\s+", s.strip(), maxsplit=1, flags=re.IGNORECASE)
+    if len(sides) != 2:
+        raise ValueError(f"no 'is a subcategory of' in {s!r}")
+
+    def to_manchester(text: str) -> str:
+        text = re.sub(r"\bthat is also\b", "and", text.strip().strip("'\""), flags=re.IGNORECASE)
+        return re.sub(r"\bsomething that\s+", "", text, flags=re.IGNORECASE)
+
+    return parse_manchester_gci(f"{to_manchester(sides[0])} SubClassOf {to_manchester(sides[1])}")
+
+
+# ---------------------------------------------------------------------------
+# Triples: "Subject | relation | Object" (EQ answers with generation G3)
+# ---------------------------------------------------------------------------
+
+IS_A = "is-a"
+# The relation of a triple that means SubClassOf, as the model may write it.
+IS_A_PATTERN = r"is[\s_\-]?an?|isa|subclassof"
+
+
+def gci_to_triple(gci: GCI) -> str | None:
+    """A ⊑ B as "A | is-a | B", A ⊑ ∃r.B as "A | r | B", for concept names A and B;
+    None for any other GCI."""
+    lhs, rhs = gci.lhs, gci.rhs
+    if len(lhs.atoms) != 1 or lhs.existentials:
+        return None
+    subject = next(iter(lhs.atoms))
+    if len(rhs.atoms) == 1 and not rhs.existentials:
+        return f"{subject} | {IS_A} | {next(iter(rhs.atoms))}"
+    if not rhs.atoms and len(rhs.existentials) == 1:
+        role, filler = next(iter(rhs.existentials))
+        if len(filler.atoms) == 1 and not filler.existentials:
+            return f"{subject} | {role} | {next(iter(filler.atoms))}"
+    return None
+
+
+def parse_triple(s: str) -> GCI:
+    """The GCI of "Subject | relation | Object": Subject ⊑ Object when the relation
+    is is-a (also "is a", "isa", "is_a", "SubClassOf", in any case), else
+    Subject ⊑ ∃relation.Object.  Raises ValueError."""
+    parts = [p.strip().strip("`'\"").strip() for p in s.strip().strip("|").split("|")]
+    if len(parts) != 3:
+        raise ValueError(f"expected 'Subject | relation | Object': {s!r}")
+    subject, relation, obj = parts
+    is_a = re.fullmatch(IS_A_PATTERN, relation, flags=re.IGNORECASE)
+    for name in (subject, obj) if is_a else (subject, relation, obj):
+        if not re.fullmatch(NAME_PATTERN, name):
+            raise ValueError(f"{name!r} is not a name: {s!r}")
+    lhs = ELConcept(frozenset({subject}))
+    if is_a:
+        return GCI(lhs, ELConcept(frozenset({obj})))
+    return GCI(lhs, ELConcept(frozenset(), frozenset({(relation, ELConcept(frozenset({obj})))})))
+
+
+def without_brackets(text: str) -> str:
+    """*text* without brackets that enclose all of it: "((A SubClassOf B))" → "A SubClassOf B"."""
+    text = text.strip()
+    while text.startswith("(") and _matching_paren_or_none(text, 0) == len(text) - 1:
+        text = text[1:-1].strip()
+    return text
+
+
+def _matching_paren_or_none(s: str, open_pos: int) -> int | None:
+    depth = 0
+    for i in range(open_pos, len(s)):
+        depth += {"(": 1, ")": -1}.get(s[i], 0)
+        if depth == 0:
+            return i
+    return None
 
 
 # ---------------------------------------------------------------------------

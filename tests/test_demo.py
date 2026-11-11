@@ -17,7 +17,7 @@ A, B, C = (ELConcept(frozenset({n})) for n in "ABC")
 def test_1_learned_h_tags(monkeypatch, capsys):
     axiom, derivable, unsound = GCI(A, B), GCI(A, ELConcept(frozenset({"A", "B"}))), GCI(C, A)
     H = {axiom, derivable, unsound}
-    monkeypatch.setattr(demo, "learn_el_terminology", lambda oracle, max_iterations: H)
+    monkeypatch.setattr(demo, "learn_el_terminology", lambda oracle, max_iterations, precomputation, max_failed_eqs: H)
     oracle = SimpleNamespace(
         mq_count=0, eq_count=0, axioms={axiom}, signature={"A", "B", "C"},
         make_H_MQ=lambda H: lambda gci: gci in H,

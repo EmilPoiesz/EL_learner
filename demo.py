@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Callable
 from learner.el_algorithm import ELConcept, GCI, Oracle, learn_el_terminology
 
 if TYPE_CHECKING:
+    from learner.llm_oracle import EQSettings
     from utils.java_utils import OntologyInfo
 
 # ---------------------------------------------------------------------------
@@ -110,17 +111,25 @@ def _run_reasoner_demo(
 
 
 def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, judge: Callable[[GCI], bool] | None = None,
-                    info: OntologyInfo | None = None) -> None:
+                    info: OntologyInfo | None = None, max_eqs: int | None = None,
+                    precomputation: bool = True, max_failed_eqs: int = 0) -> None:
     """Run the learner and print a comparison report against oracle.axioms.
     ``info``: the ontology as the OWL API reads it, whose classes (with owl:Thing
-    when the file mentions it) and roles the paper metric is computed over."""
+    when the file mentions it) and roles the paper metric is computed over.
+    ``max_eqs``: stop after this many equivalence queries (one per iteration).
+    ``precomputation``: start H with an MQ for every ordered pair of concept names
+    (Phase 1); without it H starts empty and grows only from counterexamples.
+    ``max_failed_eqs``: EQs in a row without a usable answer before learning stops."""
     # With PAC sampling the sample budget bounds the run; every counterexample is
     # one iteration, so a cap of 50 would cut a yes-biased LLM's run short.
     max_iterations = 100_000 if getattr(oracle, "sampler", None) is not None else 50
+    if max_eqs is not None:
+        max_iterations = max_eqs
     if not verbose:
         logging.disable(logging.INFO)
     try:
-        H = learn_el_terminology(oracle, max_iterations=max_iterations)
+        H = learn_el_terminology(oracle, max_iterations=max_iterations, precomputation=precomputation,
+                                 max_failed_eqs=max_failed_eqs)
     finally:
         logging.disable(logging.NOTSET)
 
@@ -208,6 +217,10 @@ def _run_grounded_llm_demo(
     delta: float = 0.1,
     seed: int | None = 0,
     temperature: float = 0.0,
+    eq_settings: EQSettings | None = None,
+    max_eqs: int | None = None,
+    precomputation: bool = True,
+    max_failed_eqs: int = 0,
 ) -> bool:
     """
     LLM oracle over an ontology file, scored against it.  ``include_axioms``:
@@ -216,7 +229,8 @@ def _run_grounded_llm_demo(
     """
     from utils.java_utils import build_classpath
     from learner.hypothesis_reasoner import HypothesisReasoner
-    from learner.llm_oracle import LLMOracle
+    from learner.llm_oracle import EQSettings, LLMOracle
+    eq_settings = eq_settings or EQSettings()
 
     ontology_path   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ontology)
     gateway_jar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
@@ -230,6 +244,14 @@ def _run_grounded_llm_demo(
         print(f"  Max new tokens : {max_new_tokens}")
     if temperature > 0:
         print(f"  Sampling : temperature {temperature}, Ollama's defaults, seed {seed or 0}")
+    if eq == "oracle":
+        language = "natural language" if prompt_style.startswith("paper-nl") else "Manchester syntax"
+        print(f"  EQ       : the LLM, {eq_settings.describe(seed or 0)} ({language})"
+              + (f", at most {max_eqs}" if max_eqs is not None else ""))
+    if not precomputation:
+        print("  Phase 1  : skipped, H starts empty (no MQ per pair of concept names)")
+    if max_failed_eqs:
+        print(f"  Stopping : after {max_failed_eqs + 1} EQs in a row without a usable answer")
 
     classpath = build_classpath(gateway_jar_dir)
     print("\n  Starting ELK H-reasoner …")
@@ -254,6 +276,7 @@ def _run_grounded_llm_demo(
                 verbose=verbose,
                 temperature=temperature,
                 seed=seed or 0,
+                eq_settings=eq_settings,
                 # None keeps LLMOracle's default budget.
                 **({} if max_new_tokens is None else {"max_new_tokens": max_new_tokens}),
             ) as oracle:
@@ -262,7 +285,9 @@ def _run_grounded_llm_demo(
                 print(f"  Roles = {sorted(info.roles)}")
                 learner_oracle = _with_eq(oracle, eq, epsilon, delta, seed, info)
                 print()
-                _run_and_report(learner_oracle, verbose=verbose, output=output, judge=judge, info=info)
+                _run_and_report(learner_oracle, verbose=verbose, output=output, judge=judge, info=info,
+                                max_eqs=max_eqs, precomputation=precomputation,
+                                max_failed_eqs=max_failed_eqs)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -319,6 +344,19 @@ def _llm_dry_run() -> None:
     print("\n[Step 2 — request counterexample]")
     print("-" * 40)
     print(prompts.eq_counterexample_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
+
+    # --oracle taught/parametric: EQs have their own system message, and can be
+    # asked in one prompt (--eq-mode combined) or in natural language (paper-nl-*).
+    print("\n[EQ system message, --oracle parametric]")
+    print("-" * 40)
+    print(prompts.EQ_SYSTEM_PARAMETRIC)
+    print("\n[--eq-mode combined — counterexample or yes]")
+    print("-" * 40)
+    print(prompts.eq_combined_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
+    print("\n[--eq-mode combined, natural language (--prompt paper-nl-*)]")
+    print("-" * 40)
+    print(prompts.eq_combined_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS,
+                                              language="nl"))
 
 
 def _run_llm_demo(
@@ -402,6 +440,73 @@ if __name__ == "__main__":
         "--eq", choices=["oracle", "pac"], default="oracle",
         help="Equivalence queries: the oracle's own ('oracle': ELK, or the LLM judge), "
              "or PAC sampling as in the paper ('pac'; reasoner, taught, parametric).",
+    )
+    parser.add_argument(
+        "--eq-mode", choices=["judge", "combined"], default="judge",
+        help="With an LLM's own equivalence queries (--eq oracle; taught, parametric): "
+             "'judge' asks yes/no whether H is complete, then for a counterexample; "
+             "'combined' asks once for a counterexample, or yes if H is complete.  "
+             "In natural language with --prompt paper-nl-*, else in Manchester syntax.",
+    )
+    parser.add_argument(
+        "--eq-check", choices=["mq", "nl"], default="mq",
+        help="With an LLM's own equivalence queries and a paper prompt: check each "
+             "counterexample with an MQ in the run's own prompt style ('mq'), or in "
+             "the paper's natural-language form ('nl'), whatever the style.",
+    )
+    parser.add_argument(
+        "--eq-check-system", choices=["paper", "s1", "s2", "s3", "s4"], default="paper",
+        help="With an LLM's own equivalence queries and a paper prompt: the system prompt "
+             "of the counterexample check.  'paper': the MQs' own; 's1': the paper's simple "
+             "one; 's2': the advanced one with its has-part rule restated; 's3': s2 and how "
+             "EL statements read; 's4': s2 and 'every member, in the direction written' "
+             "(learner/llm_prompts.py CHECK_SYSTEM_PROMPTS).",
+    )
+    parser.add_argument(
+        "--eq-check-question", choices=["paper", "every"], default="paper",
+        help="With an LLM's own equivalence queries and a paper prompt: the question of the "
+             "counterexample check.  'paper': the MQ as --eq-check says; 'every': \"Is it "
+             "true that every C ...?\".",
+    )
+    parser.add_argument(
+        "--eq-memory", action="store_true",
+        help="With an LLM's own equivalence queries: list the counterexamples the check "
+             "rejected at earlier EQs in every later counterexample prompt.",
+    )
+    parser.add_argument(
+        "--eq-temperature", type=float, default=0.0, metavar="T",
+        help="With an LLM's own equivalence queries: sample only the counterexample "
+             "prompts at T (Ollama's other defaults, seeded by --seed); the MQs, the "
+             "check and the judge keep --temperature.  0 (default): as the other queries.",
+    )
+    parser.add_argument(
+        "--eq-generation", choices=["default", "g1", "g2", "g3", "g2b", "g3b"], default="default",
+        help="With an LLM's own equivalence queries (judge mode): how the counterexample "
+             "is asked for.  'default': placeholder examples; 'g1': with the EL forms "
+             "allowed listed as rules; 'g2': concrete examples about cars; 'g3': as "
+             "'Subject | relation | Object'; 'g2b', 'g3b': g2 without brackets, g3 with the "
+             "format in prose (learner/llm_prompts.py GENERATIONS).",
+    )
+    parser.add_argument(
+        "--max-eqs", type=int, default=None, metavar="N",
+        help="Stop after N equivalence queries (default: 50, or the PAC budget).",
+    )
+    parser.add_argument(
+        "--eq-attempts", type=int, default=3, metavar="N",
+        help="With an LLM's own equivalence queries: attempts at a usable counterexample per EQ.",
+    )
+    parser.add_argument(
+        "--max-failed-eqs", type=int, default=0, metavar="N",
+        help="With an LLM over an ontology (taught, parametric): tolerate N EQs in a row "
+             "without a usable answer before learning stops (default 0: stop at the first); "
+             "the next EQ asks again, with the earlier failures in its prompt.  Failed EQs "
+             "count towards --max-eqs.",
+    )
+    parser.add_argument(
+        "--no-precompute", action="store_true",
+        help="With an LLM over an ontology (taught, parametric): skip Phase 1, the MQ for "
+             "every ordered pair of concept names, so H starts empty and grows only from "
+             "counterexamples.",
     )
     parser.add_argument("--epsilon", type=float, default=0.2, help="PAC accuracy ε (with --eq pac).")
     parser.add_argument("--delta", type=float, default=0.1, help="PAC confidence δ (with --eq pac).")
@@ -487,6 +592,7 @@ if __name__ == "__main__":
         max_new_tokens = args.max_new_tokens
         if max_new_tokens is None and args.prompt != "ours":
             max_new_tokens = 2   # upstream's maxTokens for its True/False prompts
+        from learner.llm_oracle import EQSettings   # loads transformers
         ok = _run_grounded_llm_demo(
             ontology=args.ontology,
             model=args.model,
@@ -501,6 +607,19 @@ if __name__ == "__main__":
             delta=args.delta,
             seed=args.seed,
             temperature=args.temperature,
+            eq_settings=EQSettings(
+                mode=args.eq_mode,
+                check=args.eq_check,
+                check_system=args.eq_check_system,
+                check_question=args.eq_check_question,
+                memory=args.eq_memory,
+                temperature=args.eq_temperature,
+                generation=args.eq_generation,
+                attempts=args.eq_attempts,
+            ),
+            max_eqs=args.max_eqs,
+            precomputation=not args.no_precompute,
+            max_failed_eqs=args.max_failed_eqs,
         )
     else:
         if args.dry_run:

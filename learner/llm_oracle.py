@@ -11,15 +11,21 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import dataclass
+from functools import partial
 from typing import Callable, Optional, TypeVar
 
 from transformers import pipeline, GenerationConfig, set_seed
 
 from learner.cache.cache import LLMCache
 from learner.el_algorithm import Oracle, OracleError, ELConcept, GCI
-from learner.el_syntax import gci_names, gci_to_manchester, parse_manchester_gci
+from learner.el_syntax import (IS_A_PATTERN, NAME_PATTERN, gci_names, gci_to_manchester, gci_to_nl,
+                               gci_to_triple, parse_manchester_gci, parse_nl_gci, parse_triple,
+                               without_brackets)
 from learner.hypothesis_reasoner import HypothesisReasoner
 from learner import llm_prompts as prompts
+from learner.llm_prompts import (CHECK_QUESTIONS, CHECK_SYSTEM_PROMPTS, GENERATIONS,
+                                 MANCHESTER_ONLY_GENERATIONS, TRIPLE_GENERATIONS)
 from learner.upstream import (OLLAMA_SAMPLING, PAPER_NL_STYLES, PAPER_SYSTEM_PROMPTS, desaturate,
                               paper_is_true, rhs_conjuncts, upstream_gci_text,
                               upstream_natural_language)
@@ -30,6 +36,14 @@ T = TypeVar("T")
 
 PROMPT_STYLES = ("ours", *PAPER_SYSTEM_PROMPTS)
 
+# How an EQ is asked: "judge" asks yes/no whether H is complete, then for a
+# counterexample; "combined" asks once for a counterexample or "yes".
+EQ_MODES = ("judge", "combined")
+EQ_CHECKS = ("mq", "nl")
+# Generation budget of an EQ answer, at least: a counterexample is a line of text,
+# which the 2 tokens of the paper's MQs would cut off.
+EQ_MIN_NEW_TOKENS = 128
+
 
 def sampling_params(temperature: float, seed: int) -> dict | None:
     """Generation settings for sampling at *temperature* with Ollama's other
@@ -37,6 +51,92 @@ def sampling_params(temperature: float, seed: int) -> dict | None:
     if temperature <= 0:
         return None
     return {"do_sample": True, "temperature": temperature, **OLLAMA_SAMPLING, "seed": seed}
+
+
+@dataclass(frozen=True)
+class EQSettings:
+    """
+    How LLMOracle asks its equivalence queries.
+
+    mode : str
+        ``"judge"`` (default): an EQ asks whether H is complete (yes/no), then
+        for a counterexample.  ``"combined"``: one prompt asks for a
+        counterexample, or "yes" if H is complete.  Either way, EQs have their
+        own system message (``llm_prompts.eq_system_message``) and a budget of
+        at least ``EQ_MIN_NEW_TOKENS``.
+    check : str
+        How a counterexample is checked before it is used (it must be
+        O-entailed): ``"mq"`` (default), by an MQ in the run's own prompt style;
+        ``"nl"``, with a paper prompt style, by the paper's MQ in natural language
+        (same system message), whatever the style.
+    check_system : str
+        With a paper prompt style, the system prompt of that check: ``"paper"``
+        (default: the MQs' own), or a variant from ``CHECK_SYSTEM_PROMPTS``
+        (``"s1"`` … ``"s4"``).  The MQs of learning keep the paper's.
+    check_question : str
+        With a paper prompt style, the question of that check (``CHECK_QUESTIONS``):
+        ``"paper"`` (default), the MQ as ``check`` says; ``"every"``, "Is it
+        true that every C …?" (``llm_prompts.every_question``).
+    memory : bool
+        False (default): an EQ's retry prompts list only why that EQ's earlier
+        answers failed.  True: they also list, from the first attempt on, the
+        counterexamples the check rejected at earlier EQs.
+    temperature : float
+        0 (default): counterexamples are generated as the other queries are.
+        Above 0: only the counterexample prompts are sampled, at this
+        temperature with ``OLLAMA_SAMPLING`` and the oracle's seed; the MQs, the
+        check and the judge keep the oracle's temperature.
+    attempts : int
+        Attempts at a usable counterexample per EQ (default 3: the first ask and
+        two retries).
+    generation : str
+        How the counterexample is asked for (``llm_prompts.GENERATIONS``):
+        ``"default"``, the placeholder examples; ``"g1"``, with the forms allowed
+        listed as rules; ``"g2"``, concrete examples about cars; ``"g3"``, as
+        "Subject | relation | Object" (``el_syntax.parse_triple``), and the
+        feedback lines name statements that way too; ``"g2b"``, ``"g3b"``: G2
+        without brackets, G3 with its format explained in prose.  Only with mode
+        ``"judge"``; G1, G2 and G2b only in Manchester syntax.
+    """
+
+    mode: str = "judge"
+    check: str = "mq"
+    check_system: str = "paper"
+    check_question: str = "paper"
+    memory: bool = False
+    temperature: float = 0.0
+    attempts: int = 3
+    generation: str = "default"
+
+    def __post_init__(self):
+        if self.mode not in EQ_MODES:
+            raise ValueError(f"mode must be one of {EQ_MODES}, not {self.mode!r}")
+        if self.check not in EQ_CHECKS:
+            raise ValueError(f"check must be one of {EQ_CHECKS}, not {self.check!r}")
+        if self.check_system not in CHECK_SYSTEM_PROMPTS:
+            raise ValueError(f"check_system must be one of {tuple(CHECK_SYSTEM_PROMPTS)}, "
+                             f"not {self.check_system!r}")
+        if self.check_question not in CHECK_QUESTIONS:
+            raise ValueError(f"check_question must be one of {CHECK_QUESTIONS}, "
+                             f"not {self.check_question!r}")
+        if self.attempts < 1:
+            raise ValueError(f"attempts must be at least 1, not {self.attempts}")
+        if self.generation not in GENERATIONS:
+            raise ValueError(f"generation must be one of {GENERATIONS}, not {self.generation!r}")
+        if self.generation != "default" and self.mode != "judge":
+            raise ValueError(f"generation {self.generation} needs mode 'judge'")
+
+    def describe(self, seed: int = 0) -> str:
+        """The settings that differ from the defaults, for a run's header."""
+        return (self.mode
+                + (", counterexamples checked by a natural-language MQ" if self.check == "nl" else "")
+                + (f", check system prompt {self.check_system}" if self.check_system != "paper" else "")
+                + (f", check question {self.check_question}" if self.check_question != "paper" else "")
+                + (", rejections remembered across EQs" if self.memory else "")
+                + (f", counterexamples sampled at temperature {self.temperature}, seed {seed}"
+                   if self.temperature > 0 else "")
+                + (f", {self.attempts} attempts per EQ" if self.attempts != 3 else "")
+                + (f", counterexample prompt {self.generation}" if self.generation != "default" else ""))
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +190,8 @@ class LLMOracle(Oracle):
         that H already entails is answered True without the model, and a
         conjunction on the right is asked one conjunct at a time, skipping the
         conjuncts H entails, after both sides are desaturated against H.  EQ
-        prompts stay this project's; use PACOracle for the paper's equivalence
+        prompts stay this project's (in natural language with ``paper-nl-*``,
+        else in Manchester syntax); use PACOracle for the paper's equivalence
         queries.
     roles : set[str] | None
         Role names in scope.  ``None``: those in the file's parsed axioms, or
@@ -103,6 +204,8 @@ class LLMOracle(Oracle):
     seed : int
         With ``temperature`` > 0: seeds the sampling, and is part of the cache
         key, so runs with different seeds draw their own answers.
+    eq_settings : EQSettings
+        How the EQs are asked (see ``EQSettings``); the defaults otherwise.
     """
 
     def __init__(
@@ -119,15 +222,24 @@ class LLMOracle(Oracle):
         roles: set[str] | None = None,
         temperature: float = 0.0,
         seed: int = 0,
+        eq_settings: EQSettings = EQSettings(),
     ):
         super().__init__()
         if prompt_style not in PROMPT_STYLES:
             raise ValueError(f"prompt_style must be one of {PROMPT_STYLES}, not {prompt_style!r}")
         self._prompt_style = prompt_style
+        self._eq = eq_settings
+        self._eq_language = "nl" if prompt_style in PAPER_NL_STYLES else "manchester"
+        if eq_settings.generation in MANCHESTER_ONLY_GENERATIONS and self._eq_language != "manchester":
+            raise ValueError(f"generation {eq_settings.generation} is written in Manchester "
+                             f"syntax only, not with prompt style {prompt_style}")
+        self._rejected: tuple[str, ...] = ()   # with memory: the check's rejections so far
+        self._failed: tuple[str, ...] = ()     # why the answers of the EQs that just failed could not be used
         self._h_reasoner = h_reasoner
         self._max_new_tokens = max_new_tokens
+        self._seed = seed
         self._sampling = sampling_params(temperature, seed)
-        if self._sampling:
+        if self._sampling or eq_settings.temperature > 0:
             set_seed(seed)
         self._verbose = verbose
         self._pipe = pipeline(
@@ -178,6 +290,10 @@ class LLMOracle(Oracle):
                 system += f"\n\nOntology axioms:\n{axioms}"
             self._system_msg = system
 
+        taught = ontology_path is not None and include_axioms
+        self._eq_system_msg = prompts.eq_system_message(self._O if taught else None,
+                                                        self._eq_language)
+
     # ------------------------------------------------------------------
     # Oracle.signature / Oracle.axioms
     # ------------------------------------------------------------------
@@ -208,7 +324,8 @@ class LLMOracle(Oracle):
     # ------------------------------------------------------------------
 
     def _query(self, prompt: str, parse: Callable[[str], T], label: str = "QUERY",
-               axiom: str | None = None) -> T:
+               axiom: str | None = None, system: str | None = None,
+               max_new_tokens: int | None = None, sampling: dict | None = None) -> T:
         """
         Ask the LLM and return ``parse(response)``.
 
@@ -216,15 +333,17 @@ class LLMOracle(Oracle):
         cannot be parsed (e.g. reasoning cut off by max_new_tokens) is never
         replayed from the cache.  A cached response that no longer parses, left
         by an older version, is treated as a miss and regenerated.  *axiom*: the
-        query's GCI, shown after the prompt in verbose output.
+        query's GCI, shown after the prompt in verbose output.  *system*,
+        *max_new_tokens*, *sampling*: instead of the oracle's own (for EQs).
         """
         shown = prompt + (f"\n[AXIOM]\n{axiom}" if axiom else "")
         messages = [
-            {"role": "system", "content": self._system_msg},
+            {"role": "system", "content": self._system_msg if system is None else system},
             {"role": "user",   "content": prompt},
         ]
         # Part of the cache key: a response generated under other settings is not reused.
-        params = {"max_new_tokens": self._max_new_tokens, **(self._sampling or {"do_sample": False})}
+        params = {"max_new_tokens": max_new_tokens or self._max_new_tokens,
+                  **(sampling or self._sampling or {"do_sample": False})}
 
         # Cache lookup
         cached = self._cache.get(self._model_name, messages, params)
@@ -257,7 +376,7 @@ class LLMOracle(Oracle):
         return result
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Reading answers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -289,33 +408,140 @@ class LLMOracle(Oracle):
         return answer == "yes"
 
     @staticmethod
-    def _answer_line(response: str) -> str:
+    def _answer_lines(response: str) -> list[str]:
         """
-        The line of *response* that holds a counterexample: the last non-empty
-        line that is not a code fence, without the wrapping a model may add
+        The lines of *response* that may hold the counterexample, in the order
+        they are tried: the last non-empty line that is not a code fence, then the
+        others from the top (Mistral wrote the statement first and an explanation
+        under it, jobs 4380986-2703958), each without the wrapping a model may add
         (backticks, quotes, a list dash, an "Answer:" label, a full stop).
         """
         text = response.rsplit("</think>", 1)[-1]
         lines = [ln.strip() for ln in text.splitlines() if ln.strip() and ln.strip().strip("`")]
         if not lines:
             raise ValueError(f"no answer line in {response!r}")
-        line = lines[-1]
-        line = re.sub(r'^[-*]\s+', '', line)
-        line = re.sub(r'^(answer|counterexample|gci)\s*:\s*', '', line, flags=re.IGNORECASE)
-        line = line.strip().strip('`"\'').strip()
-        return line.rstrip('.').strip()
+
+        def unwrap(line: str) -> str:
+            line = re.sub(r'^[-*]\s+', '', line)
+            line = re.sub(r'^(answer|counterexample|gci)\s*:\s*', '', line, flags=re.IGNORECASE)
+            line = line.strip().strip('`"\'').strip()
+            return line.rstrip('.').strip()
+
+        return [unwrap(line) for line in [lines[-1], *lines[:-1]]]
 
     def _parse_counterexample(self, response: str) -> GCI:
         """
-        The GCI named in an EQ counterexample *response*.  Raises ValueError,
-        saying why, when the answer line does not parse or uses a concept name
-        outside Σ or a role outside the roles in scope.
+        The GCI named in an EQ counterexample *response*, in the EQ language
+        (Manchester syntax, or the natural language of ``gci_to_nl``): from the
+        first of ``_answer_lines`` that gives one.  Raises ValueError, saying why
+        the last line could not be used, when none does (not a statement, or a
+        concept name outside Σ or a role outside the roles in scope).
         """
-        line = self._answer_line(response)
+        lines = self._answer_lines(response)
         try:
-            gci = parse_manchester_gci(line)
+            return self._parse_line(lines[0])
+        except ValueError as error:
+            for line in lines[1:]:
+                try:
+                    return self._parse_line(line)
+                except ValueError:
+                    pass
+            raise error
+
+    def _parse_line(self, line: str) -> GCI:
+        """The GCI on one answer *line*: as written, else as ``_repaired_lines``
+        reads it.  The error says why the line as written could not be used."""
+        try:
+            return self._parse_gci_in_scope(line)
+        except ValueError as error:
+            # Tried only after the line as written, so that a concept named A, or a
+            # role used correctly, is never rewritten.
+            for repaired in self._repaired_lines(line):
+                try:
+                    return self._parse_gci_in_scope(repaired)
+                except ValueError:
+                    pass
+            raise error
+
+    def _repaired_lines(self, line: str) -> list[str]:
+        """Readings of an unparsable answer *line* that fix slips Mistral made
+        (jobs 4380986-87, 4381253-54), most conservative first: an article before
+        a name, and a role in scope used without "some" ("Bird has_part Wing",
+        "Project SubClassOf employed_by University"); each also inside brackets
+        around the whole line, and a tuple "(Cat, eats, Meat)" as "Cat eats Meat"
+        (cex14).  For a triple answer, ``_triple_readings``."""
+        if self._eq.generation in TRIPLE_GENERATIONS:
+            return self._triple_readings(line)
+        def add_some(text: str) -> str:
+            for role in sorted(self._roles, key=len, reverse=True):
+                text = re.sub(rf"(?<![\w:.\-]){re.escape(role)}\s+(?!some\b)(?=[\w(])",
+                              f"{role} some ", text, flags=re.IGNORECASE)
+            return text
+
+        def add_subclass(text: str) -> str:
+            # "Bird has_part some Wing", with no SubClassOf: Bird SubClassOf has_part some Wing.
+            if re.search(r"\b(?:subclassof|subcategory)\b", text, flags=re.IGNORECASE):
+                return text
+            match = re.match(rf"^({NAME_PATTERN})\s+(?:is\s+)?({NAME_PATTERN}\s+some\s+.+)$", text,
+                             flags=re.IGNORECASE)
+            if not match or match.group(2).split()[0] not in self._roles:
+                return text
+            if self._eq_language == "nl":
+                return f"{match.group(1)} is a subcategory of something that {match.group(2)}"
+            return f"{match.group(1)} SubClassOf {match.group(2)}"
+
+        # An English article before a concept name ("A Professor SubClassOf Teacher"),
+        # not before a keyword or a role (then it is a concept named A), nor in
+        # "is a subcategory of".
+        keywords = "|".join(["subcategory", "subclassof", "and", "some", "is", "that",
+                             *map(re.escape, self._roles)])
+
+        def strip_articles(text: str) -> str:
+            return re.sub(rf"(?<![\w:.\-])(?:a|an|the)\s+(?!(?:{keywords})(?![\w:.\-]))(?=[\w(])",
+                          "", text, flags=re.IGNORECASE)
+
+        def tuple_reading(text: str) -> str | None:
+            parts = [p.strip() for p in text.split(",")]
+            if len(parts) != 3:
+                return None
+            subject, relation, obj = parts
+            if re.fullmatch(IS_A_PATTERN, relation, flags=re.IGNORECASE):
+                is_a = "is a subcategory of" if self._eq_language == "nl" else "SubClassOf"
+                return f"{subject} {is_a} {obj}"
+            return add_subclass(add_some(f"{subject} {relation} {obj}"))
+
+        candidates = []
+        for base in dict.fromkeys([line, without_brackets(line)]):
+            stripped = strip_articles(base)
+            candidates += [base, stripped, add_subclass(add_some(base)),
+                           add_subclass(add_some(stripped)), tuple_reading(base)]
+        return [c for i, c in enumerate(candidates)
+                if c is not None and c != line and c not in candidates[:i]]
+
+    @staticmethod
+    def _triple_readings(line: str) -> list[str]:
+        """Readings of an unparsable triple *line*: the parts around a colon, each
+        also without enclosing brackets.  The model wrote the format before its
+        answer ("Subject | is-a | Object: Bird | is-a | Vertebrate") or an
+        explanation after it ("Cat | eats | Fish: While …", cex15).  A colon inside
+        a name (ex:hasPart) has no space after it, so it does not split."""
+        parts = [p.strip() for p in re.split(r":(?:\s+|$)", line) if p.strip()]
+        candidates = [r for p in parts for r in (p, without_brackets(p))]
+        return [c for i, c in enumerate(candidates) if c != line and c not in candidates[:i]]
+
+    def _parse_gci_in_scope(self, line: str) -> GCI:
+        """The GCI written on *line* in the EQ language, or ValueError, saying why
+        (not a statement, or names outside the scope)."""
+        if self._eq.generation in TRIPLE_GENERATIONS:
+            parse, form = parse_triple, "'Subject | relation | Object'"
+        elif self._eq_language == "nl":
+            parse, form = parse_nl_gci, "'C is a subcategory of D'"
+        else:
+            parse, form = parse_manchester_gci, "'C SubClassOf D' in Manchester syntax"
+        try:
+            gci = parse(line)
         except ValueError:
-            raise ValueError(f"{line!r} is not of the form 'C SubClassOf D' in Manchester syntax")
+            raise ValueError(f"{line!r} is not of the form {form}")
         atoms, roles = gci_names(gci)
         unknown = sorted(atoms - self._sig)
         unknown_roles = sorted(roles - self._roles)
@@ -327,6 +553,16 @@ class LLMOracle(Oracle):
         if problems:
             raise ValueError(f"{line!r}: " + "; ".join(problems))
         return gci
+
+    def _parse_combined(self, response: str) -> Optional[GCI]:
+        """None when a combined EQ *response* says yes (H is complete), else its
+        counterexample, as ``_parse_counterexample``."""
+        text = response.rsplit("</think>", 1)[-1]
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip().strip("`")]
+        statement = re.search(r"subclassof|subcategory", text, flags=re.IGNORECASE)
+        if lines and re.match(r"^\W*yes\b", lines[0], flags=re.IGNORECASE) and not statement:
+            return None
+        return self._parse_counterexample(response)
 
     # ------------------------------------------------------------------
     # Oracle interface — O-entailment via LLM
@@ -348,17 +584,21 @@ class LLMOracle(Oracle):
             label="MQ",
         )
 
-    def _paper_MQ(self, gci: GCI) -> bool:
+    def _paper_MQ(self, gci: GCI, nl: bool | None = None, system: str | None = None,
+                  label: str = "MQ", question: Callable[[GCI], str] | None = None) -> bool:
         """
         MQ as the original ExactLearner-LLM's LLMEngine with its AxiomSimplifier:
         True without asking if H entails the GCI; otherwise the right-hand
         conjuncts H does not entail are kept, both sides are desaturated (concept
         names that H makes redundant in a node are dropped), and each remaining
         right-hand conjunct is asked on its own (the axiom alone as the user
-        message, as the OWL API renders it, or in upstream's natural language
-        with a ``paper-nl-*`` style), stopping at the first that is not True.
+        message), stopping at the first that is not True.  *nl*: ask in natural
+        language (default: as the prompt style does).  *system*: instead of the
+        style's system prompt.  *question*: writes each conjunct's question
+        instead (then *nl* does not apply).
         """
-        nl = self._prompt_style in PAPER_NL_STYLES
+        if nl is None:
+            nl = self._prompt_style in PAPER_NL_STYLES
         if self._h_reasoner(gci):
             return True
         unknown = [c for c in rhs_conjuncts(gci.rhs) if not self._h_reasoner(GCI(gci.lhs, c))]
@@ -370,59 +610,121 @@ class LLMOracle(Oracle):
         for conjunct in rhs_conjuncts(rhs):
             part = GCI(lhs, conjunct)
             text = upstream_gci_text(part)
-            if nl:
+            if question is not None:
+                text = question(part)
+            elif nl:
                 text = upstream_natural_language(text)
             # The axiom in this project's syntax, for scripts/score_mqs.py.
-            if not self._query(text, parse=paper_is_true, label="MQ", axiom=gci_to_manchester(part)):
+            if not self._query(text, parse=paper_is_true, label=label, axiom=gci_to_manchester(part),
+                               system=system):
                 return False
         return True
-
-    # Attempts at a usable counterexample per EQ (the first ask and two retries).
-    _EQ_ATTEMPTS = 3
 
     def _EQ(self, hypothesis: set[GCI]) -> Optional[GCI]:
         """
         Equivalence query: is H equivalent to O?
 
-        Step 1 — ask the LLM yes/no whether H captures all of O.
-        Step 2 — if no, ask for one counterexample GCI in Manchester syntax.
+        With mode ``"judge"``: ask yes/no whether H captures all of O, and if
+        not, ask for one counterexample.  With ``"combined"``: ask once for a
+        counterexample, or "yes" if H captures all of O.  H is shown, and the
+        counterexample asked for, in natural language with a ``paper-nl-*`` prompt
+        style, else in Manchester syntax.
 
         Returns None if the LLM confirms equivalence, otherwise the counterexample.
-        A counterexample is usable when it parses, uses only names in scope, and
-        the LLM's own MQ accepts it (it must be O-entailed).  An unusable one is
-        asked for again, up to ``_EQ_ATTEMPTS`` times in all, with the reasons the
-        earlier answers failed added to the prompt.  Raises OracleError when the
-        judge's answer does not parse or no attempt gives a usable counterexample.
-        Whether H already entails it is checked by learn_el_terminology.
+        A counterexample is usable when it parses, uses only names in scope, does
+        not already follow from H, and the LLM's own MQ accepts it (it must be
+        O-entailed).  An unusable one is asked for again, up to ``attempts``
+        times in all, with the reasons the earlier answers failed added to the
+        prompt (with ``memory``, also the counterexamples rejected at earlier
+        EQs).  Raises OracleError when the judge's answer does not parse or no
+        attempt gives a usable counterexample.  With ``verbose``, each step's
+        outcome is printed after the exchange, as ``[EQ n] ...``.
         """
-        equivalent = self._query(
-            prompts.eq_judge_prompt(self._sig, self._roles, hypothesis),
-            parse=lambda r: self._parse_yes_no(r, "EQ judge"),
-            label="EQ (judge)",
-        )
-        if equivalent:
-            return None
+        settings, language = self._eq, self._eq_language
+        ask = dict(system=self._eq_system_msg,
+                   max_new_tokens=max(self._max_new_tokens, EQ_MIN_NEW_TOKENS))
+        plain = gci_to_nl if language == "nl" else gci_to_manchester
+        # The feedback names statements as the answer is asked for: as triples with G3.
+        render = (lambda gci: gci_to_triple(gci) or plain(gci)) if settings.generation in TRIPLE_GENERATIONS else plain
+        if settings.mode == "judge":
+            equivalent = self._query(
+                prompts.eq_judge_prompt(self._sig, self._roles, hypothesis, language),
+                parse=lambda r: self._parse_yes_no(r, "EQ judge"),
+                label="EQ (judge)", **ask,
+            )
+            self._eq_log(f"judge: {'yes, H is complete' if equivalent else 'no'}")
+            if equivalent:
+                return None
+        if settings.mode == "combined":
+            build, parse = prompts.eq_combined_prompt, self._parse_combined
+            label = "EQ (counterexample or yes)"
+        else:
+            build = partial(prompts.eq_counterexample_prompt, generation=settings.generation)
+            parse = self._parse_counterexample
+            label = "EQ (counterexample)"
+        sampling = sampling_params(settings.temperature, self._seed)
         reasons: list[str] = []   # why each earlier answer could not be used
-        for _ in range(self._EQ_ATTEMPTS):
-            feedback = [prompts.unusable_feedback(r) for r in reasons]
+        # Carried into the next EQ if this one fails (the learner may ask again with H
+        # unchanged, and the same prompt would get the same cached answer); a
+        # rejection only without memory, which lists it anyway.
+        carry: list[str] = []
+        earlier = [prompts.rejected_earlier_feedback(text) for text in self._rejected]
+        earlier += [prompts.unusable_feedback(r) for r in self._failed]
+        for attempt in range(1, settings.attempts + 1):
+            feedback = earlier + [prompts.unusable_feedback(r) for r in reasons]
+            prompt = build(self._sig, self._roles, hypothesis, feedback, language)
             try:
-                counterexample = self._query(
-                    prompts.eq_counterexample_prompt(self._sig, self._roles, hypothesis, feedback),
-                    parse=self._parse_counterexample,
-                    label="EQ (counterexample)",
-                )
+                counterexample = self._query(prompt, parse=parse, label=label,
+                                             sampling=sampling, **ask)
             except ValueError as exc:
                 reasons.append(str(exc))
+                carry.append(reasons[-1])
+                self._eq_log(f"attempt {attempt}: unusable, {exc}")
                 continue
-            if self.MQ(counterexample):
+            if counterexample is None:
+                self._eq_log(f"attempt {attempt}: yes, H is complete")
+                self._failed = ()
+                return None
+            if self._h_reasoner(counterexample):
+                reasons.append(f"'{render(counterexample)}' already follows from H")
+                carry.append(reasons[-1])
+                self._eq_log(f"attempt {attempt}: {counterexample} already follows from H")
+                continue
+            if self._check_counterexample(counterexample):
+                self._eq_log(f"attempt {attempt}: counterexample {counterexample}")
+                self._failed = ()
                 return counterexample
             # The model named an axiom it then rejects: its answers are inconsistent.
-            reasons.append(
-                f"asked whether O entails '{gci_to_manchester(counterexample)}', you answered no"
-            )
+            reasons.append(f"asked whether '{render(counterexample)}' is true in O, you answered no")
+            if not settings.memory:
+                carry.append(reasons[-1])
+            if settings.memory and render(counterexample) not in self._rejected:
+                self._rejected += (render(counterexample),)
+            self._eq_log(f"attempt {attempt}: {counterexample} rejected by the model's own MQ")
+        self._eq_log(f"no usable counterexample in {settings.attempts} attempts")
+        self._failed += tuple(r for r in dict.fromkeys(carry) if r not in self._failed)
         raise OracleError(
-            f"no usable counterexample in {self._EQ_ATTEMPTS} attempts: " + "; ".join(reasons)
+            f"no usable counterexample in {settings.attempts} attempts: " + "; ".join(reasons)
         )
+
+    def _check_counterexample(self, gci: GCI) -> bool:
+        """The model's own MQ on a counterexample, as the settings' ``check`` and
+        ``check_system`` say; counted as an MQ."""
+        check, system, question = self._eq.check, self._eq.check_system, self._eq.check_question
+        if self._prompt_style in PAPER_SYSTEM_PROMPTS and (
+                check == "nl" or system != "paper" or question != "paper"):
+            self.mq_count += 1
+            return self._paper_MQ(
+                gci, nl=True if check == "nl" else None,
+                system=CHECK_SYSTEM_PROMPTS[system],
+                question=prompts.every_question if question == "every" else None,
+                label=f"MQ (check, {system} system prompt"
+                      + (", every question)" if question == "every" else ")"))
+        return self.MQ(gci)
+
+    def _eq_log(self, outcome: str) -> None:
+        if self._verbose:
+            print(f"\n[EQ {self.eq_count}] {outcome}")
 
     # ------------------------------------------------------------------
     # Cleanup
