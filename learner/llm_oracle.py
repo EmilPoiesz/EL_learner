@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from functools import partial
 from typing import Callable, Optional, TypeVar
@@ -229,6 +230,11 @@ class LLMOracle(Oracle):
         key, so runs with different seeds draw their own answers.
     eq_settings : EQSettings
         How the EQs are asked (see ``EQSettings``); the defaults otherwise.
+    truth : callable, optional
+        Whether O entails a GCI (e.g. ELK over the ontology file).  Only to label
+        the proposed counterexamples in the log and in ``eq_outcomes``: it is
+        consulted after each decision and never changes one, so the model's
+        answers alone still decide what is learned.
 
     A reasoning model whose chat template opens <think> (Olmo 3 Think) answers
     after its reasoning: only the text after </think> is read, and a response
@@ -241,6 +247,8 @@ class LLMOracle(Oracle):
     truncated = 0
     _generate_kwargs: dict = {}   # model_defaults_off(model)
     _failed_eqs = 0               # EQs in a row that gave no usable answer
+    _truth: Callable[[GCI], bool] | None = None   # labels proposals for the log only
+    eq_outcomes: Counter | None = None            # what each counterexample attempt came to
 
     def __init__(
         self,
@@ -257,12 +265,15 @@ class LLMOracle(Oracle):
         temperature: float = 0.0,
         seed: int = 0,
         eq_settings: EQSettings = EQSettings(),
+        truth: Callable[[GCI], bool] | None = None,
     ):
         super().__init__()
         if prompt_style not in PROMPT_STYLES:
             raise ValueError(f"prompt_style must be one of {PROMPT_STYLES}, not {prompt_style!r}")
         self._prompt_style = prompt_style
         self._eq = eq_settings
+        self._truth = truth
+        self.eq_outcomes = Counter()
         self._eq_language = "nl" if prompt_style in PAPER_NL_STYLES else "manchester"
         if eq_settings.generation in MANCHESTER_ONLY_GENERATIONS and self._eq_language != "manchester":
             raise ValueError(f"generation {eq_settings.generation} is written in Manchester "
@@ -752,6 +763,7 @@ class LLMOracle(Oracle):
             except ValueError as exc:
                 reasons.append(str(exc))
                 carry.append(reasons[-1])
+                self._outcome("unusable")
                 self._eq_log(f"attempt {attempt}: unusable, {exc}")
                 continue
             if counterexample is None:
@@ -761,10 +773,12 @@ class LLMOracle(Oracle):
             if self._h_reasoner(counterexample):
                 reasons.append(f"'{render(counterexample)}' already follows from H")
                 carry.append(reasons[-1])
+                self._outcome("follows from H")
                 self._eq_log(f"attempt {attempt}: {counterexample} already follows from H")
                 continue
             if self._check_counterexample(counterexample):
-                self._eq_log(f"attempt {attempt}: counterexample {counterexample}")
+                label = self._label(counterexample, "accepted")
+                self._eq_log(f"attempt {attempt}: counterexample {counterexample}{label}")
                 self._failed, self._failed_eqs = (), 0
                 return counterexample
             # The model named an axiom it then rejects: its answers are inconsistent.
@@ -773,7 +787,8 @@ class LLMOracle(Oracle):
                 carry.append(reasons[-1])
             if settings.memory and render(counterexample) not in self._rejected:
                 self._rejected += (render(counterexample),)
-            self._eq_log(f"attempt {attempt}: {counterexample} rejected by the model's own MQ")
+            label = self._label(counterexample, "rejected")
+            self._eq_log(f"attempt {attempt}: {counterexample} rejected by the model's own MQ{label}")
         self._eq_log(f"no usable counterexample in {settings.attempts} attempts")
         self._failed += tuple(r for r in dict.fromkeys(carry) if r not in self._failed)
         self._failed_eqs += 1
@@ -795,6 +810,22 @@ class LLMOracle(Oracle):
                 label=f"MQ (check, {system} system prompt"
                       + (", every question)" if question == "every" else ")"))
         return self.MQ(gci)
+
+    def _outcome(self, kind: str) -> None:
+        if self.eq_outcomes is None:
+            self.eq_outcomes = Counter()
+        self.eq_outcomes[kind] += 1
+
+    def _label(self, gci: GCI, decision: str) -> str:
+        """Count a checked proposal as accepted or rejected, and, with ``truth``, as true
+        or false in O; the log's " [true in O]" / " [false in O]".  Called after the
+        decision, which it does not touch."""
+        if self._truth is None:
+            self._outcome(decision)
+            return ""
+        true = bool(self._truth(gci))
+        self._outcome(f"{'true' if true else 'false'} {decision}")
+        return " [true in O]" if true else " [false in O]"
 
     def _eq_log(self, outcome: str) -> None:
         if self._verbose:

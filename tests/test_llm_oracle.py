@@ -640,3 +640,43 @@ def test_40_repeated_eq_is_a_new_prompt(tmp_path):
     assert oracle.EQ(set()) == _GCI                      # a usable counterexample resets the count
     assert "The previous 3 equivalence queries in a row" in oracle._pipe.prompts[9]
     assert oracle._failed_eqs == 0
+
+
+@pytest.mark.parametrize("truth", [None, lambda gci: True, lambda gci: False])
+def test_41_labels_never_change_a_decision(tmp_path, capsys, truth):
+    # The model's own check decides; the labeller (ELK over O) only annotates the log
+    # and eq_outcomes, whatever it says.
+    responses = ["no", "not a statement", "B SubClassOf A", "no", "A SubClassOf B", "yes"]
+    oracle = _oracle(tmp_path, responses)
+    oracle._truth, oracle._verbose = truth, True
+    assert oracle.EQ(set()) == _GCI
+    out = capsys.readouterr().out
+    if truth is None:
+        assert dict(oracle.eq_outcomes) == {"unusable": 1, "rejected": 1, "accepted": 1}
+        assert "in O]" not in out
+    else:
+        word = "true" if truth(_GCI) else "false"
+        assert dict(oracle.eq_outcomes) == {"unusable": 1, f"{word} rejected": 1, f"{word} accepted": 1}
+        assert f"rejected by the model's own MQ [{word} in O]" in out
+        assert f"counterexample A ⊑ B [{word} in O]" in out
+
+
+def test_42_learners_notation_read_back():
+    import random
+    from learner.el_syntax import parse_dl_gci
+    E = lambda atoms=(), ex=(): ELConcept(frozenset(atoms), frozenset(ex))
+    rnd = random.Random(0)
+
+    def concept(depth):
+        atoms = rnd.sample(["A", "B", "Cat", "has-part", "ex:Meat"], rnd.randint(0, 2))
+        ex = [(rnd.choice(["r", "has_part", "ex:eats"]), concept(depth - 1))
+              for _ in range(rnd.randint(0, 2 if depth else 0))]
+        return E(atoms, ex)
+
+    for _ in range(300):
+        gci = GCI(concept(2), concept(2))
+        assert parse_dl_gci(str(gci)) == gci
+    assert parse_dl_gci("Professor ⊑ ∃teaches.(Module)") == GCI(E({"Professor"}), E((), {("teaches", E({"Module"}))}))
+    with pytest.raises(ValueError):
+        parse_dl_gci("Professor SubClassOf Person")
+

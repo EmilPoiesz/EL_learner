@@ -270,3 +270,49 @@ def _split_top_level_and(s: str) -> list[str]:
     parts.append(''.join(current))
     return parts
 
+
+# ---------------------------------------------------------------------------
+# The learner's own notation (str(GCI)), read back
+# ---------------------------------------------------------------------------
+
+def _split_top_level(s: str, sep: str) -> list[str]:
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(s):
+        if s[i] == "(":
+            depth += 1
+        elif s[i] == ")":
+            depth -= 1
+        elif depth == 0 and s.startswith(sep, i):
+            parts.append(s[start:i])
+            start = i = i + len(sep)
+            continue
+        i += 1
+    parts.append(s[start:])
+    return parts
+
+
+def parse_dl_concept(s: str) -> ELConcept:
+    """The concept written as ``str(ELConcept)`` writes it: "A ⊓ ∃r.(B ⊓ C)", "⊤"."""
+    s = s.strip()
+    if s == "⊤":
+        return ELConcept()
+    atoms, existentials = set(), set()
+    for part in _split_top_level(s, " ⊓ "):
+        part = part.strip()
+        m = re.fullmatch(rf"∃({NAME_PATTERN})\.\((.*)\)", part, flags=re.DOTALL)
+        if m:
+            existentials.add((m.group(1), parse_dl_concept(m.group(2))))
+        elif re.fullmatch(NAME_PATTERN, part):
+            atoms.add(part)
+        else:
+            raise ValueError(f"not a concept in the learner's notation: {part!r}")
+    return ELConcept(frozenset(atoms), frozenset(existentials))
+
+
+def parse_dl_gci(s: str) -> GCI:
+    """The GCI written as ``str(GCI)`` writes it, e.g. in a run log: "Cat ⊑ ∃eats.(Meat)"."""
+    sides = _split_top_level(s.strip(), " ⊑ ")
+    if len(sides) != 2:
+        raise ValueError(f"not a GCI in the learner's notation: {s!r}")
+    return GCI(parse_dl_concept(sides[0]), parse_dl_concept(sides[1]))
+

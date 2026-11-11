@@ -110,6 +110,18 @@ def _run_reasoner_demo(
     return True
 
 
+# The order counterexample attempts are reported in (LLMOracle.eq_outcomes).
+OUTCOMES = ("unusable", "follows from H", "true accepted", "true rejected",
+            "false rejected", "false accepted", "accepted", "rejected")
+
+
+def format_outcomes(outcomes) -> str:
+    """One line: what the counterexample attempts came to.  true / false: whether O
+    entails the proposal (ELK); the learner never sees these labels."""
+    parts = [f"{kind} {outcomes[kind]}" for kind in OUTCOMES if outcomes.get(kind)]
+    return "Counterexample attempts: " + " · ".join(parts) + "  (true/false: in O, by ELK; not seen by the learner)"
+
+
 def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, judge: Callable[[GCI], bool] | None = None,
                     info: OntologyInfo | None = None, max_eqs: int | None = None,
                     precomputation: bool = True, max_failed_eqs: int = 0) -> None:
@@ -186,6 +198,9 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
 
     print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}"
           + (f"  |  cut off while reasoning: {truncated}" if truncated else ""))
+    outcomes = getattr(oracle, "eq_outcomes", None)
+    if outcomes:
+        print("  " + format_outcomes(outcomes))
     sampler = getattr(oracle, "sampler", None)
     if sampler is not None:   # PACOracle
         print(f"  PAC samples: {sampler.provided} of {sampler.budget}  |  "
@@ -280,6 +295,7 @@ def _run_grounded_llm_demo(
                 temperature=temperature,
                 seed=seed or 0,
                 eq_settings=eq_settings,
+                truth=judge,   # labels proposals in the log; never used for learning
                 # None keeps LLMOracle's default budget.
                 **({} if max_new_tokens is None else {"max_new_tokens": max_new_tokens}),
             ) as oracle:

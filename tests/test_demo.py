@@ -2,6 +2,7 @@
 Tests for demo.py's run report.
 
 1  learned H — an axiom of O is unmarked, a GCI O entails is marked *, one O does not entail ✗
+2  the run report's line of counterexample outcomes, in a fixed order, only the kinds that occur
 """
 
 from __future__ import annotations
@@ -31,3 +32,11 @@ def test_1_learned_h_tags(monkeypatch, capsys):
     assert "Redundant axioms (entailed but not primitive): 1" in out
     assert "Unsound axioms (not entailed by O): 1" in out
     assert f"extra:   {unsound}" in out
+
+
+def test_2_outcomes_line():
+    from collections import Counter
+    line = demo.format_outcomes(Counter({"false accepted": 1, "unusable": 30, "true accepted": 8}))
+    assert line.startswith("Counterexample attempts: unusable 30 · true accepted 8 · false accepted 1")
+    assert "not seen by the learner" in line
+
