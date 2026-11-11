@@ -225,3 +225,5 @@ __marimo__/
 
 # vscode settings
 .vscode/
+
+*.pdf

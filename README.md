@@ -2,8 +2,8 @@
 
 An implementation of an exact learning algorithm for EL terminologies, based on Angluin-style queries to an oracle.
 
-[![Test](https://github.com/EmilPoiesz/EL_Learner/actions/workflows/check.yml/badge.svg?event=push)]()
-![Codecov](https://img.shields.io/codecov/c/github/EmilPoiesz/EL_Learner)
+[![Tests](https://img.shields.io/github/actions/workflow/status/EmilPoiesz/EL_Learner/check.yml?branch=master&event=push&label=tests)](https://github.com/EmilPoiesz/EL_Learner/actions/workflows/check.yml?query=branch%3Amaster)
+[![Coverage](https://img.shields.io/codecov/c/github/EmilPoiesz/EL_Learner/master?label=coverage)](https://app.codecov.io/gh/EmilPoiesz/EL_Learner/tree/master)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 Given a target OWL ontology expressed in the EL description logic fragment, the learner reconstructs an equivalent terminology by issuing:
@@ -78,7 +78,8 @@ The `LLMOracle` needs `transformers`, `accelerate` and `torch`, which are runtim
 │   ├── test_pac.py              # PAC sampling and the paper prompt style
 │   ├── test_evaluation.py       # The paper's score, the OWL API read, upstream's counts
 │   ├── test_java_utils.py       # Gateway start-up, pipe draining, find_java
-│   └── test_owl_parser.py       # save_ontology round trip in both formats
+│   ├── test_owl_parser.py       # save_ontology round trip in both formats
+│   └── test_demo.py             # The demo's run report
 ├── ontologies/
 │   ├── medical.ttl              # Example medical ontology
 │   ├── test_minimal.ttl         # Minimal ontology used by the test suite
@@ -451,7 +452,7 @@ The original [ExactLearner-LLM](https://github.com/MatteoMagnini/ExactLearner-LL
 | | Default here | Original (option) |
 |---|---|---|
 | What the model is given | `--oracle taught`: the ontology's axioms in the system prompt | `--oracle parametric`: only the signature; the model answers from what it knows. The ontology file is still the reference the result is scored against |
-| MQ prompt | `--prompt ours`: a yes/no question naming the signature | `--prompt paper-simple` / `paper-advanced`: upstream's system prompts (verbatim); the axiom alone as the user message; an answer counts as True only if it reads exactly "true" (`paper_is_true`); 2 new tokens unless `--max-new-tokens` says otherwise. As upstream's `AxiomSimplifier`, an MQ that H already entails is answered True without the model, and a conjunction on the right is asked one conjunct at a time, skipping conjuncts H entails (its final desaturation step is not reproduced) |
+| MQ prompt | `--prompt ours`: a yes/no question naming the signature | `--prompt paper-simple` / `paper-advanced` (Manchester) or `paper-nl-simple` / `paper-nl-advanced` (upstream's natural-language rewrite): upstream's system prompts (verbatim); the axiom alone as the user message; an answer counts as True only if it reads exactly "true" (`paper_is_true`); 2 new tokens unless `--max-new-tokens` says otherwise. As upstream's `AxiomSimplifier`, an MQ that H already entails is answered True without the model; otherwise the conjuncts on the right that H entails are dropped, both sides are desaturated (each concept name that H makes redundant in a node is removed, `desaturate`), and the remaining conjuncts are asked one at a time. With `--prompt ours` the model gets the whole GCI, without any of these steps |
 | Equivalence query | `--eq oracle`: ELK for `ReasonerOracle`; for an LLM, a yes/no judge and a model-written counterexample | `--eq pac`: PAC sampling (`learner/pac.py`, `PACOracle`) |
 
 ```bash
@@ -459,6 +460,8 @@ python demo.py --oracle parametric --ontology ontologies/animals.owl \
                --prompt paper-advanced --eq pac --model <hf-path> --device cuda
 python demo.py --eq pac                              # PAC sampling with ELK as the oracle
 ```
+
+**Sampling.** Upstream's Ollama requests set only the token budget, so its answers were sampled at Ollama's defaults. `--temperature T` samples at T with Ollama's other defaults (top-k 40, top-p 0.9, repeat penalty 1.1; `OLLAMA_SAMPLING` in `learner/upstream.py`), seeded by `--seed`. The sampling settings and the seed are part of the LLM cache key, so each seed draws its own answers. The default, 0, decodes greedily.
 
 **Reading the ontology.** As upstream, the ontology file is read through the OWL API (`utils.java_utils.load_ontology`, which returns an `OntologyInfo`). The signature, the roles and the ontology size come from that read, and the O-reasoner and the soundness judge reason over the whole file. ELK uses what it supports of it, including the single-individual nominals of `generations.owl` (`Female ≡ ∃hasSex.{FemaleSex}`), which plain EL cannot express. Our EL parser leaves such axioms out of the parsed GCIs (`oracle.axioms`), with a warning, and lists them in `oracle.skipped_axioms`: for `generations.owl`, the 13 nominal definitions and 4 role axioms (a range, an inverse, a functional and a symmetric role). Where the parsed GCIs are used, this is accounted for:
 - `ReasonerOracle`'s own equivalence query (`--eq oracle`) does not stop when H entails every parsed GCI: if the file has skipped axioms, it then looks for a statement of the paper's four shapes that O entails and H does not, and returns that as the counterexample. With ELK on `generations.owl`, H then entails all 1159 statements, not 88% of them.
@@ -499,3 +502,4 @@ The skills draw from a `random.Random(seed)` owned by the oracle (`seed=0` by de
 - If the oracle returns a counterexample already entailed by H, `learn_el_terminology` stops with a warning instead of looping until `max_iterations`.
 - If the O-essential computed from a counterexample is already entailed by H, it is skipped with a warning and learning continues. Learning stops only if the same counterexample comes back with H unchanged, as a deterministic LLM judge would return it. With PAC sampling, every equivalence query draws fresh statements, so the run continues, as upstream's does.
 - If a counterexample cannot be normalised to a GCI with a concept name on one side (Lemma 4), the oracle accepted it but rejected every smaller GCI it implies. A consistent oracle always admits one, so this means the oracle contradicted itself. The counterexample is skipped with a warning saying so, under the same rule: learning stops only if it comes back with H unchanged.
+- If right decomposition (Lemma 5) produces a GCI it has already produced for the same counterexample, `compute_right_essential` stops there and returns that GCI, as upstream's `decomposeRight` does. With a consistent oracle decomposition never repeats, so this guard does not change any run with ELK. It does fire when the model contradicts itself. For example, the model denies `Person ⊑ Researcher` but accepts `Person ⊑ Researcher ⊓ ∃manages.C`, and also `Researcher ⊑ Person ⊓ ∃manages.C`. Then decomposition alternates between `Person ⊑ ∃manages.C` and `Researcher ⊑ ∃manages.C` forever. In the paper reproduction, desaturation makes this likelier: H can drop `Researcher` from the question, so the model is only asked `Person ⊑ ∃manages.C`. The guard is part of the learner, so it applies to every oracle.
