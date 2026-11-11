@@ -117,6 +117,11 @@ class EQSettings:
     attempts : int
         Attempts at a usable counterexample per EQ (default 3: the first ask and
         two retries).
+    max_new_tokens : int or None
+        The generation budget of the counterexample prompts only.  None
+        (default): the oracle's, but at least ``EQ_MIN_NEW_TOKENS``.  The judge
+        and the check keep that one: they are yes/no answers, while a reasoning
+        model must think and then write a statement (cex20).
     generation : str
         How the counterexample is asked for (``llm_prompts.GENERATIONS``):
         ``"default"``, the placeholder examples; ``"g1"``, with the forms allowed
@@ -135,6 +140,7 @@ class EQSettings:
     temperature: float = 0.0
     attempts: int = 3
     generation: str = "default"
+    max_new_tokens: int | None = None
 
     def __post_init__(self):
         if self.mode not in EQ_MODES:
@@ -149,6 +155,8 @@ class EQSettings:
                              f"not {self.check_question!r}")
         if self.attempts < 1:
             raise ValueError(f"attempts must be at least 1, not {self.attempts}")
+        if self.max_new_tokens is not None and self.max_new_tokens < 1:
+            raise ValueError(f"max_new_tokens must be at least 1, not {self.max_new_tokens}")
         if self.generation not in GENERATIONS:
             raise ValueError(f"generation must be one of {GENERATIONS}, not {self.generation!r}")
         if self.generation != "default" and self.mode != "judge":
@@ -164,7 +172,8 @@ class EQSettings:
                 + (f", counterexamples sampled at temperature {self.temperature}, seed {seed}"
                    if self.temperature > 0 else "")
                 + (f", {self.attempts} attempts per EQ" if self.attempts != 3 else "")
-                + (f", counterexample prompt {self.generation}" if self.generation != "default" else ""))
+                + (f", counterexample prompt {self.generation}" if self.generation != "default" else "")
+                + (f", {self.max_new_tokens} tokens per counterexample" if self.max_new_tokens else ""))
 
 
 # ---------------------------------------------------------------------------
@@ -766,6 +775,7 @@ class LLMOracle(Oracle):
             parse = self._parse_counterexample
             label = "EQ (counterexample)"
         sampling = sampling_params(settings.temperature, self._seed)
+        generate = {**ask, **({"max_new_tokens": settings.max_new_tokens} if settings.max_new_tokens else {})}
         reasons: list[str] = []   # why each earlier answer could not be used
         # Carried into the next EQ if this one fails (the learner may ask again with H
         # unchanged, and the same prompt would get the same cached answer); a
@@ -778,7 +788,7 @@ class LLMOracle(Oracle):
             prompt = build(self._sig, self._roles, hypothesis, feedback, language)
             try:
                 counterexample = self._query(prompt, parse=parse, label=label,
-                                             sampling=sampling, **ask)
+                                             sampling=sampling, **generate)
             except ValueError as exc:
                 reasons.append(str(exc))
                 carry.append(reasons[-1])

@@ -495,6 +495,7 @@ With `--eq oracle` and an LLM oracle (`axioms` or `signature`), the model answer
 | `--eq-memory` | List the counterexamples the check rejected at earlier EQs in later EQs' prompts |
 | `--eq-temperature T` | Sample only the counterexample prompts at T; the MQs, the check and the judge keep `--temperature` |
 | `--eq-attempts N` | Attempts at a usable counterexample per EQ (default 3) |
+| `--eq-max-new-tokens N` | The generation budget of the counterexample prompts only (default: `--max-new-tokens`, at least 128); the MQs, the judge and the check keep `--max-new-tokens` |
 | `--max-eqs N` | Stop after N EQs (default 50, or the PAC budget) |
 | `--max-failed-eqs N` | Tolerate N EQs in a row without a usable answer (default 0); the next EQ asks again, with the earlier failures in its prompt |
 | `--no-precompute` | Skip Phase 1 (an MQ for every ordered pair of concept names), so that H grows only from counterexamples and the score measures the EQs |

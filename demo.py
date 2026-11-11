@@ -543,6 +543,12 @@ def build_parser() -> argparse.ArgumentParser:
              "counterexamples.",
     )
     parser.add_argument(
+        "--eq-max-new-tokens", type=int, default=None, metavar="N",
+        help="With an LLM's own equivalence queries: the generation budget of the "
+             "counterexample prompts only; the MQs, the judge and the check keep "
+             "--max-new-tokens.  Unset: --max-new-tokens, but at least 128.",
+    )
+    parser.add_argument(
         "--precompute", dest="no_precompute", action="store_false",
         help="Run Phase 1 after all, when a config (or an earlier flag) skips it.",
     )
@@ -677,6 +683,7 @@ if __name__ == "__main__":
                 temperature=args.eq_temperature,
                 generation=args.eq_generation,
                 attempts=args.eq_attempts,
+                max_new_tokens=args.eq_max_new_tokens,
             )
         except ValueError as exc:   # a combination the settings refuse, e.g. combined + g2
             parser.error(str(exc))

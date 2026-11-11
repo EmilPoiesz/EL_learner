@@ -135,7 +135,7 @@ OPTIONS: tuple[Option, ...] = (
            "counterexample prompts have their own.", flag="--temperature", default=0.0, env="TEMPERATURE"),
     Option("oracle.max_new_tokens", "Tokens per answer", "int",
            "The generation budget of every answer. Unset: 2 with a paper prompt, as the paper; EQ answers "
-           "always get at least 128. A reasoning model needs room to finish thinking: an answer cut off "
+           "always get at least 128, and the counterexample prompts can have their own. A reasoning model needs room to finish thinking: an answer cut off "
            "before </think> counts as no answer.",
            flag="--max-new-tokens", nullable=True, env="MAX_NEW_TOKENS", see=("cex20",)),
     Option("oracle.mq.prompt", "Prompt", "choice",
@@ -205,6 +205,12 @@ OPTIONS: tuple[Option, ...] = (
     Option("oracle.eq.counterexample.attempts", "Attempts per EQ", "int",
            "Attempts at a usable counterexample per EQ; each retry lists why the earlier answers "
            "could not be used.", flag="--eq-attempts", default=3, env="EQ_ATTEMPTS", minimum=1),
+    Option("oracle.eq.counterexample.max_new_tokens", "Tokens per counterexample", "int",
+           "The generation budget of the counterexample prompts only; the MQs, the judge and the check "
+           "keep oracle.max_new_tokens. Unset: that budget, but at least 128. A reasoning model has to "
+           "think and then write a statement: in cex20, 29 of 38 attempts were cut off at 2048 tokens. "
+           "A budget is a ceiling: an answer that ends sooner costs no more.",
+           flag="--eq-max-new-tokens", nullable=True, env="EQ_MAX_NEW_TOKENS", minimum=1, see=("cex20",)),
     Option("oracle.eq.check.asked_as", "Asked as", "choice",
            "The form of the check's membership query. With a paper prompt only.",
            flag="--eq-check", default="mq", env="EQ_CHECK",

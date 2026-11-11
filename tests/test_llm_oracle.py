@@ -701,3 +701,14 @@ def test_43_mqs_asked_as_the_check(tmp_path, as_check):
         assert oracle._pipe.prompts == ["A SubClassOf r some B"]
         assert oracle._pipe.systems == [PAPER_SYSTEM_PROMPTS["paper-advanced"]]
 
+
+def test_44_counterexample_budget(tmp_path):
+    # A reasoning model needs room to think and then write a statement (cex20: 29 of
+    # 38 attempts cut off); the judge and the check are yes/no answers and keep theirs.
+    oracle = _oracle(tmp_path, ["no", "not a statement", "A SubClassOf B", "yes"])
+    oracle._eq = EQSettings(max_new_tokens=4096)
+    assert oracle.EQ(set()) == _GCI
+    assert oracle._pipe.budgets == [EQ_MIN_NEW_TOKENS, 4096, 4096, 16]   # judge, 2 attempts, check
+    with pytest.raises(ValueError, match="max_new_tokens must be at least 1"):
+        EQSettings(max_new_tokens=0)
+    assert "4096 tokens per counterexample" in EQSettings(max_new_tokens=4096).describe()
