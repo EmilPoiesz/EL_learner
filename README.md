@@ -497,6 +497,12 @@ With `--eq oracle` and an LLM oracle (`taught` or `parametric`), the model answe
 | `--max-failed-eqs N` | Tolerate N EQs in a row without a usable answer (default 0); the next EQ asks again, with the earlier failures in its prompt |
 | `--no-precompute` | Skip Phase 1 (an MQ for every ordered pair of concept names), so that H grows only from counterexamples and the score measures the EQs |
 
+**Run configurations.** Instead of these flags, a run can be described by a JSON file and given with `--config FILE`. The file nests like the setup: `learner` (`phase1`, `max_eqs`, `max_failed_eqs`), `oracle` (`kind`, `temperature`, `max_new_tokens`, `mq.prompt`) and `oracle.eq` (`kind`, `mode`, `counterexample.{prompt, temperature, memory, attempts}`, `check.{asked_as, system, question}`), plus the job's `cluster`, `model`, `ontologies` and `seeds`. Its settings become the flags above, and flags on the command line override them. An unknown key, a wrong type or a choice that does not exist is an error that names the key. `learner/run_config.py` lists every option with its flag, default and allowed values (`OPTIONS`); `python -m learner.run_config FILE check` prints what a file sets.
+
+```bash
+python demo.py --config run.json --ontology ontologies/animals.owl --seed 0 --model <hf-path> --device cuda
+```
+
 A reasoning model whose chat template opens `<think>` is read after `</think>`; a response without it (the budget ran out while reasoning) counts as no answer, and the run reports how many were cut off. Give such models room with `--max-new-tokens`.
 
 ```bash

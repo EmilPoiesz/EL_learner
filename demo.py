@@ -427,7 +427,8 @@ def _run_llm_demo(
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def build_parser() -> argparse.ArgumentParser:
+    """demo.py's command line (learner/run_config.py's catalogue mirrors its LLM options)."""
     parser = argparse.ArgumentParser(
         description="EL learner demo.  Choose an oracle backend with --oracle.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -570,8 +571,34 @@ if __name__ == "__main__":
         "--output", default=None, metavar="FILE",
         help="Save the learned ontology to FILE (.ttl for Turtle, .owl/.xml for RDF/XML).",
     )
+    parser.add_argument(
+        "--config", default=None, metavar="FILE",
+        help="A run configuration (JSON, learner/run_config.py): its settings become the "
+             "flags above, and flags given here override them.  With several ontologies or "
+             "seeds in the file, pick one with --ontology / --seed.",
+    )
+    return parser
 
-    args = parser.parse_args()
+
+def parse_args(parser: argparse.ArgumentParser, argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, with --config's settings placed before the flags given."""
+    argv = sys.argv[1:] if argv is None else list(argv)
+    known, _ = parser.parse_known_args(argv)
+    if not known.config:
+        return parser.parse_args(argv)
+    from learner import run_config
+    try:
+        config = run_config.load(known.config)
+        args = parser.parse_args(run_config.to_argv(config) + argv)
+        run_config.check_run(config, args.ontology, args.seed, argv)
+    except run_config.ConfigError as exc:
+        parser.error(f"--config {known.config}: {exc}")
+    return args
+
+
+if __name__ == "__main__":
+    parser = build_parser()
+    args = parse_args(parser)
 
     if args.output and os.sep not in args.output and "/" not in args.output:
         args.output = os.path.join(
