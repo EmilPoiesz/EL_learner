@@ -13,21 +13,29 @@ import os
 import re
 from typing import Callable, Optional, TypeVar
 
-from transformers import pipeline, GenerationConfig
+from transformers import pipeline, GenerationConfig, set_seed
 
 from learner.cache.cache import LLMCache
 from learner.el_algorithm import Oracle, OracleError, GCI
 from learner.el_syntax import gci_names, gci_to_manchester, parse_manchester_gci
 from learner.hypothesis_reasoner import HypothesisReasoner
 from learner import llm_prompts as prompts
-from learner.upstream import (PAPER_NL_STYLES, PAPER_SYSTEM_PROMPTS, paper_is_true, rhs_conjuncts,
-                              upstream_gci_text, upstream_natural_language)
+from learner.upstream import (OLLAMA_SAMPLING, PAPER_NL_STYLES, PAPER_SYSTEM_PROMPTS, paper_is_true,
+                              rhs_conjuncts, upstream_gci_text, upstream_natural_language)
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
 PROMPT_STYLES = ("ours", *PAPER_SYSTEM_PROMPTS)
+
+
+def sampling_params(temperature: float, seed: int) -> dict | None:
+    """Generation settings for sampling at *temperature* with Ollama's other
+    defaults, or None (greedy) at 0.  The seed only keys the cache."""
+    if temperature <= 0:
+        return None
+    return {"do_sample": True, "temperature": temperature, **OLLAMA_SAMPLING, "seed": seed}
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +94,14 @@ class LLMOracle(Oracle):
     roles : set[str] | None
         Role names in scope.  ``None``: those in the file's parsed axioms, or
         none without ``ontology_path``.
+    temperature : float
+        0 (default): greedy decoding.  Above 0: sampling at this temperature
+        with Ollama's other defaults (``OLLAMA_SAMPLING``), as upstream's
+        requests were answered.  Each distinct query is still answered once
+        per run, from the cache.
+    seed : int
+        With ``temperature`` > 0: seeds the sampling, and is part of the cache
+        key, so runs with different seeds draw their own answers.
     """
 
     def __init__(
@@ -100,6 +116,8 @@ class LLMOracle(Oracle):
         include_axioms: bool = True,
         prompt_style: str = "ours",
         roles: set[str] | None = None,
+        temperature: float = 0.0,
+        seed: int = 0,
     ):
         super().__init__()
         if prompt_style not in PROMPT_STYLES:
@@ -107,6 +125,9 @@ class LLMOracle(Oracle):
         self._prompt_style = prompt_style
         self._h_reasoner = h_reasoner
         self._max_new_tokens = max_new_tokens
+        self._sampling = sampling_params(temperature, seed)
+        if self._sampling:
+            set_seed(seed)
         self._verbose = verbose
         self._pipe = pipeline(
             "text-generation",
@@ -201,8 +222,8 @@ class LLMOracle(Oracle):
             {"role": "system", "content": self._system_msg},
             {"role": "user",   "content": prompt},
         ]
-        # Part of the cache key: a response generated under another budget is not reused.
-        params = {"max_new_tokens": self._max_new_tokens, "do_sample": False}
+        # Part of the cache key: a response generated under other settings is not reused.
+        params = {"max_new_tokens": self._max_new_tokens, **(self._sampling or {"do_sample": False})}
 
         # Cache lookup
         cached = self._cache.get(self._model_name, messages, params)
@@ -216,7 +237,9 @@ class LLMOracle(Oracle):
             except ValueError:
                 logger.warning("Cached %s response does not parse; regenerating.", label)
 
-        generation_config = GenerationConfig(**params, pad_token_id=self._pad_token_id)
+        # The seed only keys the cache; set_seed in __init__ seeded the generator.
+        config = {k: v for k, v in params.items() if k != "seed"}
+        generation_config = GenerationConfig(**config, pad_token_id=self._pad_token_id)
 
         outputs = self._pipe(messages, generation_config=generation_config)
         response = outputs[0]["generated_text"][-1]["content"].strip()

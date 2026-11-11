@@ -202,6 +202,7 @@ def _run_grounded_llm_demo(
     epsilon: float = 0.2,
     delta: float = 0.1,
     seed: int | None = 0,
+    temperature: float = 0.0,
 ) -> bool:
     """
     LLM oracle over an ontology file, scored against it.  ``include_axioms``:
@@ -222,6 +223,8 @@ def _run_grounded_llm_demo(
     print(f"  Prompt   : {prompt_style}")
     if max_new_tokens is not None:
         print(f"  Max new tokens : {max_new_tokens}")
+    if temperature > 0:
+        print(f"  Sampling : temperature {temperature}, Ollama's defaults, seed {seed or 0}")
 
     classpath = build_classpath(gateway_jar_dir)
     print("\n  Starting ELK H-reasoner …")
@@ -244,6 +247,8 @@ def _run_grounded_llm_demo(
                 prompt_style=prompt_style,
                 device=device,
                 verbose=verbose,
+                temperature=temperature,
+                seed=seed or 0,
                 # None keeps LLMOracle's default budget.
                 **({} if max_new_tokens is None else {"max_new_tokens": max_new_tokens}),
             ) as oracle:
@@ -436,6 +441,12 @@ if __name__ == "__main__":
              "with paper-nl-*, in its natural-language form (taught/parametric only).",
     )
     llm_grp.add_argument(
+        "--temperature", type=float, default=0.0, metavar="T",
+        help="0 (default): greedy decoding.  Above 0: sample at T with Ollama's other "
+             "defaults, as the paper's runs were answered (taught/parametric only); "
+             "--seed then also seeds the sampling.",
+    )
+    llm_grp.add_argument(
         "--dry-run", action="store_true",
         help="Print prompts without loading the model (LLM oracle only).",
     )
@@ -484,6 +495,7 @@ if __name__ == "__main__":
             epsilon=args.epsilon,
             delta=args.delta,
             seed=args.seed,
+            temperature=args.temperature,
         )
     else:
         if args.dry_run:

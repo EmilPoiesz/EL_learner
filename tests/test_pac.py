@@ -155,6 +155,7 @@ def _paper_oracle(tmp_path, responses, h_entailed: set[GCI] = frozenset(), style
     oracle.mq_count = oracle.eq_count = 0
     oracle._pipe = _StubPipe(responses)
     oracle._model_name = "stub"
+    oracle._sampling = None
     oracle._max_new_tokens = 2
     oracle._pad_token_id = 0
     oracle._verbose = False

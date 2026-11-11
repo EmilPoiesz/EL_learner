@@ -1,8 +1,8 @@
 """
 What the original ExactLearner-LLM does, reproduced: how it writes an MQ (the OWL
 API's Manchester rendering, its natural-language rewrite), its system prompts, how
-it reads an answer, and its AxiomSimplifier.  This project's own prompts are in
-learner/llm_prompts.py.
+it reads an answer, its AxiomSimplifier, and the sampling its runs were answered
+with.  This project's own prompts are in learner/llm_prompts.py.
 """
 
 from __future__ import annotations
@@ -102,8 +102,14 @@ PAPER_NL_STYLES = ("paper-nl-simple", "paper-nl-advanced")
 
 
 # ---------------------------------------------------------------------------
-# Answers and the AxiomSimplifier
+# Sampling, answers and the AxiomSimplifier
 # ---------------------------------------------------------------------------
+
+# Ollama's sampling defaults, which upstream's requests (options: num_predict only)
+# ran under; the temperature is set per oracle.  Its repeat_last_n (64) window has
+# no transformers counterpart: the penalty here covers the whole prompt.
+OLLAMA_SAMPLING = {"top_k": 40, "top_p": 0.9, "repetition_penalty": 1.1}
+
 
 def paper_is_true(response: str) -> bool:
     """

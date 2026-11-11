@@ -15,6 +15,7 @@ is replaced by a stub that returns scripted responses.
 9  the counterexample line is found and unwrapped (fences, backticks, labels, full stop)
 10 names outside the signature or the roles in scope are rejected, saying which
 11 Manchester parsing: keywords in any case, prefixed and hyphenated names
+12 sampling: Ollama's settings reach generate(); each seed has its own cache entries
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from learner.el_algorithm import ELConcept, GCI, OracleError
 from learner import llm_prompts as prompts
 from learner.el_syntax import parse_manchester_gci
 from learner.llm_oracle import LLMOracle
+from learner.upstream import OLLAMA_SAMPLING
 
 _GCI = GCI(ELConcept({"A"}), ELConcept({"B"}))
 
@@ -52,6 +54,7 @@ def _oracle(tmp_path, responses: list[str]) -> LLMOracle:
     oracle._pipe = _StubPipe(responses)
     oracle._model_name = "stub"
     oracle._max_new_tokens = 16
+    oracle._sampling = None
     oracle._pad_token_id = 0
     oracle._prompt_style = "ours"
     oracle._verbose = False
@@ -175,3 +178,20 @@ def test_10_names_out_of_scope_rejected(tmp_path):
 ])
 def test_11_manchester_parsing(text, expected):
     assert parse_manchester_gci(text) == expected
+
+
+def test_12_sampling_settings_and_cache_by_seed(tmp_path):
+    configs = []
+    oracle = _oracle(tmp_path, ["yes", "no"])
+    pipe = oracle._pipe
+    oracle._pipe = lambda messages, generation_config=None: (configs.append(generation_config),
+                                                             pipe(messages))[1]
+    oracle._sampling = {"do_sample": True, "temperature": 0.8, **OLLAMA_SAMPLING, "seed": 0}
+    assert oracle.MQ(_GCI) is True
+    assert oracle.MQ(_GCI) is True            # same seed: the first answer, from the cache
+    oracle._sampling = {**oracle._sampling, "seed": 1}
+    assert oracle.MQ(_GCI) is False           # another seed draws its own answer
+    assert pipe.calls == 2
+    config = configs[0]
+    assert config.do_sample and config.temperature == 0.8
+    assert (config.top_k, config.top_p, config.repetition_penalty) == (40, 0.9, 1.1)
