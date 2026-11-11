@@ -288,7 +288,8 @@ _PREVIEW_HYPOTHESIS: set[GCI] = {
 
 
 def _llm_dry_run() -> None:
-    from learner.llm_oracle import LLMOracle, gci_to_manchester, hypothesis_to_manchester
+    from learner import llm_prompts as prompts
+    from learner.el_syntax import gci_to_manchester, hypothesis_to_manchester
 
     _section("Dry-run — prompt preview (no model loaded)")
 
@@ -296,7 +297,7 @@ def _llm_dry_run() -> None:
     for gci in _PREVIEW_GCIS:
         print(f"GCI: {gci_to_manchester(gci)}")
         print("-" * 40)
-        print(LLMOracle._build_mq_prompt(_LLM_SIGNATURE, _LLM_ROLES, gci))
+        print(prompts.mq_prompt(_LLM_SIGNATURE, _LLM_ROLES, gci))
         print()
 
     print("\n--- EQ prompts ---\n")
@@ -304,10 +305,10 @@ def _llm_dry_run() -> None:
     print(hypothesis_to_manchester(_PREVIEW_HYPOTHESIS))
     print("\n[Step 1 — judge equivalence]")
     print("-" * 40)
-    print(LLMOracle._build_eq_judge_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
+    print(prompts.eq_judge_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
     print("\n[Step 2 — request counterexample]")
     print("-" * 40)
-    print(LLMOracle._build_eq_counterexample_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
+    print(prompts.eq_counterexample_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
 
 
 def _run_llm_demo(
@@ -319,7 +320,8 @@ def _run_llm_demo(
 ) -> bool:
     from utils.java_utils import build_classpath
     from learner.hypothesis_reasoner import HypothesisReasoner
-    from learner.llm_oracle import LLMOracle, gci_to_manchester
+    from learner.el_syntax import gci_to_manchester
+    from learner.llm_oracle import LLMOracle
 
     _section(f"EL Learner — LLMOracle  ({model})")
     print(f"\n  Signature Σ_O : {sorted(_LLM_SIGNATURE)}")

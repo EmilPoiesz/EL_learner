@@ -23,7 +23,8 @@ import pytest
 
 from learner.cache.cache import LLMCache
 from learner.el_algorithm import ELConcept, GCI
-from learner.llm_oracle import LLMOracle, PAPER_SYSTEM_PROMPTS, paper_is_true
+from learner.llm_oracle import LLMOracle
+from learner.upstream import PAPER_SYSTEM_PROMPTS, paper_is_true
 from learner.pac import PACOracle, PACSampler, role_names
 
 CLASSES = {"A", "B", "C", "D"}

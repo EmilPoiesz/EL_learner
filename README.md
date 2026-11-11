@@ -53,6 +53,9 @@ The `LLMOracle` needs `transformers`, `accelerate` and `torch`, which are runtim
 │   ├── hypothesis_reasoner.py   # HypothesisReasoner — shared H-entailment component
 │   ├── reasoner_oracle.py       # ReasonerOracle — O-oracle backed by OWL API + ELK/HermiT
 │   ├── llm_oracle.py            # LLMOracle — O-oracle backed by a local HuggingFace model
+│   ├── llm_prompts.py           # This project's prompts: system messages, MQ and EQ prompts
+│   ├── upstream.py              # The original ExactLearner-LLM: its system prompts, answer reading, AxiomSimplifier
+│   ├── el_syntax.py             # EL as text: Manchester syntax, written and parsed
 │   ├── pac.py                   # PACOracle — PAC-sampling equivalence queries, as the original paper
 │   ├── evaluation.py            # The paper's ontology score (H vs O on four statement shapes)
 │   └── cache/
@@ -295,10 +298,10 @@ In this parametric mode (no `ontology_path`) the prompts list no object properti
 
 #### Manchester syntax
 
-`llm_oracle.py` exports module-level helpers for converting between `ELConcept`/`GCI` objects and Manchester syntax strings:
+`el_syntax.py` has the functions for converting between `ELConcept`/`GCI` objects and Manchester syntax strings:
 
 ```python
-from learner.llm_oracle import concept_to_manchester, gci_to_manchester, parse_manchester_gci, parse_manchester_concept
+from learner.el_syntax import concept_to_manchester, gci_to_manchester, parse_manchester_gci, parse_manchester_concept
 ```
 
 | Function | Direction |

@@ -1,219 +1,32 @@
+"""
+LLMOracle: an Oracle whose MQs and EQs a local language model answers.
+
+The text it sends and reads comes from learner/el_syntax.py (EL as text),
+learner/llm_prompts.py (this project's prompts) and learner/upstream.py (the
+original ExactLearner-LLM's).
+"""
+
 from __future__ import annotations
 
 import logging
-import re
 import os
+import re
+from typing import Callable, Optional, TypeVar
+
+from transformers import pipeline, GenerationConfig
+
 from learner.cache.cache import LLMCache
-from typing import Callable, Optional, Sequence, TypeVar
+from learner.el_algorithm import Oracle, OracleError, GCI
+from learner.el_syntax import gci_names, gci_to_manchester, parse_manchester_gci
+from learner.hypothesis_reasoner import HypothesisReasoner
+from learner import llm_prompts as prompts
+from learner.upstream import PAPER_SYSTEM_PROMPTS, paper_is_true, rhs_conjuncts
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-from transformers import pipeline, GenerationConfig
-
-from learner.el_algorithm import Oracle, OracleError, ELConcept, GCI, existential_key
-from learner.hypothesis_reasoner import HypothesisReasoner
-
-
-# ---------------------------------------------------------------------------
-# Manchester syntax serialization
-# ---------------------------------------------------------------------------
-
-def concept_to_manchester(concept: ELConcept) -> str:
-    """Serialize an ELConcept to Manchester syntax."""
-    parts: list[str] = []
-    for atom in sorted(concept.atoms):
-        parts.append(atom)
-    
-    # x here is the existential ∃r.A, where the x[0] is r and x[1] is A. We sort
-    # alphabetically by relation r, then alphabetically by concept name.
-    for role, filler in sorted(concept.existentials, key=lambda x: (x[0], str(x[1]))):
-        filler_str = concept_to_manchester(filler)
-        if (len(filler.atoms) + len(filler.existentials)) > 1: filler_str = "(" + filler_str + ")"
-        parts.append(f"({role} some {filler_str})")
-    if not parts:
-        return "owl:Thing"
-    return " and ".join(parts)
-
-
-def gci_to_manchester(gci: GCI) -> str:
-    return f"{concept_to_manchester(gci.lhs)} SubClassOf {concept_to_manchester(gci.rhs)}"
-
-
-def gci_names(gci: GCI) -> tuple[set[str], set[str]]:
-    """The concept names and the role names that occur in *gci*."""
-    atoms: set[str] = set()
-    roles: set[str] = set()
-
-    def _walk(concept: ELConcept) -> None:
-        atoms.update(concept.atoms)
-        for role, filler in concept.existentials:
-            roles.add(role)
-            _walk(filler)
-
-    _walk(gci.lhs)
-    _walk(gci.rhs)
-    return atoms, roles
-
-
-def hypothesis_to_manchester(H: set[GCI]) -> str:
-    if not H:
-        return "  (empty)"
-    return "\n".join(f"  {gci_to_manchester(gci)}" for gci in sorted(H, key=str))
-
-
-# ---------------------------------------------------------------------------
-# Manchester syntax parsing
-# ---------------------------------------------------------------------------
-
-def parse_manchester_gci(s: str) -> GCI:
-    """
-    Parse a GCI in Manchester syntax: "C SubClassOf D".  The keywords
-    (SubClassOf, and, some) may be in any case, and "SubClassOf:" (Manchester
-    frame syntax) is accepted too.
-
-    Raises ValueError if the format is not recognised.
-    """
-    match = re.match(r'^(.+?)\s+SubClassOf:?\s+(.+)$', s.strip(), re.DOTALL | re.IGNORECASE)
-    if not match:
-        raise ValueError(f"Cannot parse GCI (expected 'C SubClassOf D'): {s!r}")
-    lhs = parse_manchester_concept(match.group(1).strip())
-    rhs = parse_manchester_concept(match.group(2).strip())
-    return GCI(lhs=lhs, rhs=rhs)
-
-
-# A concept or role name: word characters, with ':', '.' or '-' inside but not at
-# either end (prefixed names such as ex:hasPart, hyphenated ones such as has-part;
-# "B." is the name B and a full stop).
-_NAME = r'\w(?:[\w:.\-]*\w)?'
-
-
-def parse_manchester_concept(s: str) -> ELConcept:
-    """
-    Parse a Manchester syntax EL concept expression into an ELConcept.
-
-    Supports:
-      owl:Thing
-      A
-      A and B
-      r some C
-      A and (r some C)
-      (A and B) and (r some (C and D))
-    """
-    s = s.strip()
-    if s.lower() == "owl:thing":
-        return ELConcept()
-
-    parts = _split_top_level_and(s)
-
-    atoms: set[str] = set()
-    existentials: set[tuple] = set()
-
-    for part in parts:
-        part = part.strip()
-        # Strip matching outer parentheses
-        while (
-            part.startswith("(")
-            and part.endswith(")")
-            and _matching_paren(part, 0) == len(part) - 1
-        ):
-            part = part[1:-1].strip()
-
-        some_match = re.match(rf'^({_NAME})\s+some\s+(.+)$', part, re.DOTALL | re.IGNORECASE)
-        if some_match:
-            role = some_match.group(1)
-            filler_str = some_match.group(2).strip()
-            while (
-                filler_str.startswith("(")
-                and filler_str.endswith(")")
-                and _matching_paren(filler_str, 0) == len(filler_str) - 1
-            ):
-                filler_str = filler_str[1:-1].strip()
-            existentials.add((role, parse_manchester_concept(filler_str)))
-        elif re.match(rf'^{_NAME}$', part):
-            if part.lower() != "owl:thing":
-                atoms.add(part)
-        else:
-            raise ValueError(f"Cannot parse Manchester concept fragment: {part!r}")
-
-    return ELConcept(atoms=frozenset(atoms), existentials=frozenset(existentials))
-
-
-def _matching_paren(s: str, open_pos: int) -> int:
-    """Return the index of the closing paren matching s[open_pos]=='('."""
-    depth = 0
-    for i in range(open_pos, len(s)):
-        if s[i] == '(':
-            depth += 1
-        elif s[i] == ')':
-            depth -= 1
-            if depth == 0:
-                return i
-    raise ValueError(f"Unmatched parenthesis in: {s!r}")
-
-
-def _split_top_level_and(s: str) -> list[str]:
-    """Split s on ' and ' tokens that are not inside parentheses."""
-    parts: list[str] = []
-    depth = 0
-    current: list[str] = []
-    i = 0
-    while i < len(s):
-        if s[i] == '(':
-            depth += 1
-            current.append(s[i])
-        elif s[i] == ')':
-            depth -= 1
-            current.append(s[i])
-        elif depth == 0 and s[i:i + 5].lower() == ' and ':
-            parts.append(''.join(current))
-            current = []
-            i += 5
-            continue
-        else:
-            current.append(s[i])
-        i += 1
-    parts.append(''.join(current))
-    return parts
-
-
-# ---------------------------------------------------------------------------
-# Prompt styles
-# ---------------------------------------------------------------------------
-
-# System prompts of the original ExactLearner-LLM (src/main/java/org/configurations/
-# experiments/manchester-{simple,advanced}.yml), as the YAML folds and trims them.
-PAPER_SYSTEM_PROMPTS: dict[str, str] = {
-    "paper-simple": "Answer with only True or False.",
-    "paper-advanced": (
-        "You need to classify the following statements as True or False. The statement "
-        "will be provided in either Manchester OWL syntax or natural language. Strictly "
-        "follow these guidelines:\n"
-        "  1. answer with only True or False;\n"
-        "  2. entities with has part relation are not in a subclass relation;\n"
-        "  3. take a deep breath before answering;\n"
-        "  4. if you are unsure about the classification, answer with False."
-    ),
-}
 PROMPT_STYLES = ("ours", *PAPER_SYSTEM_PROMPTS)
-
-
-def paper_is_true(response: str) -> bool:
-    """
-    Upstream's ``Result.isStrictlyTrue``: True only if the response, lowercased,
-    without full stops and literal "\\n" and trimmed, is exactly "true".
-    Anything else, including an unparseable answer, counts as False.
-    """
-    return response.lower().replace(".", "").replace("\\n", "").strip() == "true"
-
-
-def rhs_conjuncts(concept: ELConcept) -> list[ELConcept]:
-    """The conjuncts of a concept: each atom and each existential on its own."""
-    return (
-        [ELConcept({a}) for a in sorted(concept.atoms)]
-        + [ELConcept(existentials={e}) for e in sorted(concept.existentials, key=existential_key)]
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -320,18 +133,19 @@ class LLMOracle(Oracle):
             self.skipped_axioms: list[str] = []
             parsed_sig, self._O = extract_ontology(ontology_path, self.skipped_axioms)
             self._sig = set(signature) if signature is not None else parsed_sig
-            self._roles: set[str] = set(roles) if roles is not None else self._extract_roles(self._O)
+            self._roles: set[str] = (set(roles) if roles is not None
+                                     else set().union(*(gci_names(g)[1] for g in self._O)))
             if include_axioms:
-                self._system_msg = self._build_grounded_system_message(self._sig, self._roles, self._O)
+                self._system_msg = prompts.grounded_system_message(self._sig, self._roles, self._O)
             else:
-                self._system_msg = self._PARAMETRIC_SYSTEM_MSG
+                self._system_msg = prompts.PARAMETRIC_SYSTEM_MSG
         else:
             if signature is None:
                 raise ValueError("Either 'signature' or 'ontology_path' must be provided.")
             self._sig = signature
             self._O: set[GCI] | None = None
             self._roles = set(roles or ())
-            self._system_msg = self._PARAMETRIC_SYSTEM_MSG
+            self._system_msg = prompts.PARAMETRIC_SYSTEM_MSG
 
         if prompt_style in PAPER_SYSTEM_PROMPTS:
             system = PAPER_SYSTEM_PROMPTS[prompt_style]
@@ -339,46 +153,6 @@ class LLMOracle(Oracle):
                 axioms = "\n".join(f"  {gci_to_manchester(g)}" for g in sorted(self._O, key=str))
                 system += f"\n\nOntology axioms:\n{axioms}"
             self._system_msg = system
-
-    _PARAMETRIC_SYSTEM_MSG = (
-        "You are a precise ontology reasoning assistant. "
-        "Follow the output format exactly as specified. "
-        "Do not add any explanation, preamble, or punctuation beyond what is asked."
-    )
-
-    # ------------------------------------------------------------------
-    # Grounded system message (teaching step)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_roles(gcis: set[GCI]) -> set[str]:
-        """Collect every role name that appears in any existential in the GCI set."""
-        roles: set[str] = set()
-        def _walk(concept: ELConcept) -> None:
-            for role, filler in concept.existentials:
-                roles.add(role)
-                _walk(filler)
-        for gci in gcis:
-            _walk(gci.lhs)
-            _walk(gci.rhs)
-        return roles
-
-    @staticmethod
-    def _build_grounded_system_message(sig: set[str], roles: set[str], gcis: set[GCI]) -> str:
-        sig_str   = ", ".join(sorted(sig))
-        roles_str = ", ".join(sorted(roles)) if roles else "(none)"
-        gcis_str  = "\n".join(f"  {gci_to_manchester(g)}" for g in sorted(gcis, key=str))
-        return (
-            "You are a precise ontology reasoning assistant.\n"
-            "You have been given the following ontology O in Manchester syntax.\n\n"
-            f"Concept names: {sig_str}\n"
-            f"Object properties: {roles_str}\n\n"
-            "Axioms:\n"
-            f"{gcis_str}\n\n"
-            "Answer questions about what O entails. "
-            "Follow the output format exactly as specified. "
-            "Do not add explanation, preamble, or punctuation beyond what is asked."
-        )
 
     # ------------------------------------------------------------------
     # Oracle.signature / Oracle.axioms
@@ -404,57 +178,6 @@ class LLMOracle(Oracle):
 
     def on_H_add(self, gci: GCI) -> None:
         self._h_reasoner.add(gci)
-
-    # ------------------------------------------------------------------
-    # Prompt construction
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_mq_prompt(sig: set[str], roles: set[str], gci: GCI) -> str:
-        sig_str   = ", ".join(sorted(sig))
-        roles_str = ", ".join(sorted(roles)) if roles else "(none)"
-        return (
-            f"Concept names in scope: {sig_str}.\n"
-            f"Object properties in scope: {roles_str}.\n"
-            "Does the target ontology O entail the following GCI?\n"
-            f"  {gci_to_manchester(gci)}\n"
-            "Reply with exactly one word: yes or no."
-        )
-
-    @staticmethod
-    def _build_eq_judge_prompt(sig: set[str], roles: set[str], H: set[GCI]) -> str:
-        sig_str   = ", ".join(sorted(sig))
-        roles_str = ", ".join(sorted(roles)) if roles else "(none)"
-        h_str = hypothesis_to_manchester(H)
-        return (
-            f"Concept names in scope: {sig_str}.\n"
-            f"Object properties in scope: {roles_str}.\n\n"
-            "Hypothesis H:\n"
-            f"{h_str}\n\n"
-            "Does H capture all subsumptions entailed by the target ontology O?\n"
-            "Reply with exactly one word: yes or no."
-        )
-
-    @staticmethod
-    def _build_eq_counterexample_prompt(
-        sig: set[str], roles: set[str], H: set[GCI], feedback: Sequence[str] = (),
-    ) -> str:
-        """*feedback*: why earlier answers to this prompt could not be used, one
-        line each.  Generation is deterministic, so a retry must change the prompt."""
-        sig_str   = ", ".join(sorted(sig))
-        roles_str = ", ".join(sorted(roles)) if roles else "(none)"
-        h_str = hypothesis_to_manchester(H)
-        retry = "".join(f"{line}\n" for line in feedback)
-        return (
-            f"Concept names in scope: {sig_str}.\n"
-            f"Object properties in scope: {roles_str}.\n\n"
-            "Hypothesis H:\n"
-            f"{h_str}\n\n"
-            + (f"{retry}\n" if retry else "")
-            + "Name one GCI that is entailed by target ontology O but is NOT entailed by H.\n"
-            "Output exactly one line in Manchester syntax, e.g.: Cat SubClassOf Animal\n"
-            "Output nothing else."
-        )
 
     # ------------------------------------------------------------------
     # LLM query helper
@@ -591,7 +314,7 @@ class LLMOracle(Oracle):
         if self._prompt_style in PAPER_SYSTEM_PROMPTS:
             return self._paper_MQ(gci)
         return self._query(
-            self._build_mq_prompt(self._sig, self._roles, gci),
+            prompts.mq_prompt(self._sig, self._roles, gci),
             parse=lambda r: self._parse_yes_no(r, f"MQ for '{gci_to_manchester(gci)}'"),
             label="MQ",
         )
@@ -632,7 +355,7 @@ class LLMOracle(Oracle):
         Whether H already entails it is checked by learn_el_terminology.
         """
         equivalent = self._query(
-            self._build_eq_judge_prompt(self._sig, self._roles, hypothesis),
+            prompts.eq_judge_prompt(self._sig, self._roles, hypothesis),
             parse=lambda r: self._parse_yes_no(r, "EQ judge"),
             label="EQ (judge)",
         )
@@ -640,10 +363,10 @@ class LLMOracle(Oracle):
             return None
         reasons: list[str] = []   # why each earlier answer could not be used
         for _ in range(self._EQ_ATTEMPTS):
-            feedback = [f"Your previous answer could not be used: {r}." for r in reasons]
+            feedback = [prompts.unusable_feedback(r) for r in reasons]
             try:
                 counterexample = self._query(
-                    self._build_eq_counterexample_prompt(self._sig, self._roles, hypothesis, feedback),
+                    prompts.eq_counterexample_prompt(self._sig, self._roles, hypothesis, feedback),
                     parse=self._parse_counterexample,
                     label="EQ (counterexample)",
                 )

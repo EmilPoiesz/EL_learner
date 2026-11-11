@@ -23,7 +23,9 @@ import pytest
 
 from learner.cache.cache import LLMCache
 from learner.el_algorithm import ELConcept, GCI, OracleError
-from learner.llm_oracle import LLMOracle, parse_manchester_gci
+from learner import llm_prompts as prompts
+from learner.el_syntax import parse_manchester_gci
+from learner.llm_oracle import LLMOracle
 
 _GCI = GCI(ELConcept({"A"}), ELConcept({"B"}))
 
@@ -79,7 +81,7 @@ def test_3_stale_cached_response_regenerated(tmp_path):
     oracle = _oracle(tmp_path, ["yes"])
     messages = [
         {"role": "system", "content": "system"},
-        {"role": "user", "content": LLMOracle._build_mq_prompt({"A", "B"}, set(), _GCI)},
+        {"role": "user", "content": prompts.mq_prompt({"A", "B"}, set(), _GCI)},
     ]
     params = {"max_new_tokens": 16, "do_sample": False}
     oracle._cache.set("stub", messages, "cut off mid-sentence", params)   # as an older version cached it
