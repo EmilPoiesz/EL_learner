@@ -57,6 +57,7 @@ class Option:
     invert: bool = False            # bool whose *false* sets the flag (phase1 -> --no-precompute)
     aliases: tuple[tuple[str, str], ...] = ()   # (old name, choice it now is)
     minimum: int = 0                # for an int
+    multi: bool = False             # a choice that may also be a list: one run per value
     see: tuple[str, ...] = field(default=())   # experiments that tell its story
 
 
@@ -139,7 +140,8 @@ OPTIONS: tuple[Option, ...] = (
            flag="--max-new-tokens", nullable=True, env="MAX_NEW_TOKENS", see=("cex20",)),
     Option("oracle.mq.prompt", "Prompt", "choice",
            "How a membership query is asked. With a natural-language style the EQs are asked in natural "
-           "language too.", flag="--prompt", default="ours", env="PROMPTS",
+           "language too. A list runs each prompt in turn (one run per prompt and seed).",
+           flag="--prompt", default="ours", env="PROMPTS", multi=True,
            choices=(("ours", "This project's yes/no question naming the scope; the whole GCI at once."),
                     ("paper-simple", "The paper's simple system prompt, 'Answer with only True or False.', and "
                                      "the axiom as the OWL API writes it. " + _PAPER_MQ),
@@ -149,6 +151,15 @@ OPTIONS: tuple[Option, ...] = (
                                         "be considered a subcategory of 'Animal'?\""),
                     ("paper-nl-advanced", "paper-advanced in the paper's natural language.")),
            see=("cex4",)),
+    Option("oracle.mq.asked_as", "Asked as", "choice",
+           "How the learner's own MQs (Phase 1 and refinement) are asked. With a paper prompt only.",
+           flag="--mq-asked-as", default="paper",
+           choices=(("paper", "The paper's MQ in the prompt style, as the reproduction asks it."),
+                    ("check", "Exactly as the counterexample check is asked (its form, system prompt and "
+                              "question), so the model is not asked one statement in two ways within a run. "
+                              "In cex19, half the accepted counterexamples were denied by the next "
+                              "refinement MQ under the paper's prompt.")),
+           see=("cex19",)),
     Option("oracle.eq.kind", "Equivalence oracle", "choice",
            "Who answers the equivalence queries.", flag="--eq", default="oracle", env="EQ",
            choices=(("oracle", "The model: it judges whether H is complete and names a counterexample."),
@@ -238,8 +249,12 @@ def _check_value(opt: Option, value: Any) -> None:
         raise ConfigError(where + "may not be null")
     if opt.kind == "choice":
         allowed = [c for c, _ in opt.choices]
-        if value not in allowed:
-            raise ConfigError(where + f"{value!r} is not one of {', '.join(map(str, allowed))}")
+        values = value if opt.multi and isinstance(value, list) else [value]
+        if not values:
+            raise ConfigError(where + "expected at least one choice")
+        for v in values:
+            if v not in allowed:
+                raise ConfigError(where + f"{v!r} is not one of {', '.join(map(str, allowed))}")
     elif opt.kind == "bool":
         if not isinstance(value, bool):
             raise ConfigError(where + f"expected true or false, not {value!r}")
@@ -320,6 +335,10 @@ def to_argv(config: dict) -> list[str]:
         if opt.key not in flat or flat[opt.key] is None:
             continue
         v = flat[opt.key]
+        if opt.multi and isinstance(v, list):
+            if len(v) != 1:
+                continue                 # several: the caller picks one (check_run)
+            v = v[0]
         if opt.key == "ontologies":
             if len(v) == 1:
                 argv += ["--ontology", ontology_path(v[0])]
@@ -348,6 +367,10 @@ def check_run(config: dict, ontology: str, seed: int, argv: list[str]) -> None:
         raise ConfigError(f"ontologies: the config names {', '.join(names)}; pick one with --ontology")
     if names and ontology not in {ontology_path(n) for n in names} | set(names):
         raise ConfigError(f"ontologies: {ontology} is not in the config ({', '.join(names)})")
+    for opt in OPTIONS:
+        v = flat.get(opt.key)
+        if opt.multi and isinstance(v, list) and len(v) > 1 and not given(opt.flag):
+            raise ConfigError(f"{opt.key}: the config names {', '.join(map(str, v))}; pick one with {opt.flag}")
     seeds = flat.get("seeds")
     if seeds and len(seeds) > 1 and not given("--seed"):
         raise ConfigError(f"seeds: the config names {seeds}; pick one with --seed")

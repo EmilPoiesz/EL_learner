@@ -236,6 +236,7 @@ def _run_grounded_llm_demo(
     seed: int | None = 0,
     temperature: float = 0.0,
     eq_settings: EQSettings | None = None,
+    mq_asked_as: str = "paper",
     max_eqs: int | None = None,
     precomputation: bool = True,
     max_failed_eqs: int = 0,
@@ -270,6 +271,8 @@ def _run_grounded_llm_demo(
         print("  Phase 1  : skipped, H starts empty (no MQ per pair of concept names)")
     if max_failed_eqs:
         print(f"  Stopping : after {max_failed_eqs + 1} EQs in a row without a usable answer")
+    if mq_asked_as != "paper":
+        print("  MQs      : asked as the counterexample check is (Phase 1 and refinement)")
 
     classpath = build_classpath(gateway_jar_dir)
     print("\n  Starting ELK H-reasoner …")
@@ -296,6 +299,7 @@ def _run_grounded_llm_demo(
                 seed=seed or 0,
                 eq_settings=eq_settings,
                 truth=judge,   # labels proposals in the log; never used for learning
+                mq_asked_as=mq_asked_as,
                 # None keeps LLMOracle's default budget.
                 **({} if max_new_tokens is None else {"max_new_tokens": max_new_tokens}),
             ) as oracle:
@@ -585,6 +589,13 @@ def build_parser() -> argparse.ArgumentParser:
              "with paper-nl-*, in its natural-language form (axioms/signature only).",
     )
     llm_grp.add_argument(
+        "--mq-asked-as", choices=["paper", "check"], default="paper",
+        help="With a paper prompt: ask the learner's own MQs (Phase 1, refinement) as the "
+             "paper does ('paper'), or exactly as the counterexample check is asked "
+             "('check': --eq-check, --eq-check-system, --eq-check-question), so that one "
+             "statement gets one answer within a run.",
+    )
+    llm_grp.add_argument(
         "--temperature", type=float, default=0.0, metavar="T",
         help="0 (default): greedy decoding.  Above 0: sample at T with Ollama's other "
              "defaults, as the paper's runs were answered (axioms/signature only); "
@@ -621,6 +632,9 @@ def parse_args(parser: argparse.ArgumentParser, argv: list[str] | None = None) -
         config = run_config.load(known.config)
         args = parser.parse_args(run_config.to_argv(config) + argv)
         run_config.check_run(config, args.ontology, args.seed, argv)
+        prompts = run_config.value(config, "oracle.mq.prompt")
+        if isinstance(prompts, list) and args.prompt not in prompts:
+            raise run_config.ConfigError(f"oracle.mq.prompt: {args.prompt} is not in the config ({', '.join(prompts)})")
     except run_config.ConfigError as exc:
         parser.error(f"--config {known.config}: {exc}")
     return args
@@ -666,6 +680,8 @@ if __name__ == "__main__":
             )
         except ValueError as exc:   # a combination the settings refuse, e.g. combined + g2
             parser.error(str(exc))
+        if args.mq_asked_as == "check" and args.prompt == "ours":
+            parser.error("--mq-asked-as check needs a paper prompt (--prompt paper-*)")
         ok = _run_grounded_llm_demo(
             ontology=args.ontology,
             model=args.model,
@@ -684,6 +700,7 @@ if __name__ == "__main__":
             max_eqs=args.max_eqs,
             precomputation=not args.no_precompute,
             max_failed_eqs=args.max_failed_eqs,
+            mq_asked_as=args.mq_asked_as,
         )
     else:
         if args.dry_run:

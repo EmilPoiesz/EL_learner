@@ -680,3 +680,24 @@ def test_42_learners_notation_read_back():
     with pytest.raises(ValueError):
         parse_dl_gci("Professor SubClassOf Person")
 
+
+@pytest.mark.parametrize("as_check", [False, True])
+def test_43_mqs_asked_as_the_check(tmp_path, as_check):
+    # mq_asked_as="check": the learner's MQs take the check's form (natural language, S4),
+    # so one statement is not asked in two ways within a run (cex19).
+    gci = GCI(ELConcept({"A"}), ELConcept(existentials={("r", ELConcept({"B"}))}))
+    oracle = _oracle(tmp_path, ["True"])
+    oracle._prompt_style = "paper-advanced"
+    oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
+    oracle._roles = {"r"}
+    oracle._eq = EQSettings(check="nl", check_system="s4")
+    oracle._mq_as_check = as_check
+    assert oracle.MQ(gci) is True
+    assert oracle.mq_count == 1
+    if as_check:
+        assert oracle._pipe.prompts == ["Can A be considered a subcategory of 'something that r some B'?"]
+        assert oracle._pipe.systems == [CHECK_SYSTEM_PROMPTS["s4"]]
+    else:
+        assert oracle._pipe.prompts == ["A SubClassOf r some B"]
+        assert oracle._pipe.systems == [PAPER_SYSTEM_PROMPTS["paper-advanced"]]
+

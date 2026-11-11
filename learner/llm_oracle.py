@@ -40,6 +40,10 @@ PROMPT_STYLES = ("ours", *PAPER_SYSTEM_PROMPTS)
 # How an EQ is asked: "judge" asks yes/no whether H is complete, then for a
 # counterexample; "combined" asks once for a counterexample or "yes".
 EQ_MODES = ("judge", "combined")
+# How the learner's own MQs are asked (Phase 1 and refinement): "paper", the paper's MQ in the
+# run's prompt style; "check", exactly as the counterexample check is asked (EQSettings check,
+# check_system, check_question), so that one statement gets one answer within a run.
+MQ_ASKED_AS = ("paper", "check")
 EQ_CHECKS = ("mq", "nl")
 # Generation budget of an EQ answer, at least: a counterexample is a line of text,
 # which the 2 tokens of the paper's MQs would cut off.
@@ -230,6 +234,12 @@ class LLMOracle(Oracle):
         key, so runs with different seeds draw their own answers.
     eq_settings : EQSettings
         How the EQs are asked (see ``EQSettings``); the defaults otherwise.
+    mq_asked_as : str
+        ``"paper"`` (default): the learner's MQs (Phase 1, refinement) are the paper's MQ
+        in the prompt style.  ``"check"``: they are asked exactly as the counterexample
+        check is (``EQSettings``), so the model is not asked one statement in two forms
+        within a run (cex19: half the accepted counterexamples were denied by the next
+        refinement MQ).  Needs a paper prompt style.
     truth : callable, optional
         Whether O entails a GCI (e.g. ELK over the ontology file).  Only to label
         the proposed counterexamples in the log and in ``eq_outcomes``: it is
@@ -247,6 +257,7 @@ class LLMOracle(Oracle):
     truncated = 0
     _generate_kwargs: dict = {}   # model_defaults_off(model)
     _failed_eqs = 0               # EQs in a row that gave no usable answer
+    _mq_as_check = False          # mq_asked_as == "check"
     _truth: Callable[[GCI], bool] | None = None   # labels proposals for the log only
     eq_outcomes: Counter | None = None            # what each counterexample attempt came to
 
@@ -266,11 +277,17 @@ class LLMOracle(Oracle):
         seed: int = 0,
         eq_settings: EQSettings = EQSettings(),
         truth: Callable[[GCI], bool] | None = None,
+        mq_asked_as: str = "paper",
     ):
         super().__init__()
         if prompt_style not in PROMPT_STYLES:
             raise ValueError(f"prompt_style must be one of {PROMPT_STYLES}, not {prompt_style!r}")
         self._prompt_style = prompt_style
+        if mq_asked_as not in MQ_ASKED_AS:
+            raise ValueError(f"mq_asked_as must be one of {MQ_ASKED_AS}, not {mq_asked_as!r}")
+        if mq_asked_as == "check" and prompt_style not in PAPER_SYSTEM_PROMPTS:
+            raise ValueError("mq_asked_as 'check' needs a paper prompt style")
+        self._mq_as_check = mq_asked_as == "check"
         self._eq = eq_settings
         self._truth = truth
         self.eq_outcomes = Counter()
@@ -651,6 +668,8 @@ class LLMOracle(Oracle):
         With a paper prompt style, see ``_paper_MQ``.
         """
         if self._prompt_style in PAPER_SYSTEM_PROMPTS:
+            if self._mq_as_check:
+                return self._check_style_MQ(gci, "MQ (as check")
             return self._paper_MQ(gci)
         return self._query(
             prompts.mq_prompt(self._sig, self._roles, gci),
@@ -803,13 +822,18 @@ class LLMOracle(Oracle):
         if self._prompt_style in PAPER_SYSTEM_PROMPTS and (
                 check == "nl" or system != "paper" or question != "paper"):
             self.mq_count += 1
-            return self._paper_MQ(
-                gci, nl=True if check == "nl" else None,
-                system=CHECK_SYSTEM_PROMPTS[system],
-                question=prompts.every_question if question == "every" else None,
-                label=f"MQ (check, {system} system prompt"
-                      + (", every question)" if question == "every" else ")"))
+            return self._check_style_MQ(gci, "MQ (check")
         return self.MQ(gci)
+
+    def _check_style_MQ(self, gci: GCI, label: str) -> bool:
+        """The paper's MQ as the counterexample check asks it: in natural language with
+        ``check == "nl"``, under the check's system prompt, with the check's question."""
+        check, system, question = self._eq.check, self._eq.check_system, self._eq.check_question
+        return self._paper_MQ(
+            gci, nl=True if check == "nl" else None,
+            system=CHECK_SYSTEM_PROMPTS[system],
+            question=prompts.every_question if question == "every" else None,
+            label=f"{label}, {system} system prompt" + (", every question)" if question == "every" else ")"))
 
     def _outcome(self, kind: str) -> None:
         if self.eq_outcomes is None:

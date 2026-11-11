@@ -11,6 +11,7 @@ Tests for learner/run_config.py and demo.py --config.
 8  the oracle kinds' old names (taught, parametric) still work, as the new ones
 9  review fixes: a missing file and attempts 0 are config errors; --seed=N counts as picking
    a seed; --no-eq-memory and --precompute undo the config's memory and skipped Phase 1
+10 a list of MQ prompts: one run per prompt, so demo.py must be given one of them
 """
 
 from __future__ import annotations
@@ -190,3 +191,24 @@ def test_9_review_fixes(tmp_path, capsys):
                                     "--no-eq-memory", "--precompute"])
     assert not args.eq_memory and not args.no_precompute
     assert demo.parse_args(parser, ["--eq-memory", "--no-precompute"]).no_precompute
+
+
+def test_10_prompt_list(tmp_path, capsys):
+    many = {**STANDARD, "oracle": {**STANDARD["oracle"], "mq": {"prompt": ["paper-simple", "paper-nl-advanced"],
+                                                                  "asked_as": "paper"}}}
+    path = _write(tmp_path, many)
+    assert "--prompt" not in run_config.to_argv(many)
+    pick = ["--config", path, "--ontology", "ontologies/animals.owl", "--seed", "0"]
+    parser = demo.build_parser()
+    assert demo.parse_args(parser, pick + ["--prompt", "paper-nl-advanced"]).prompt == "paper-nl-advanced"
+    for extra, message in (([], "pick one with --prompt"), (["--prompt", "paper-advanced"], "not in the config")):
+        with pytest.raises(SystemExit):
+            demo.parse_args(parser, pick + extra)
+        assert message in capsys.readouterr().err
+    one = {**many, "oracle": {**many["oracle"], "mq": {"prompt": ["paper-simple"], "asked_as": "check"}}}
+    argv = run_config.to_argv(one)
+    assert argv[argv.index("--prompt") + 1] == "paper-simple"
+    assert argv[argv.index("--mq-asked-as") + 1] == "check"
+    with pytest.raises(ConfigError, match="'paper-s' is not one of"):
+        run_config.load(_write(tmp_path, {**many, "oracle": {**many["oracle"], "mq": {"prompt": ["paper-s"]}}}, "bad.json"))
+
