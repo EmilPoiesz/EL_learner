@@ -13,6 +13,9 @@ of LLMOracle, without a reasoner or a model.
 7  paper MQ: H-entailed GCI answered without the model
 8  paper MQ: right-hand conjunction asked per conjunct, skipping those H entails
 9  top: ⊤ (owl:Thing) is one more concept name, in |X| and in the statements
+10 paper MQ text is the OWL API 5's Manchester rendering, as upstream sends it
+11 natural-language styles: upstream's addExtraSemantic rewrite, quirks included
+12 the five ontologies' class namespaces sort before owl:Thing's, as upstream_manchester assumes
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ import pytest
 from learner.cache.cache import LLMCache
 from learner.el_algorithm import ELConcept, GCI
 from learner.llm_oracle import LLMOracle
-from learner.upstream import PAPER_SYSTEM_PROMPTS, paper_is_true
+from learner.upstream import PAPER_SYSTEM_PROMPTS, paper_is_true, upstream_gci_text, upstream_natural_language
 from learner.pac import PACOracle, PACSampler, role_names
 
 CLASSES = {"A", "B", "C", "D"}
@@ -147,7 +150,7 @@ class _StubPipe:
         return [{"generated_text": messages + [{"role": "assistant", "content": self.responses.pop(0)}]}]
 
 
-def _paper_oracle(tmp_path, responses, h_entailed: set[GCI]) -> LLMOracle:
+def _paper_oracle(tmp_path, responses, h_entailed: set[GCI] = frozenset(), style="paper-advanced") -> LLMOracle:
     oracle = LLMOracle.__new__(LLMOracle)
     oracle.mq_count = oracle.eq_count = 0
     oracle._pipe = _StubPipe(responses)
@@ -155,8 +158,8 @@ def _paper_oracle(tmp_path, responses, h_entailed: set[GCI]) -> LLMOracle:
     oracle._max_new_tokens = 2
     oracle._pad_token_id = 0
     oracle._verbose = False
-    oracle._prompt_style = "paper-advanced"
-    oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
+    oracle._prompt_style = style
+    oracle._system_msg = PAPER_SYSTEM_PROMPTS[style]
     oracle._sig = set(CLASSES)
     oracle._roles = set(ROLES)
     oracle._h_reasoner = lambda gci: gci in h_entailed
@@ -177,7 +180,7 @@ def test_8_paper_mq_splits_conjunction(tmp_path):
     known = GCI(lhs, ELConcept({"B"}))              # H entails A ⊑ B: not asked
     oracle = _paper_oracle(tmp_path, ["True", "False"], h_entailed={known})
     assert oracle.MQ(GCI(lhs, rhs)) is False
-    assert oracle._pipe.prompts == ["A SubClassOf C", "A SubClassOf (r some D)"]
+    assert oracle._pipe.prompts == ["A SubClassOf C", "A SubClassOf r some D"]
 
 
 def test_9_top_is_one_more_concept_name():
@@ -194,3 +197,51 @@ def test_9_top_is_one_more_concept_name():
     # Without top the same seed never draws ⊤.
     plain = PACSampler(CLASSES, ROLES, hypothesis_size=40)
     assert all(top not in (g.lhs, g.rhs) for g in iter(plain.next_statement, None))
+
+
+_E = lambda *atoms, **ex: ELConcept(set(atoms), {(r, f) for r, f in ex.items()})
+
+
+@pytest.mark.parametrize("gci, text", [
+    # The OWL API 5.1.20 renderer's output (render, then \n -> " ", then "  " -> " ").
+    (GCI(_E("Module"), _E(employed_by=_E("Person"))), "Module SubClassOf employed_by some Person"),
+    (GCI(_E("Module"), _E(employed_by=_E("Person", "Professor"))),
+     "Module SubClassOf employed_by some (Person and Professor)"),
+    (GCI(_E("Module"), _E(employed_by=_E(teaches=_E("Module", "Professor")))),
+     "Module SubClassOf employed_by some (teaches some (Module and Professor))"),
+    (GCI(_E("Module", employed_by=_E("Person")), _E("Professor")),
+     "Module and (employed_by some Person) SubClassOf Professor"),
+    (GCI(_E(), _E("Module")), "Thing SubClassOf Module"),
+    (GCI(_E("B", "a", r=_E(), s=_E("A")), _E(r=_E("Z"))),
+     "B and a and (r some Thing) and (s some A) SubClassOf r some Z"),
+    # Thing is a named class whose IRI sorts after the target's: after Z here.
+    (GCI(ELConcept({"A"}, {("r", _E("Z")), ("r", _E())}), _E(r=_E())),
+     "A and (r some Z) and (r some Thing) SubClassOf r some Thing"),
+])
+def test_10_upstream_manchester(gci, text):
+    assert upstream_gci_text(gci) == text
+
+
+def test_11_natural_language(tmp_path):
+    nl = upstream_natural_language
+    assert nl("Cat SubClassOf Animal") == "Can Cat be considered a subcategory of 'Animal'?"
+    assert nl("A and (r some B) SubClassOf C") == (
+        "Can A that is also something that (r some B) be considered a subcategory of 'C'?")
+    assert nl("A SubClassOf r some B") == "Can A be considered a subcategory of 'something that r some B'?"
+    # Split at the first " and " before the brackets are looked at, as upstream does.
+    assert nl("A SubClassOf r some (B and C)") == (
+        "Can A be considered a subcategory of 'something that r some (B that is also C)'?")
+
+    oracle = _paper_oracle(tmp_path, ["True"], h_entailed=set(), style="paper-nl-advanced")
+    assert oracle.MQ(GCI(_E("A"), _E(r=_E("B")))) is True
+    assert oracle._pipe.prompts == ["Can A be considered a subcategory of 'something that r some B'?"]
+
+
+@pytest.mark.parametrize("name", ["animals", "cell", "football", "generations", "university"])
+def test_12_namespaces_sort_before_owl(name):
+    import pathlib
+    import rdflib
+    from rdflib.namespace import OWL, RDF
+    g = rdflib.Graph().parse(pathlib.Path(__file__).parent.parent / "ontologies" / f"{name}.owl")
+    iris = {str(c) for c in g.subjects(RDF.type, OWL.Class) if isinstance(c, rdflib.URIRef)} - {str(OWL.Thing)}
+    assert iris and all(iri < str(OWL.Thing) for iri in iris)

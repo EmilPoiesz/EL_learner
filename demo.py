@@ -429,9 +429,11 @@ if __name__ == "__main__":
              "Reasoning models need room to finish thinking before their answer.",
     )
     llm_grp.add_argument(
-        "--prompt", choices=["ours", "paper-simple", "paper-advanced"], default="ours",
+        "--prompt", choices=["ours", "paper-simple", "paper-advanced", "paper-nl-simple", "paper-nl-advanced"],
+        default="ours",
         help="MQ prompts: this project's yes/no prompts, or the original "
-             "ExactLearner-LLM's True/False prompts (taught/parametric only).",
+             "ExactLearner-LLM's True/False prompts, the axiom in Manchester syntax or, "
+             "with paper-nl-*, in its natural-language form (taught/parametric only).",
     )
     llm_grp.add_argument(
         "--dry-run", action="store_true",

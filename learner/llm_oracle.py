@@ -20,7 +20,8 @@ from learner.el_algorithm import Oracle, OracleError, GCI
 from learner.el_syntax import gci_names, gci_to_manchester, parse_manchester_gci
 from learner.hypothesis_reasoner import HypothesisReasoner
 from learner import llm_prompts as prompts
-from learner.upstream import PAPER_SYSTEM_PROMPTS, paper_is_true, rhs_conjuncts
+from learner.upstream import (PAPER_NL_STYLES, PAPER_SYSTEM_PROMPTS, paper_is_true, rhs_conjuncts,
+                              upstream_gci_text, upstream_natural_language)
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,8 @@ class LLMOracle(Oracle):
         "parametric": the model answers from what it knows, as in the paper).
     prompt_style : str
         ``"ours"`` (default): this project's yes/no prompts.
-        ``"paper-simple"`` / ``"paper-advanced"``: the original ExactLearner-LLM's
+        ``"paper-simple"`` / ``"paper-advanced"``, and their natural-language
+        forms ``"paper-nl-simple"`` / ``"paper-nl-advanced"``: the original ExactLearner-LLM's
         MQ setup — its system prompt, the axiom alone as the user message,
         True/False read with ``paper_is_true``, and its AxiomSimplifier: an MQ
         that H already entails is answered True without the model, and a
@@ -183,15 +185,18 @@ class LLMOracle(Oracle):
     # LLM query helper
     # ------------------------------------------------------------------
 
-    def _query(self, prompt: str, parse: Callable[[str], T], label: str = "QUERY") -> T:
+    def _query(self, prompt: str, parse: Callable[[str], T], label: str = "QUERY",
+               axiom: str | None = None) -> T:
         """
         Ask the LLM and return ``parse(response)``.
 
         A response is cached only once ``parse`` accepts it, so a response that
         cannot be parsed (e.g. reasoning cut off by max_new_tokens) is never
         replayed from the cache.  A cached response that no longer parses, left
-        by an older version, is treated as a miss and regenerated.
+        by an older version, is treated as a miss and regenerated.  *axiom*: the
+        query's GCI, shown after the prompt in verbose output.
         """
+        shown = prompt + (f"\n[AXIOM]\n{axiom}" if axiom else "")
         messages = [
             {"role": "system", "content": self._system_msg},
             {"role": "user",   "content": prompt},
@@ -204,7 +209,7 @@ class LLMOracle(Oracle):
         if cached is not None:
             if self._verbose:
                 print(f"\n--- {label} (CACHED) ---")
-                print("[PROMPT]\n" + prompt)
+                print("[PROMPT]\n" + shown)
                 print("[RESPONSE]\n" + cached)
             try:
                 return parse(cached)
@@ -218,7 +223,7 @@ class LLMOracle(Oracle):
 
         if self._verbose:
             print(f"\n--- {label} ---")
-            print("[PROMPT]\n" + prompt)
+            print("[PROMPT]\n" + shown)
             print("[RESPONSE]\n" + response)
 
         result = parse(response)  # raises ValueError before anything is cached
@@ -324,15 +329,22 @@ class LLMOracle(Oracle):
         MQ as the original ExactLearner-LLM's LLMEngine with its AxiomSimplifier:
         True without asking if H entails the GCI; otherwise each right-hand
         conjunct H does not entail is asked on its own (the axiom alone as the
-        user message), stopping at the first that is not True.
+        user message, as the OWL API renders it, or in upstream's natural
+        language with a ``paper-nl-*`` style), stopping at the first that is not
+        True.
         """
+        nl = self._prompt_style in PAPER_NL_STYLES
         if self._h_reasoner(gci):
             return True
         for conjunct in rhs_conjuncts(gci.rhs):
             part = GCI(gci.lhs, conjunct)
             if self._h_reasoner(part):
                 continue
-            if not self._query(gci_to_manchester(part), parse=paper_is_true, label="MQ"):
+            text = upstream_gci_text(part)
+            if nl:
+                text = upstream_natural_language(text)
+            # The axiom in this project's syntax, for scripts/score_mqs.py.
+            if not self._query(text, parse=paper_is_true, label="MQ", axiom=gci_to_manchester(part)):
                 return False
         return True
 
