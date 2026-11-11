@@ -48,9 +48,11 @@ class _StubPipe:
         self.prompts: list[str] = []
         self.systems: list[str] = []
         self.budgets: list[int] = []
+        self.kwargs: list[dict] = []
 
-    def __call__(self, messages, generation_config=None):
+    def __call__(self, messages, generation_config=None, **kwargs):
         self.calls += 1
+        self.kwargs.append(kwargs)
         self.prompts.append(messages[-1]["content"])
         self.systems.append(messages[0]["content"])
         self.budgets.append(generation_config.max_new_tokens if generation_config else None)
@@ -566,3 +568,27 @@ def test_37_thinking_model_answer_after_think(tmp_path):
     assert oracle.MQ(_GCI) is True
     assert oracle.MQ(GCI(ELConcept({"B"}), ELConcept({"A"}))) is False
     assert oracle.truncated == 1
+
+
+def test_38_model_generation_defaults_off(tmp_path):
+    # transformers 4.50-4.57 fill settings left at the library default from the model's own
+    # generation config (Olmo: sampling at T 0.6, cex20); use_model_defaults=False stops that.
+    # A generate() without the parameter (transformers 5) gets nothing.
+    from learner.llm_oracle import model_defaults_off
+
+    class Old:
+        def generate(self, inputs=None, generation_config=None, use_model_defaults=None, **kwargs):
+            pass
+
+    class New:
+        def generate(self, inputs=None, generation_config=None, **kwargs):
+            pass
+
+    assert model_defaults_off(Old()) == {"use_model_defaults": False}
+    assert model_defaults_off(New()) == {}
+    assert model_defaults_off(object()) == {}
+
+    oracle = _oracle(tmp_path, ["yes"])
+    oracle._generate_kwargs = model_defaults_off(Old())
+    assert oracle.MQ(_GCI) is True
+    assert oracle._pipe.kwargs == [{"use_model_defaults": False}]

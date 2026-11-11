@@ -45,6 +45,22 @@ EQ_CHECKS = ("mq", "nl")
 EQ_MIN_NEW_TOKENS = 128
 
 
+def model_defaults_off(model) -> dict:
+    """Keyword arguments for generate() that keep the model's own generation defaults
+    out of every query.  transformers 4.50-4.57 replace each setting a GenerationConfig
+    leaves at the library default with the model's default (``use_model_defaults=None``):
+    Olmo-3.1-32B-Think's do_sample=True and temperature 0.6 turned greedy queries into
+    sampled ones, and a counterexample temperature of 1.0 into 0.6 (cex20).  With
+    ``use_model_defaults=False`` only the special tokens (eos, bos, pad) come from the
+    model.  Versions whose generate() has no such parameter get nothing."""
+    import inspect
+    try:
+        params = inspect.signature(model.generate).parameters
+    except (TypeError, ValueError, AttributeError):
+        return {}
+    return {"use_model_defaults": False} if "use_model_defaults" in params else {}
+
+
 def sampling_params(temperature: float, seed: int) -> dict | None:
     """Generation settings for sampling at *temperature* with Ollama's other
     defaults, or None (greedy) at 0.  The seed only keys the cache."""
@@ -216,6 +232,7 @@ class LLMOracle(Oracle):
     # Set in __init__ from the chat template; class defaults for oracles built without it.
     _thinks = False
     truncated = 0
+    _generate_kwargs: dict = {}   # model_defaults_off(model)
 
     def __init__(
         self,
@@ -265,6 +282,7 @@ class LLMOracle(Oracle):
         self._thinks = tokenizer.apply_chat_template(
             [{"role": "user", "content": "x"}], tokenize=False, add_generation_prompt=True,
         ).rstrip().endswith("<think>")
+        self._generate_kwargs = model_defaults_off(self._pipe.model)
         self._model_name = model_name_or_path
         cache_enabled = os.getenv("LLM_CACHE_ENABLED", "1") != "0"
         cache_db = os.getenv("LLM_CACHE_DB", "llm_cache.db")
@@ -373,7 +391,7 @@ class LLMOracle(Oracle):
         config = {k: v for k, v in params.items() if k != "seed"}
         generation_config = GenerationConfig(**config, pad_token_id=self._pad_token_id)
 
-        outputs = self._pipe(messages, generation_config=generation_config)
+        outputs = self._pipe(messages, generation_config=generation_config, **self._generate_kwargs)
         response = outputs[0]["generated_text"][-1]["content"].strip()
 
         if self._verbose:
