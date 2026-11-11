@@ -22,7 +22,7 @@ def concept_to_manchester(concept: ELConcept) -> str:
     
     # x here is the existential ∃r.A, where the x[0] is r and x[1] is A. We sort
     # alphabetically by relation r, then alphabetically by concept name.
-    for role, filler in sorted(concept.existentials, key=lambda x: (x[0], str(x[1]))):
+    for role, filler in sorted(concept.existentials, key=existential_key):
         filler_str = concept_to_manchester(filler)
         if (len(filler.atoms) + len(filler.existentials)) > 1: filler_str = "(" + filler_str + ")"
         parts.append(f"({role} some {filler_str})")
@@ -146,18 +146,14 @@ def parse_triple(s: str) -> GCI:
 def without_brackets(text: str) -> str:
     """*text* without brackets that enclose all of it: "((A SubClassOf B))" → "A SubClassOf B"."""
     text = text.strip()
-    while text.startswith("(") and _matching_paren_or_none(text, 0) == len(text) - 1:
+    while text.startswith("("):
+        try:
+            if _matching_paren(text, 0) != len(text) - 1:
+                break
+        except ValueError:              # an unmatched bracket: leave the text as it is
+            break
         text = text[1:-1].strip()
     return text
-
-
-def _matching_paren_or_none(s: str, open_pos: int) -> int | None:
-    depth = 0
-    for i in range(open_pos, len(s)):
-        depth += {"(": 1, ")": -1}.get(s[i], 0)
-        if depth == 0:
-            return i
-    return None
 
 
 # ---------------------------------------------------------------------------

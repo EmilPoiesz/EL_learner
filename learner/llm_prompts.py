@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from learner.el_algorithm import GCI
+from learner.el_algorithm import GCI, existential_key
 from learner.el_syntax import gci_to_manchester, gci_to_nl, hypothesis_to_manchester, hypothesis_to_nl
 
 
@@ -141,7 +141,7 @@ def _concept_phrase(concept) -> str:
     atoms = sorted(concept.atoms)
     head = " that is also ".join(atoms) if atoms else "thing"
     clauses = [f"is related by {role} to some {_concept_phrase(filler)}"
-               for role, filler in sorted(concept.existentials, key=lambda x: (x[0], str(x[1])))]
+               for role, filler in sorted(concept.existentials, key=existential_key)]
     return " that ".join([head, *clauses]) if clauses else head
 
 
@@ -150,7 +150,7 @@ def every_question(gci: GCI) -> str:
     "every Bird is related by has_part to some Wing"."""
     parts = [f"is {_article(a)} {a}" for a in sorted(gci.rhs.atoms)]
     parts += [f"is related by {role} to some {_concept_phrase(filler)}"
-              for role, filler in sorted(gci.rhs.existentials, key=lambda x: (x[0], str(x[1])))]
+              for role, filler in sorted(gci.rhs.existentials, key=existential_key)]
     return f"Is it true that every {_concept_phrase(gci.lhs)} {' and '.join(parts)}?"
 
 

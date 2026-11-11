@@ -45,6 +45,13 @@ EQ_CHECKS = ("mq", "nl")
 EQ_MIN_NEW_TOKENS = 128
 
 
+def after_think(text: str) -> str:
+    """The text after the last </think> (all of *text* without one): the answer of a
+    model that reasons first, whether its chat template opens <think> (``_thinks``) or
+    it writes <think>…</think> itself.  The one place this cut is made."""
+    return text.rsplit("</think>", 1)[-1]
+
+
 def model_defaults_off(model) -> dict:
     """Keyword arguments for generate() that keep the model's own generation defaults
     out of every query.  transformers 4.50-4.57 replace each setting a GenerationConfig
@@ -433,7 +440,7 @@ class LLMOracle(Oracle):
         if self._cut_off(response):
             self.truncated += 1
             return ""
-        return response.rsplit("</think>", 1)[-1].strip()
+        return after_think(response).strip()
 
     @staticmethod
     def _extract_yes_no(response: str) -> str | None:
@@ -445,7 +452,7 @@ class LLMOracle(Oracle):
         first yes/no there ("Yes — no axiom contradicts it" is a yes).  Only
         when that line has none is the last yes/no anywhere in the text used.
         """
-        text = response.rsplit("</think>", 1)[-1].lower()
+        text = after_think(response).lower()
         lines = [ln for ln in text.splitlines() if ln.strip()]
         if lines:
             final = re.findall(r'\b(yes|no)\b', lines[-1])
@@ -472,7 +479,7 @@ class LLMOracle(Oracle):
         under it, jobs 4380986-2703958), each without the wrapping a model may add
         (backticks, quotes, a list dash, an "Answer:" label, a full stop).
         """
-        text = response.rsplit("</think>", 1)[-1]
+        text = after_think(response)
         lines = [ln.strip() for ln in text.splitlines() if ln.strip() and ln.strip().strip("`")]
         if not lines:
             raise ValueError(f"no answer line in {response!r}")
@@ -613,7 +620,7 @@ class LLMOracle(Oracle):
     def _parse_combined(self, response: str) -> Optional[GCI]:
         """None when a combined EQ *response* says yes (H is complete), else its
         counterexample, as ``_parse_counterexample``."""
-        text = response.rsplit("</think>", 1)[-1]
+        text = after_think(response)
         lines = [ln.strip() for ln in text.splitlines() if ln.strip().strip("`")]
         statement = re.search(r"subclassof|subcategory", text, flags=re.IGNORECASE)
         if lines and re.match(r"^\W*yes\b", lines[0], flags=re.IGNORECASE) and not statement:
