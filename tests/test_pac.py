@@ -16,6 +16,7 @@ of LLMOracle, without a reasoner or a model.
 10 paper MQ text is the OWL API 5's Manchester rendering, as upstream sends it
 11 natural-language styles: upstream's addExtraSemantic rewrite, quirks included
 12 the five ontologies' class namespaces sort before owl:Thing's, as upstream_manchester assumes
+13 desaturation: names H makes redundant in a node are dropped from both sides before asking
 """
 
 from __future__ import annotations
@@ -27,7 +28,8 @@ import pytest
 from learner.cache.cache import LLMCache
 from learner.el_algorithm import ELConcept, GCI
 from learner.llm_oracle import LLMOracle
-from learner.upstream import PAPER_SYSTEM_PROMPTS, paper_is_true, upstream_gci_text, upstream_natural_language
+from learner.upstream import (PAPER_SYSTEM_PROMPTS, desaturate, paper_is_true, upstream_gci_text,
+                              upstream_natural_language)
 from learner.pac import PACOracle, PACSampler, role_names
 
 CLASSES = {"A", "B", "C", "D"}
@@ -150,7 +152,8 @@ class _StubPipe:
         return [{"generated_text": messages + [{"role": "assistant", "content": self.responses.pop(0)}]}]
 
 
-def _paper_oracle(tmp_path, responses, h_entailed: set[GCI] = frozenset(), style="paper-advanced") -> LLMOracle:
+def _paper_oracle(tmp_path, responses, h_entailed: set[GCI] = frozenset(), style="paper-advanced",
+                  h_reasoner=None) -> LLMOracle:
     oracle = LLMOracle.__new__(LLMOracle)
     oracle.mq_count = oracle.eq_count = 0
     oracle._pipe = _StubPipe(responses)
@@ -163,7 +166,7 @@ def _paper_oracle(tmp_path, responses, h_entailed: set[GCI] = frozenset(), style
     oracle._system_msg = PAPER_SYSTEM_PROMPTS[style]
     oracle._sig = set(CLASSES)
     oracle._roles = set(ROLES)
-    oracle._h_reasoner = lambda gci: gci in h_entailed
+    oracle._h_reasoner = h_reasoner or (lambda gci: gci in h_entailed)
     oracle._cache = LLMCache(enabled=True, db_path=str(tmp_path / "cache.db"))
     return oracle
 
@@ -246,3 +249,52 @@ def test_12_namespaces_sort_before_owl(name):
     g = rdflib.Graph().parse(pathlib.Path(__file__).parent.parent / "ontologies" / f"{name}.owl")
     iris = {str(c) for c in g.subjects(RDF.type, OWL.Class) if isinstance(c, rdflib.URIRef)} - {str(OWL.Thing)}
     assert iris and all(iri < str(OWL.Thing) for iri in iris)
+
+
+
+def _told(inclusions: set[tuple[str, str]]):
+    """H of atomic inclusions A ⊑ B as an H-reasoner: C ⊑ D when every name of D follows
+    from a name of C and every ∃r.F of D has an ∃r.E in C with E ⊑ F (complete for such H)."""
+    def up(a):
+        seen, todo = {a}, [a]
+        while todo:
+            x = todo.pop()
+            for s, b in inclusions:
+                if s == x and b not in seen:
+                    seen.add(b)
+                    todo.append(b)
+        return seen
+
+    def sub(c: ELConcept, d: ELConcept) -> bool:
+        implied = set().union(*(up(a) for a in c.atoms)) if c.atoms else set()
+        return (d.atoms <= implied and
+                all(any(r == s and sub(e, f) for s, e in c.existentials) for r, f in d.existentials))
+    return lambda gci: sub(gci.lhs, gci.rhs)
+
+
+@pytest.mark.parametrize("gci, asked", [
+    # Dog ⊑ Mammal in H: Mammal is redundant beside Dog, in any node of either side.
+    (GCI(_E("Dog", "Mammal"), _E("Cat")), ["Dog SubClassOf Cat"]),
+    (GCI(_E("A"), _E(r=_E("Dog", "Mammal"))), ["A SubClassOf r some Dog"]),
+    (GCI(_E(r=_E("Dog", "Mammal")), _E("A")), ["r some Dog SubClassOf A"]),
+    (GCI(_E("A", s=_E(r=_E("Dog", "Mammal"))), _E("Cat")), ["A and (s some (r some Dog)) SubClassOf Cat"]),
+    # A right-hand conjunct implied by another is dropped, so it is not asked.
+    (GCI(_E("A"), _E("Dog", "Mammal")), ["A SubClassOf Dog"]),
+    # Equivalent names: the first in sorted order goes, the second stays.
+    (GCI(_E("B", "C"), _E("Cat")), ["C SubClassOf Cat"]),
+    # Names H does not relate stay.
+    (GCI(_E("A", "Cat"), _E("Dog")), ["A and Cat SubClassOf Dog"]),
+])
+def test_13_desaturate(tmp_path, gci, asked):
+    h = _told({("Dog", "Mammal"), ("B", "C"), ("C", "B")})
+    oracle = _paper_oracle(tmp_path, ["True"] * len(asked), h_reasoner=h)
+    assert oracle.MQ(gci) is True
+    assert oracle._pipe.prompts == asked
+
+
+def test_13_desaturate_keeps_equivalence():
+    h = _told({("Dog", "Mammal"), ("Mammal", "Animal")})
+    concept = _E("Animal", "Dog", "Mammal", r=_E("Mammal", "Dog"))
+    simplified = desaturate(concept, lambda c: h(GCI(c, concept)))
+    assert simplified == _E("Dog", r=_E("Dog"))
+    assert h(GCI(simplified, concept)) and h(GCI(concept, simplified))

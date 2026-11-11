@@ -7,6 +7,8 @@ with.  This project's own prompts are in learner/llm_prompts.py.
 
 from __future__ import annotations
 
+from typing import Callable
+
 from learner.el_algorithm import ELConcept, GCI, existential_key
 
 
@@ -126,4 +128,26 @@ def rhs_conjuncts(concept: ELConcept) -> list[ELConcept]:
         [ELConcept({a}) for a in sorted(concept.atoms)]
         + [ELConcept(existentials={e}) for e in sorted(concept.existentials, key=existential_key)]
     )
+
+
+def desaturate(concept: ELConcept, holds: Callable[[ELConcept], bool],
+               rebuild: Callable[[ELConcept], ELConcept] = lambda c: c) -> ELConcept:
+    """Upstream's AxiomSimplifier.desaturate on one side of an MQ: in every node, each
+    concept name is removed in turn, and stays removed if ``holds(whole concept without
+    it)``, which the caller makes "H entails it equivalent to the original" (the paper's
+    "concept simplification for H"). Names are tried in sorted order, as the OWL API
+    orders an intersection's operands; nodes root first. ``rebuild`` puts a filler back
+    into the whole concept."""
+    atoms, existentials = set(concept.atoms), set(concept.existentials)
+    node = lambda: ELConcept(atoms, existentials)
+    for name in sorted(concept.atoms):
+        atoms.discard(name)
+        if not holds(rebuild(node())):
+            atoms.add(name)
+    for role, filler in sorted(concept.existentials, key=existential_key):
+        def child_rebuild(f, role=role, filler=filler):
+            return rebuild(ELConcept(atoms, (existentials - {(role, filler)}) | {(role, f)}))
+        simplified = desaturate(filler, holds, child_rebuild)
+        existentials = (existentials - {(role, filler)}) | {(role, simplified)}
+    return node()
 

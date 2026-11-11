@@ -16,12 +16,13 @@ from typing import Callable, Optional, TypeVar
 from transformers import pipeline, GenerationConfig, set_seed
 
 from learner.cache.cache import LLMCache
-from learner.el_algorithm import Oracle, OracleError, GCI
+from learner.el_algorithm import Oracle, OracleError, ELConcept, GCI
 from learner.el_syntax import gci_names, gci_to_manchester, parse_manchester_gci
 from learner.hypothesis_reasoner import HypothesisReasoner
 from learner import llm_prompts as prompts
-from learner.upstream import (OLLAMA_SAMPLING, PAPER_NL_STYLES, PAPER_SYSTEM_PROMPTS, paper_is_true,
-                              rhs_conjuncts, upstream_gci_text, upstream_natural_language)
+from learner.upstream import (OLLAMA_SAMPLING, PAPER_NL_STYLES, PAPER_SYSTEM_PROMPTS, desaturate,
+                              paper_is_true, rhs_conjuncts, upstream_gci_text,
+                              upstream_natural_language)
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +89,9 @@ class LLMOracle(Oracle):
         True/False read with ``paper_is_true``, and its AxiomSimplifier: an MQ
         that H already entails is answered True without the model, and a
         conjunction on the right is asked one conjunct at a time, skipping the
-        conjuncts H entails.  (Upstream's final desaturation step is not
-        reproduced.)  EQ prompts stay this project's; use PACOracle for the
-        paper's equivalence queries.
+        conjuncts H entails, after both sides are desaturated against H.  EQ
+        prompts stay this project's; use PACOracle for the paper's equivalence
+        queries.
     roles : set[str] | None
         Role names in scope.  ``None``: those in the file's parsed axioms, or
         none without ``ontology_path``.
@@ -350,19 +351,24 @@ class LLMOracle(Oracle):
     def _paper_MQ(self, gci: GCI) -> bool:
         """
         MQ as the original ExactLearner-LLM's LLMEngine with its AxiomSimplifier:
-        True without asking if H entails the GCI; otherwise each right-hand
-        conjunct H does not entail is asked on its own (the axiom alone as the
-        user message, as the OWL API renders it, or in upstream's natural
-        language with a ``paper-nl-*`` style), stopping at the first that is not
-        True.
+        True without asking if H entails the GCI; otherwise the right-hand
+        conjuncts H does not entail are kept, both sides are desaturated (concept
+        names that H makes redundant in a node are dropped), and each remaining
+        right-hand conjunct is asked on its own (the axiom alone as the user
+        message, as the OWL API renders it, or in upstream's natural language
+        with a ``paper-nl-*`` style), stopping at the first that is not True.
         """
         nl = self._prompt_style in PAPER_NL_STYLES
         if self._h_reasoner(gci):
             return True
-        for conjunct in rhs_conjuncts(gci.rhs):
-            part = GCI(gci.lhs, conjunct)
-            if self._h_reasoner(part):
-                continue
+        unknown = [c for c in rhs_conjuncts(gci.rhs) if not self._h_reasoner(GCI(gci.lhs, c))]
+        rhs = ELConcept(frozenset().union(*(c.atoms for c in unknown)),
+                        frozenset().union(*(c.existentials for c in unknown)))
+        # Dropping a name only generalises, so equivalence is "H entails new ⊑ old".
+        lhs = desaturate(gci.lhs, lambda c, old=gci.lhs: self._h_reasoner(GCI(c, old)))
+        rhs = desaturate(rhs, lambda c, old=rhs: self._h_reasoner(GCI(c, old)))
+        for conjunct in rhs_conjuncts(rhs):
+            part = GCI(lhs, conjunct)
             text = upstream_gci_text(part)
             if nl:
                 text = upstream_natural_language(text)

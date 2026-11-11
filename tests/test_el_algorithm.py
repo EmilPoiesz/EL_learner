@@ -62,6 +62,7 @@ Test catalogue
 42  learn_el_terminology    — a counterexample that cannot be normalised is skipped; stops only on a repeat
 43  learn_el_terminology    — an OracleError (EQ or MQ) stops learning and returns the H learned so far
 44  remove_subtree          — removes at the one position its path names, also when the tree shares objects
+45  compute_right_essential — an inconsistent oracle's decomposition cycle stops at the first repeat
 """
 
 from __future__ import annotations
@@ -798,3 +799,19 @@ def test_44_remove_subtree_by_path():
     assert remove_subtree(shared, (("r", X),), "t", C) == expected
     # At the root (empty path), only the root's conjunct goes.
     assert remove_subtree(shared, (), "s", X) == ELConcept(frozenset({"A"}), frozenset({("r", X)}))
+
+
+def test_45_right_essential_stops_at_decomposition_cycle():
+    # An oracle that contradicts itself: A ⊑ B and B ⊑ A are denied, but
+    # A ⊑ B ⊓ ∃r.C and B ⊑ A ⊓ ∃r.C are confirmed, so each one's saturation holds
+    # the other and case (a) alternates A ⊑ ∃r.C, B ⊑ ∃r.C, …  Like upstream's
+    # decomposeRight, the loop stops at the first repeat.
+    def inconsistent_mq(gci: GCI) -> bool:
+        if gci.lhs not in (A, B) or not gci.rhs.atoms <= {"A", "B"}:
+            return False
+        if not gci.rhs.existentials:
+            return gci.rhs.atoms <= gci.lhs.atoms
+        return gci.rhs.existentials == {("r", C)}
+
+    result = compute_right_essential(A, rC, set(), inconsistent_mq, {"A", "B", "C"}, lambda _: False)
+    assert result == GCI(B, rC)

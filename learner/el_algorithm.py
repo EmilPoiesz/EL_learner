@@ -615,6 +615,10 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
     # After each step we re-saturate and re-merge before trying again.
     current_lhs = lhs
     current_rhs = rhs_merged
+    # An oracle that contradicts itself (an LLM) can send case (a) round a cycle,
+    # e.g. A ⊑ ∃r.C, then B ⊑ ∃r.C, then A ⊑ ∃r.C again.  Like upstream's
+    # decomposeRight, stop at the first repeated GCI and return it.
+    visited = {GCI(current_lhs, current_rhs)}
 
     while True:
         candidate = decompose_rhs(current_lhs, current_rhs, MQ, H_MQ)
@@ -629,6 +633,10 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
         logger.info(f"decomposed {candidate}")
         current_lhs = candidate.lhs
         current_rhs = candidate.rhs
+        if candidate in visited:
+            logger.debug("Decomposition cycle at %s; stopping.", candidate)
+            break
+        visited.add(candidate)
 
         current_rhs = saturate_concept_rhs(current_rhs, signature, MQ, lhs=current_lhs)
         current_rhs = sibling_merge(current_rhs, lhs=current_lhs, MQ=MQ)
