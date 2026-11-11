@@ -253,8 +253,8 @@ def _eq_context(sig: set[str], roles: set[str], H: set[GCI], language: str,
 
 
 def eq_judge_prompt(sig: set[str], roles: set[str], H: set[GCI],
-                    language: str = "manchester") -> str:
-    return _eq_context(sig, roles, H, language) + (
+                    language: str = "manchester", feedback: Sequence[str] = ()) -> str:
+    return _eq_context(sig, roles, H, language, feedback) + (
         "Does H capture everything that is true in O?\n"
         "Reply with exactly one word: yes or no."
     )
@@ -300,6 +300,14 @@ def eq_combined_prompt(sig: set[str], roles: set[str], H: set[GCI],
         f"{examples}"
         "Output nothing else."
     )
+
+
+def repeated_feedback(failed: int) -> str:
+    """The line that opens an EQ's prompts after *failed* EQs in a row gave no usable
+    answer.  The learner asks again with H unchanged; without it, a greedy model would
+    get the same prompt, and the same answer, again."""
+    queries = "equivalence query" if failed == 1 else f"{failed} equivalence queries"
+    return f"The previous {queries} in a row gave no usable answer; this is a new one."
 
 
 def unusable_feedback(reason: str) -> str:

@@ -542,13 +542,14 @@ def test_36_failed_eq_reasons_carried(tmp_path, memory):
     # EQ 1: an unusable answer and a rejected one (attempts=2), so it fails.  EQ 2's
     # first prompt names both (the rejection through the memory line when memory is on),
     # so it is not the cached EQ 1 prompt; its answer is accepted, which clears the carry.
+    # EQ 2's judge is asked again too: after a failed EQ its prompt says so (test 40).
     oracle = _oracle(tmp_path, ["no", "not a statement", "A SubClassOf B", "no",
-                                "B SubClassOf A", "yes", "no", "B SubClassOf A"])
+                                "no", "B SubClassOf A", "yes"])
     oracle._eq = EQSettings(attempts=2, memory=memory)
     with pytest.raises(OracleError):
         oracle.EQ(set())
     assert oracle.EQ(set()) == GCI(ELConcept({"B"}), ELConcept({"A"}))
-    second = oracle._pipe.prompts[4]
+    second = oracle._pipe.prompts[5]
     assert "'not a statement' is not of the form" in second
     assert ("do not propose it again: 'A SubClassOf B'" in second) == memory
     assert ("asked whether 'A SubClassOf B' is true in O" in second) == (not memory)
@@ -617,3 +618,25 @@ def test_39_cut_off_reasoning_not_cached(tmp_path):
                 {"role": "user", "content": upstream_gci_text(_GCI)}]
     stale._cache.set("stub", messages, "cut off mid-thought", {"max_new_tokens": 16, "do_sample": False})
     assert stale.MQ(_GCI) is True and stale._pipe.calls == 1
+
+
+def test_40_repeated_eq_is_a_new_prompt(tmp_path):
+    # A failed EQ with the same reasons as the one before, or a judge reply that does not
+    # parse, used to leave the next EQ's prompts unchanged: a greedy model (or the cache)
+    # then failed the same way again.  Now the prompts say how many EQs failed in a row.
+    oracle = _oracle(tmp_path, ["no", "not a statement", "not a statement", "not a statement",
+                                "no", "not a statement", "not a statement", "not a statement",
+                                "maybe", "no", "A SubClassOf B", "yes"])
+    for _ in range(2):
+        with pytest.raises(OracleError, match="no usable counterexample"):
+            oracle.EQ(set())
+    first, second = oracle._pipe.prompts[:4], oracle._pipe.prompts[4:8]
+    assert not any("in a row" in p for p in first)
+    assert all("The previous equivalence query in a row gave no usable answer" in p for p in second)
+    assert set(first).isdisjoint(second)
+    with pytest.raises(OracleError, match="Unparseable EQ judge"):
+        oracle.EQ(set())                                 # the judge says "maybe"
+    assert "The previous 2 equivalence queries in a row" in oracle._pipe.prompts[8]
+    assert oracle.EQ(set()) == _GCI                      # a usable counterexample resets the count
+    assert "The previous 3 equivalence queries in a row" in oracle._pipe.prompts[9]
+    assert oracle._failed_eqs == 0

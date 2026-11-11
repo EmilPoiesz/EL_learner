@@ -233,6 +233,7 @@ class LLMOracle(Oracle):
     _thinks = False
     truncated = 0
     _generate_kwargs: dict = {}   # model_defaults_off(model)
+    _failed_eqs = 0               # EQs in a row that gave no usable answer
 
     def __init__(
         self,
@@ -692,7 +693,9 @@ class LLMOracle(Oracle):
         times in all, with the reasons the earlier answers failed added to the
         prompt (with ``memory``, also the counterexamples rejected at earlier
         EQs).  Raises OracleError when the judge's answer does not parse or no
-        attempt gives a usable counterexample.  With ``verbose``, each step's
+        attempt gives a usable counterexample.  After such failed EQs, every prompt of
+        the next one opens with how many failed in a row (``repeated_feedback``), so a
+        repeated EQ is never the same prompt.  With ``verbose``, each step's
         outcome is printed after the exchange, as ``[EQ n] ...``.
         """
         settings, language = self._eq, self._eq_language
@@ -701,14 +704,22 @@ class LLMOracle(Oracle):
         plain = gci_to_nl if language == "nl" else gci_to_manchester
         # The feedback names statements as the answer is asked for: as triples with G3.
         render = (lambda gci: gci_to_triple(gci) or plain(gci)) if settings.generation in TRIPLE_GENERATIONS else plain
+        # After failed EQs every prompt of this one says so, so that it is never the same
+        # prompt again (a greedy model would give the same answer, or the cache would).
+        again = [prompts.repeated_feedback(self._failed_eqs)] if self._failed_eqs else []
         if settings.mode == "judge":
-            equivalent = self._query(
-                prompts.eq_judge_prompt(self._sig, self._roles, hypothesis, language),
-                parse=lambda r: self._parse_yes_no(r, "EQ judge"),
-                label="EQ (judge)", **ask,
-            )
+            try:
+                equivalent = self._query(
+                    prompts.eq_judge_prompt(self._sig, self._roles, hypothesis, language, again),
+                    parse=lambda r: self._parse_yes_no(r, "EQ judge"),
+                    label="EQ (judge)", **ask,
+                )
+            except OracleError:
+                self._failed_eqs += 1
+                raise
             self._eq_log(f"judge: {'yes, H is complete' if equivalent else 'no'}")
             if equivalent:
+                self._failed_eqs = 0
                 return None
         if settings.mode == "combined":
             build, parse = prompts.eq_combined_prompt, self._parse_combined
@@ -723,7 +734,7 @@ class LLMOracle(Oracle):
         # unchanged, and the same prompt would get the same cached answer); a
         # rejection only without memory, which lists it anyway.
         carry: list[str] = []
-        earlier = [prompts.rejected_earlier_feedback(text) for text in self._rejected]
+        earlier = again + [prompts.rejected_earlier_feedback(text) for text in self._rejected]
         earlier += [prompts.unusable_feedback(r) for r in self._failed]
         for attempt in range(1, settings.attempts + 1):
             feedback = earlier + [prompts.unusable_feedback(r) for r in reasons]
@@ -738,7 +749,7 @@ class LLMOracle(Oracle):
                 continue
             if counterexample is None:
                 self._eq_log(f"attempt {attempt}: yes, H is complete")
-                self._failed = ()
+                self._failed, self._failed_eqs = (), 0
                 return None
             if self._h_reasoner(counterexample):
                 reasons.append(f"'{render(counterexample)}' already follows from H")
@@ -747,7 +758,7 @@ class LLMOracle(Oracle):
                 continue
             if self._check_counterexample(counterexample):
                 self._eq_log(f"attempt {attempt}: counterexample {counterexample}")
-                self._failed = ()
+                self._failed, self._failed_eqs = (), 0
                 return counterexample
             # The model named an axiom it then rejects: its answers are inconsistent.
             reasons.append(f"asked whether '{render(counterexample)}' is true in O, you answered no")
@@ -758,6 +769,7 @@ class LLMOracle(Oracle):
             self._eq_log(f"attempt {attempt}: {counterexample} rejected by the model's own MQ")
         self._eq_log(f"no usable counterexample in {settings.attempts} attempts")
         self._failed += tuple(r for r in dict.fromkeys(carry) if r not in self._failed)
+        self._failed_eqs += 1
         raise OracleError(
             f"no usable counterexample in {settings.attempts} attempts: " + "; ".join(reasons)
         )
