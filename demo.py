@@ -128,21 +128,26 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
     eq_calls = oracle.eq_count
 
     target_O  = oracle.axioms
-    redundant = [g for g in H if g not in target_O]
-
-    _section("Result")
-    print(f"\n  |H| = {len(H)}  (target |O| = {len(target_O)})")
-    print(f"  Redundant axioms (entailed but not primitive): {len(redundant)}")
-    print("\n  Learned H:")
-    for gci in sorted(H, key=str):
-        tag = "  " if gci in target_O else "* "
-        print(f"    {tag}{gci}")
-    print("  (* = derivable from O but not a primitive axiom)")
 
     H_MQ = oracle.make_H_MQ(H)
     O_MQ = judge or oracle.MQ
     extra   = [g for g in H if not O_MQ(g)]   # soundness:    O ⊨ H
     missing = [g for g in target_O if not H_MQ(g)] # completeness: H ⊨ O
+    # Not an axiom of O, but O entails it.  Only these are derivable: an LLM oracle
+    # can also put GCIs in H that O does not entail (the extra ones).
+    redundant = [g for g in H if g not in target_O and g not in extra]
+
+    _section("Result")
+    print(f"\n  |H| = {len(H)}  (target |O| = {len(target_O)})")
+    print(f"  Redundant axioms (entailed but not primitive): {len(redundant)}")
+    if extra:
+        print(f"  Unsound axioms (not entailed by O): {len(extra)}")
+    print("\n  Learned H:")
+    for gci in sorted(H, key=str):
+        tag = "✗ " if gci in extra else "  " if gci in target_O else "* "
+        print(f"    {tag}{gci}")
+    print("  (* = derivable from O but not a primitive axiom"
+          + ("; ✗ = not entailed by O)" if extra else ")"))
 
     # The original ExactLearner-LLM's score: H vs O on every statement of four shapes.
     from learner.evaluation import score_ontology
