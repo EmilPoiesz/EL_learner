@@ -2,7 +2,7 @@
 This project's own prompts (the paper's are in learner/upstream.py): the system
 messages, the yes/no MQ, the EQ prompts and their retry lines, and the system
 prompts of the counterexample check.  Plain functions of the scope and H; the
-prompt variants of EQ_EXPERIMENTS.md are made here.
+prompt variants of the EQ experiments (cex1-cex20) are made here.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def eq_system_message(axioms: set[GCI] | None, language: str = "manchester") -> 
 
 # System prompts for the check of an EQ counterexample (``eq_check_system``), variants
 # of the paper's advanced one. Under its rule 2 Mistral answered False to every
-# has_part MQ (1143 in the animals logs, EQ_EXPERIMENTS.md cex6), so no has_part
+# has_part MQ (1143 in the animals logs, experiment cex6), so no has_part
 # counterexample could pass. S2 states what the rule presumably means; S3 adds how
 # EL statements read. The examples are from another domain (cars), so that they say
 # nothing about a target ontology; the natural-language ones are worded as the check
@@ -101,8 +101,8 @@ _CHECK_EL_READING = (
     "A statement is True when it holds for every member of the category on the left."
 )
 # S4 adds what the check got wrong in cex12-cex17, where it accepted 30 false
-# counterexamples, most of them again and again (EQ_EXPERIMENTS.md, "Is the check
-# needed"): a property of some members taken for all (Professor ⊑ ∃teaches.Project,
+# counterexamples, most of them again and again (the analysis "Is the check
+# needed?" after cex17): a property of some members taken for all (Professor ⊑ ∃teaches.Project,
 # Elephant ⊑ ∃has_part.Leg), a subcategory the wrong way round (Teacher ⊑ Professor),
 # a relation the wrong way round (Egg ⊑ ∃lays.Bird).  Examples about cars, as in S2.
 _CHECK_EVERY_MEMBER = (
@@ -184,8 +184,8 @@ EQ_EXAMPLES = {
 }
 _EQ_FORMAT = {"manchester": "in Manchester syntax", "nl": "in this form"}
 
-# How the counterexample is asked for (EQSettings.generation; EQ_EXPERIMENTS.md, the
-# generation variants).  In cex12 most answers could not be used: negation, names out
+# How the counterexample is asked for (EQSettings.generation; experiments cex13-cex17,
+# the generation variants).  In cex12 most answers could not be used: negation, names out
 # of scope, the placeholder copied, explanations.
 #   default  the EQ_EXAMPLES placeholders
 #   g1       the same, with the forms allowed and the slips seen listed as rules
