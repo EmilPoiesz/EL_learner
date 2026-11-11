@@ -552,3 +552,17 @@ def test_36_failed_eq_reasons_carried(tmp_path, memory):
     assert ("asked whether 'A SubClassOf B' is true in O" in second) == (not memory)
     assert oracle._failed == ()
 
+
+
+def test_37_thinking_model_answer_after_think(tmp_path):
+    # A template that opens <think> (Olmo 3 Think): only the text after </think> is
+    # read; without </think> the budget ran out, which reads as no answer (False for
+    # the paper's MQ) and is counted.
+    oracle = _oracle(tmp_path, ["Birds are animals, so... </think>\n\nTrue",
+                                "Let me think about whether every"])
+    oracle._prompt_style = "paper-advanced"
+    oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
+    oracle._thinks = True
+    assert oracle.MQ(_GCI) is True
+    assert oracle.MQ(GCI(ELConcept({"B"}), ELConcept({"A"}))) is False
+    assert oracle.truncated == 1

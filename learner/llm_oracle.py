@@ -206,7 +206,16 @@ class LLMOracle(Oracle):
         key, so runs with different seeds draw their own answers.
     eq_settings : EQSettings
         How the EQs are asked (see ``EQSettings``); the defaults otherwise.
+
+    A reasoning model whose chat template opens <think> (Olmo 3 Think) answers
+    after its reasoning: only the text after </think> is read, and a response
+    without </think> (the budget ran out while reasoning) is read as no answer,
+    counted in ``truncated``.
     """
+
+    # Set in __init__ from the chat template; class defaults for oracles built without it.
+    _thinks = False
+    truncated = 0
 
     def __init__(
         self,
@@ -253,6 +262,9 @@ class LLMOracle(Oracle):
         self._pad_token_id = (
             tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         )
+        self._thinks = tokenizer.apply_chat_template(
+            [{"role": "user", "content": "x"}], tokenize=False, add_generation_prompt=True,
+        ).rstrip().endswith("<think>")
         self._model_name = model_name_or_path
         cache_enabled = os.getenv("LLM_CACHE_ENABLED", "1") != "0"
         cache_db = os.getenv("LLM_CACHE_DB", "llm_cache.db")
@@ -353,7 +365,7 @@ class LLMOracle(Oracle):
                 print("[PROMPT]\n" + shown)
                 print("[RESPONSE]\n" + cached)
             try:
-                return parse(cached)
+                return parse(self._answer(cached))
             except ValueError:
                 logger.warning("Cached %s response does not parse; regenerating.", label)
 
@@ -369,7 +381,10 @@ class LLMOracle(Oracle):
             print("[PROMPT]\n" + shown)
             print("[RESPONSE]\n" + response)
 
-        result = parse(response)  # raises ValueError before anything is cached
+        answer = self._answer(response)
+        if self._thinks and not answer and self._verbose:
+            print("[TRUNCATED: no </think>, read as no answer]")
+        result = parse(answer)  # raises ValueError before anything is cached
 
         # Cache store
         self._cache.set(self._model_name, messages, response, params)
@@ -378,6 +393,17 @@ class LLMOracle(Oracle):
     # ------------------------------------------------------------------
     # Reading answers
     # ------------------------------------------------------------------
+
+    def _answer(self, response: str) -> str:
+        """The answer in *response*: all of it, or for a model that reasons in
+        <think> first (``_thinks``), the text after </think>; "" when there is
+        none (counted in ``truncated``)."""
+        if not self._thinks:
+            return response
+        if "</think>" not in response:
+            self.truncated += 1
+            return ""
+        return response.rsplit("</think>", 1)[-1].strip()
 
     @staticmethod
     def _extract_yes_no(response: str) -> str | None:

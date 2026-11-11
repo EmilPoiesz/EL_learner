@@ -135,6 +135,8 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
 
     mq_calls = oracle.mq_count
     eq_calls = oracle.eq_count
+    # A reasoning model cut off before </think> (LLMOracle.truncated): read as no answer.
+    truncated = getattr(oracle, "truncated", 0)
 
     target_O  = oracle.axioms
 
@@ -182,7 +184,8 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
             print(f"      missing: {score.fn} of the paper's statements that O entails")
         for g in extra:   print(f"      extra:   {g}")
 
-    print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
+    print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}"
+          + (f"  |  cut off while reasoning: {truncated}" if truncated else ""))
     sampler = getattr(oracle, "sampler", None)
     if sampler is not None:   # PACOracle
         print(f"  PAC samples: {sampler.provided} of {sampler.budget}  |  "
