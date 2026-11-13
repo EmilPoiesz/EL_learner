@@ -20,6 +20,8 @@ is replaced by a stub that returns scripted responses.
 14 natural language: rendering and parsing round-trip; an EQ in natural language
 15 EQ: a counterexample H already entails is asked for again, saying so
 16 EQ: its own system message and a budget of at least EQ_MIN_NEW_TOKENS
+47 natural-language EQs: a relative clause read as the template's conjunction, hedges cut (cex23)
+48 ... but not a clause on a filler, not the left-hand side, not in Manchester syntax
 """
 
 from __future__ import annotations
@@ -762,3 +764,47 @@ def test_46_eq_language_apart_from_the_mq_style(tmp_path):
     assert prompts.eq_counterexample_prompt({"A"}, set(), set(), language="nl", generation="g2b")
     with pytest.raises(ValueError, match="Manchester syntax only"):
         prompts.eq_counterexample_prompt({"A"}, set(), set(), language="nl", generation="g2")
+
+
+_A_BRS_C = GCI(ELConcept({"A"}), ELConcept({"B"}, {("r_s", ELConcept({"C"}))}))
+
+
+@pytest.mark.parametrize("response, expected", [
+    # cex23 (Olivia 2845880-81): the template's "B that is also something that r some C"
+    # written as a relative clause.
+    ("A is a subcategory of B that r_s some C", _A_BRS_C),
+    ("A is a subcategory of B that r_s C", _A_BRS_C),               # and without "some"
+    ("A is a subcategory of B which is r_s some C", _A_BRS_C),
+    ("A is a subcategory of B that is also r_s some C", _A_BRS_C),
+    ("A is a subcategory of B that is r s some C", _A_BRS_C),       # the role with a space
+    ("A is a subcategory of a B that r_s a C", _A_BRS_C),
+    ("A is a subcategory of something r_s some C",
+     GCI(ELConcept({"A"}), ELConcept(existentials={("r_s", ELConcept({"C"}))}))),
+    ("B that r_s some C is a subcategory of A",
+     GCI(ELConcept({"B"}, {("r_s", ELConcept({"C"}))}), ELConcept({"A"}))),
+    # Hedges on the right-hand side are cut: what is cut could only narrow it.
+    ("A is a subcategory of B, but it is not a C", GCI(ELConcept({"A"}), ELConcept({"B"}))),
+    ("A is a subcategory of B that is not necessarily C", GCI(ELConcept({"A"}), ELConcept({"B"}))),
+    ("A is a subcategory of B that r_s some C but not necessarily B (e.g. most)", _A_BRS_C),
+    ("A is a subcategory of B. This follows from O, not from H.", GCI(ELConcept({"A"}), ELConcept({"B"}))),
+    ("A is a subcategory of B that does not r_s some C", GCI(ELConcept({"A"}), ELConcept({"B"}))),
+])
+def test_47_nl_relative_clauses_and_hedges(tmp_path, response, expected):
+    oracle = _oracle(tmp_path, [])
+    oracle._sig, oracle._roles = {"A", "B", "C"}, {"r_s"}
+    oracle._eq_language = "nl"
+    assert oracle._parse_counterexample(response) == expected
+
+
+@pytest.mark.parametrize("language, response", [
+    # A clause after "some" belongs to the filler, which this reading would lose.
+    ("nl", "A is a subcategory of something that r_s some B that r_s some C"),
+    ("nl", "B that does not r_s some C is a subcategory of A"),    # left-hand side: never cut
+    ("manchester", "A SubClassOf B that r_s some C"),              # natural language only
+])
+def test_48_nl_repairs_not_applied(tmp_path, language, response):
+    oracle = _oracle(tmp_path, [])
+    oracle._sig, oracle._roles = {"A", "B", "C"}, {"r_s"}
+    oracle._eq_language = language
+    with pytest.raises(ValueError):
+        oracle._parse_counterexample(response)

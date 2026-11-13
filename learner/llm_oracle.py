@@ -667,12 +667,62 @@ class LLMOracle(Oracle):
             return add_subclass(add_some(f"{subject} {relation} {obj}"))
 
         candidates = []
-        for base in dict.fromkeys([line, without_brackets(line)]):
+        bases = [line, without_brackets(line)]
+        if self._eq_language == "nl":
+            # cex23: the model writes the template's "D that is also something that r
+            # some E" as a relative clause, and adds hedges EL cannot say.
+            bases += [self._nl_relative_clauses(b) for b in bases]
+            bases += [self._nl_without_hedge(b) for b in bases]
+        for base in dict.fromkeys(bases):
             stripped = strip_articles(base)
             candidates += [base, stripped, add_subclass(add_some(base)),
                            add_subclass(add_some(stripped)), tuple_reading(base)]
         return [c for i, c in enumerate(candidates)
                 if c is not None and c != line and c not in candidates[:i]]
+
+    def _nl_relative_clauses(self, text: str) -> str:
+        """*text* with a relative clause on a concept name written as the template
+        writes it: "Bird is a subcategory of Vertebrate that has_part some Wing"
+        (also "that is …", "that is also …", "which …") as "… Vertebrate that is
+        also something that has_part some Wing", and "something has_part some Wing"
+        or "something that is has_part some Wing" as "something that has_part some
+        Wing".  A role in scope may be written with spaces ("managed by" for
+        managed_by).  Not after "some": in "employs some Professor that teaches some
+        Course" the clause belongs to the filler, which this reading would not keep."""
+        if not self._roles:
+            return text
+        for role in self._roles:        # "is managed by some" → "is managed_by some"
+            if "_" in role:
+                text = re.sub(rf"(?<![\w:.\-]){'[ _]'.join(map(re.escape, role.split('_')))}(?![\w:.\-])",
+                              role, text, flags=re.IGNORECASE)
+        roles = "|".join(map(re.escape, sorted(self._roles, key=len, reverse=True)))
+        role_ahead = rf"(?=(?:{roles})(?![\w:.\-]))"
+        text = re.sub(rf"\bsomething\s+(?:that\s+)?(?:is\s+)?{role_ahead}", "something that ", text,
+                      flags=re.IGNORECASE)
+
+        def clause(m: re.Match) -> str:
+            if m.group(1) or m.group(2).lower() == "something":
+                return m.group(0)
+            return f"{m.group(2)} that is also something that "
+
+        return re.sub(rf"(\bsome\s+)?({NAME_PATTERN})\s+(?:that|which)\s+(?:is\s+(?:also\s+)?)?{role_ahead}",
+                      clause, text, flags=re.IGNORECASE)
+
+    @staticmethod
+    def _nl_without_hedge(text: str) -> str:
+        """*text* with its right-hand side cut before a hedge or an explanation:
+        ", but …", "but not necessarily …", "that is not …", "(e.g. …)", or a
+        further sentence.  What is cut can only narrow D, so C ⊑ D still says no
+        more than the answer did (cex23: "Teacher is a subcategory of Person that
+        is not necessarily a Professor")."""
+        sides = re.split(r"(\s+is an? subcategory of\s+)", text, maxsplit=1, flags=re.IGNORECASE)
+        if len(sides) != 3:
+            return text
+        cut = re.split(r",?\s+but\b|\s*\(|\.\s|,\s*(?:and yet|since|because|for (?:example|instance)|e\.g\.)\b"
+                       r"|\s+(?:who|that|which)\s+(?:is|are)\s+not\b"
+                       r"|\s+(?:who|that|which)\s+(?:may|might|can|does not|do not)\b",
+                       sides[2], maxsplit=1, flags=re.IGNORECASE)[0]
+        return sides[0] + sides[1] + cut.strip().rstrip(".,;")
 
     @staticmethod
     def _triple_readings(line: str) -> list[str]:
