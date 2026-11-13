@@ -195,6 +195,14 @@ def test_10_names_out_of_scope_rejected(tmp_path):
     ("A SubClassOf has-part SOME ex:Leg",
      GCI(ELConcept({"A"}), ELConcept(existentials={("has-part", ELConcept({"ex:Leg"}))}))),
     ("owl:Thing SubClassOf B", GCI(ELConcept(), ELConcept({"B"}))),
+    # A bracketed conjunction (Qwen brackets the whole right-hand side, cex25-cex27).
+    ("Bird SubClassOf (Animal and Vertebrate and (has_part some Wing))",
+     GCI(ELConcept({"Bird"}), ELConcept({"Animal", "Vertebrate"},
+                                        {("has_part", ELConcept({"Wing"}))}))),
+    ("(A and C) SubClassOf ((B and (r some (D and E))))",
+     GCI(ELConcept({"A", "C"}), ELConcept({"B"}, {("r", ELConcept({"D", "E"}))}))),
+    ("(A and B) and (r some (C and D)) SubClassOf E",
+     GCI(ELConcept({"A", "B"}, {("r", ELConcept({"C", "D"}))}), ELConcept({"E"}))),
 ])
 def test_11_manchester_parsing(text, expected):
     assert parse_manchester_gci(text) == expected

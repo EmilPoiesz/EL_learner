@@ -213,6 +213,15 @@ def parse_manchester_concept(s: str) -> ELConcept:
         ):
             part = part[1:-1].strip()
 
+        # A bracketed conjunction, "(A and B) and C" or "(A and (r some C))" (Qwen
+        # brackets the whole right-hand side, cex25-cex27): its conjuncts are the
+        # concept's, since conjunction is associative.
+        if len(_split_top_level_and(part)) > 1:
+            inner = parse_manchester_concept(part)
+            atoms |= inner.atoms
+            existentials |= inner.existentials
+            continue
+
         some_match = re.match(rf'^({NAME_PATTERN})\s+some\s+(.+)$', part, re.DOTALL | re.IGNORECASE)
         if some_match:
             role = some_match.group(1)
