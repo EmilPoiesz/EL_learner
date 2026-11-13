@@ -211,6 +211,17 @@ OPTIONS: tuple[Option, ...] = (
                            "they are not proposed again."),
                     (False, "Only the current EQ's failed answers are listed.")),
            see=("cex10",)),
+    Option("oracle.eq.counterexample.explain", "Explain failures", "bool",
+           "Whether a retry line also says what to do instead of the failed answer.",
+           flag="--eq-explain", default=False, env="EQ_EXPLAIN",
+           choices=((True, "The reason, then one sentence: EL has no negation; only SubClassOf, and, "
+                           "some; a statement, not a concept; only the listed names (the "
+                           "other direction of a listed role with the sides swapped); a trivially "
+                           "true statement, or one H implies; a statement the model's own check "
+                           "rejected. Nothing of the signature is named."),
+                    (False, "Only the reason: \"'X' already follows from H\", \"'X' is not of the form "
+                            "'C SubClassOf D'\".")),
+           see=("cex28",)),
     Option("oracle.eq.counterexample.attempts", "Attempts per EQ", "int",
            "Attempts at a usable counterexample per EQ; each retry lists why the earlier answers "
            "could not be used.", flag="--eq-attempts", default=3, env="EQ_ATTEMPTS", minimum=1),

@@ -22,6 +22,8 @@ is replaced by a stub that returns scripted responses.
 16 EQ: its own system message and a budget of at least EQ_MIN_NEW_TOKENS
 47 natural-language EQs: a relative clause read as the template's conjunction, hedges cut (cex23)
 48 ... but not a clause on a filler, not the left-hand side, not in Manchester syntax
+49 EQ: why an answer failed, explained in one sentence naming nothing of the signature
+50 EQ: the explain setting adds those sentences to the retry lines, and only it
 """
 
 from __future__ import annotations
@@ -808,3 +810,35 @@ def test_48_nl_repairs_not_applied(tmp_path, language, response):
     oracle._eq_language = language
     with pytest.raises(ValueError):
         oracle._parse_counterexample(response)
+
+
+@pytest.mark.parametrize("reason, expected", [
+    ("'B and not A SubClassOf A' is not of the form 'C SubClassOf D' in Manchester syntax", "no 'not'"),
+    ("'A intersectionOf B' is not of the form 'C SubClassOf D' in Manchester syntax", "'intersectionOf' cannot"),
+    ("'A SubClassOf r_s only B' is not of the form 'C SubClassOf D' in Manchester syntax", "'only' cannot"),
+    ("'A and r_s some B' is not of the form 'C SubClassOf D' in Manchester syntax", "names a concept"),
+    ("'A SubClassOf employs some B': employs is not an object property in scope", "two sides swapped"),
+    ("'A SubClassOf q some B': q is not an object property in scope", "object properties listed"),
+    ("'A SubClassOf Z': Z is not a concept name in scope", "concept names listed"),
+])
+def test_49_failures_explained(reason, expected):
+    explanation = prompts.explain_unusable(reason)
+    assert expected in explanation
+    assert "employed_by" not in explanation and "r_s" not in explanation   # no names of the signature
+
+
+def test_50_explain_setting_in_retry_lines(tmp_path):
+    trivial = GCI(ELConcept({"A", "B"}), ELConcept({"A"}))
+    other = GCI(ELConcept({"B"}), ELConcept({"A"}))
+    responses = ["no", "A and B SubClassOf A", "B SubClassOf A", "A and not B SubClassOf A", "A SubClassOf B", "yes"]
+    for explain in (False, True):
+        (tmp_path / str(explain)).mkdir()
+        oracle = _oracle(tmp_path / str(explain), responses)
+        oracle._eq = EQSettings(attempts=4, explain=explain)
+        oracle._h_reasoner = lambda gci: gci in (trivial, other)
+        assert oracle.EQ({other}) == _GCI
+        last = oracle._pipe.prompts[-2]       # the last counterexample prompt; then the check
+        assert "'A and B SubClassOf A' already follows from H" in last
+        assert ("true of anything" in last) is explain
+        assert ("H already implies it" in last) is explain
+        assert ("no 'not'" in last) is explain

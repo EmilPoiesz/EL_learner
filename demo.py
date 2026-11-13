@@ -548,6 +548,12 @@ def build_parser() -> argparse.ArgumentParser:
              "(--no-eq-memory turns a config's memory off).",
     )
     parser.add_argument(
+        "--eq-explain", action=argparse.BooleanOptionalAction, default=False,
+        help="With an LLM's own equivalence queries: each retry line also says what to do "
+             "instead of the failed answer (no negation, only the listed names, a statement "
+             "not a concept, nothing H already implies).",
+    )
+    parser.add_argument(
         "--eq-temperature", type=float, default=0.0, metavar="T",
         help="With an LLM's own equivalence queries: sample only the counterexample "
              "prompts at T (Ollama's other defaults, seeded by --seed); the MQs, the "
@@ -721,6 +727,7 @@ if __name__ == "__main__":
                 check_system=args.eq_check_system,
                 check_question=args.eq_check_question,
                 memory=args.eq_memory,
+                explain=args.eq_explain,
                 temperature=args.eq_temperature,
                 generation=args.eq_generation,
                 attempts=args.eq_attempts,

@@ -56,6 +56,19 @@ EQ_MIN_NEW_TOKENS = 128
 QUERY_STATS = ("asked", "cached", "generated", "prompt_tokens", "new_tokens", "seconds")
 
 
+def _subsumed(c: ELConcept, d: ELConcept) -> bool:
+    """c ⊑ d with no axioms at all: every atom of d is in c, and every ∃r.F of d has
+    an ∃r.F' in c with F' ⊑ F."""
+    return d.atoms <= c.atoms and all(
+        any(r == s and _subsumed(f2, f) for s, f2 in c.existentials) for r, f in d.existentials)
+
+
+def _trivial(gci: GCI) -> bool:
+    """Whether *gci* holds of anything, whatever H is: "Professor and Researcher
+    SubClassOf Researcher", "Bird and (has_part some Wing) SubClassOf Bird"."""
+    return _subsumed(gci.lhs, gci.rhs)
+
+
 def query_kind(label: str) -> str:
     """The kind of a query, from its log label: "MQ (check, s4 system prompt)"
     is "MQ (check)"."""
@@ -117,6 +130,11 @@ class EQSettings:
         With a paper prompt style, the question of that check (``CHECK_QUESTIONS``):
         ``"paper"`` (default), the MQ as ``check`` says; ``"every"``, "Is it
         true that every C …?" (``llm_prompts.every_question``).
+    explain : bool
+        False (default): a retry line says only why the earlier answer failed.
+        True: it adds a sentence on what to do instead (``llm_prompts.explain_unusable``,
+        ``explain_follows``, ``explain_rejected``): no negation, only the listed
+        names, a statement and not a concept, nothing H already implies (cex28).
     memory : bool
         False (default): an EQ's retry prompts list only why that EQ's earlier
         answers failed.  True: they also list, from the first attempt on, the
@@ -155,6 +173,7 @@ class EQSettings:
     check_system: str = "paper"
     check_question: str = "paper"
     memory: bool = False
+    explain: bool = False
     temperature: float = 0.0
     attempts: int = 3
     generation: str = "default"
@@ -190,6 +209,7 @@ class EQSettings:
                 + (f", check system prompt {self.check_system}" if self.check_system != "paper" else "")
                 + (f", check question {self.check_question}" if self.check_question != "paper" else "")
                 + (", rejections remembered across EQs" if self.memory else "")
+                + (", failed answers explained" if self.explain else "")
                 + (f", counterexamples sampled at temperature {self.temperature}, seed {seed}"
                    if self.temperature > 0 else "")
                 + (f", {self.attempts} attempts per EQ" if self.attempts != 3 else "")
@@ -896,7 +916,8 @@ class LLMOracle(Oracle):
                 counterexample = self._query(prompt, parse=parse, label=label,
                                              sampling=sampling, **generate)
             except ValueError as exc:
-                reasons.append(str(exc))
+                reasons.append(self._explained(str(exc), prompts.explain_unusable(
+                    str(exc), language)))
                 carry.append(reasons[-1])
                 self._outcome("unusable")
                 self._eq_log(f"attempt {attempt}: unusable, {exc}")
@@ -906,7 +927,8 @@ class LLMOracle(Oracle):
                 self._failed, self._failed_eqs = (), 0
                 return None
             if self._h_reasoner(counterexample):
-                reasons.append(f"'{render(counterexample)}' already follows from H")
+                reasons.append(self._explained(f"'{render(counterexample)}' already follows from H",
+                                               prompts.explain_follows(_trivial(counterexample))))
                 carry.append(reasons[-1])
                 self._outcome("follows from H")
                 self._eq_log(f"attempt {attempt}: {counterexample} already follows from H")
@@ -917,7 +939,8 @@ class LLMOracle(Oracle):
                 self._failed, self._failed_eqs = (), 0
                 return counterexample
             # The model named an axiom it then rejects: its answers are inconsistent.
-            reasons.append(f"asked whether '{render(counterexample)}' is true in O, you answered no")
+            reasons.append(self._explained(f"asked whether '{render(counterexample)}' is true in O, you answered no",
+                                           prompts.explain_rejected()))
             if not settings.memory:
                 carry.append(reasons[-1])
             if settings.memory and render(counterexample) not in self._rejected:
@@ -930,6 +953,13 @@ class LLMOracle(Oracle):
         raise OracleError(
             f"no usable counterexample in {settings.attempts} attempts: " + "; ".join(reasons)
         )
+
+    def _explained(self, reason: str, explanation: str) -> str:
+        """*reason*, with ``explain`` followed by *explanation* (the retry line ends
+        the whole with a full stop)."""
+        if not self._eq.explain or not explanation:
+            return reason
+        return f"{reason}. {explanation.rstrip('.')}"
 
     def _check_counterexample(self, gci: GCI) -> bool:
         """The model's own MQ on a counterexample, as the settings' ``check`` and

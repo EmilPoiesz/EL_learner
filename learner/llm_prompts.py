@@ -7,6 +7,7 @@ prompt variants of the EQ experiments (cex1-cex20) are made here.
 
 from __future__ import annotations
 
+import re
 from typing import Sequence
 
 from learner.el_algorithm import GCI, existential_key
@@ -319,6 +320,63 @@ def repeated_feedback(failed: int) -> str:
 def unusable_feedback(reason: str) -> str:
     """The retry line for an answer of this EQ that could not be used."""
     return f"Your previous answer could not be used: {reason}."
+
+
+# Why an answer failed, explained (EQSettings.explain, cex28).  In cex25-cex27 Qwen
+# repeated the same failures within a run: negation ("Researcher and not Professor
+# SubClassOf Person", 17x on university), a concept without SubClassOf, OWL keywords EL
+# lacks, roles out of scope (the inverse "employs"), and statements H already implies,
+# often trivially ("Professor and Researcher SubClassOf Person", "Bird and has_part some
+# Wing SubClassOf Bird").  The bare reason says what failed, not what to do instead; the
+# explanations name no concept or role of the signature.
+_NOT_EL = ("not", "or", "only", "all", "exactly", "min", "max", "value", "that", "intersectionOf",
+           "unionOf", "complementOf", "DisjointWith", "EquivalentTo", "Type")
+_FORM = {"manchester": "'C SubClassOf D'", "nl": "'C is a subcategory of D'"}
+
+
+def explain_unusable(reason: str, language: str = "manchester") -> str:
+    """One sentence on what to do instead, for the *reason* an answer could not be used
+    (the parser's or the scope check's ValueError).  The answer is the quoted line."""
+    quoted = re.match(r"^'(.*?)'(?: is not of the form|: )", reason, flags=re.S)
+    answer = quoted.group(1) if quoted else ""
+    words = set(re.findall(r"[A-Za-z]+", answer))
+    if "not of the form" in reason:
+        if words & {"not", "Not", "NOT", "no", "No", "without"}:
+            return ("EL statements cannot say what is not the case: there is no 'not'. "
+                    "Name something that is true of every member instead.")
+        used = [w for w in _NOT_EL if w in words and not (w == "that" and language == "nl")]
+        if used:
+            return (f"'{used[0]}' cannot be used: a statement may only use "
+                    + ("'SubClassOf', 'and' and 'some'." if language == "manchester"
+                       else "'is a subcategory of', 'that is also' and 'something that r some'."))
+        if not re.search(r"subclassof|subcategory", answer, flags=re.I):
+            return (f"That names a concept, not a statement: a statement has the form "
+                    f"{_FORM[language]}, saying that every C is a D.")
+        return f"A statement has the form {_FORM[language]}, written as in the examples."
+    # Signature-independent: no guess at which listed role was meant (a name-prefix match
+    # suggested employed_by for employs, but would suggest hasSex for hasSister).
+    if re.search(r"(?:is not an object property|are not object properties) in scope", reason):
+        return ("Use only the object properties listed above. For a relation in the other "
+                "direction than a listed one, use the listed one with the two sides swapped.")
+    if "not a concept name" in reason or "not concept names" in reason:
+        return "Use only the concept names listed above; a statement about other names cannot be used."
+    return ""
+
+
+def explain_follows(trivial: bool) -> str:
+    """One sentence on a counterexample that already follows from H: *trivial* when it
+    holds of anything (its right-hand side is part of its left-hand side)."""
+    if trivial:
+        return ("It is true of anything, since its right-hand side is already part of its "
+                "left-hand side, so it says nothing new. Name a statement whose right-hand side "
+                "adds something.")
+    return ("H already implies it, so it is not a counterexample: name a statement that is "
+            "true in O but that H does not imply.")
+
+
+def explain_rejected() -> str:
+    """One sentence on a counterexample the model's own check rejected."""
+    return "By your own answer it is not true in O, so it is not a counterexample: name a different statement."
 
 
 def rejected_earlier_feedback(statement: str) -> str:
