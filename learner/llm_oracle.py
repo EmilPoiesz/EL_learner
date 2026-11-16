@@ -502,7 +502,7 @@ class LLMOracle(Oracle):
             print("[RESPONSE]\n" + response)
 
         answer = self._answer(response)
-        if self._thinks and not answer and self._verbose:
+        if self._reasons(response) and not answer and self._verbose:
             print("[TRUNCATED: no </think>, read as no answer]")
         result = parse(answer)  # raises ValueError before anything is cached
 
@@ -540,15 +540,22 @@ class LLMOracle(Oracle):
     # Reading answers
     # ------------------------------------------------------------------
 
+    def _reasons(self, response: str) -> bool:
+        """Whether *response* comes from reasoning first: the chat template opens
+        <think> (``_thinks``, Olmo 3 Think, Qwen3 Thinking-2507), or the model writes
+        <think> itself (Qwen3-8B/14B/32B with thinking on: before this was read,
+        cex35-37 passed the whole trace to ``paper_is_true`` and every MQ was False)."""
+        return self._thinks or response.lstrip().startswith("<think>")
+
     def _cut_off(self, response: str) -> bool:
         """A reasoning model's *response* that ends before </think>: no answer."""
-        return self._thinks and "</think>" not in response
+        return self._reasons(response) and "</think>" not in response
 
     def _answer(self, response: str) -> str:
-        """The answer in *response*: all of it, or for a model that reasons in
-        <think> first (``_thinks``), the text after </think>; "" when there is
+        """The answer in *response*: all of it, or for a response that reasons in
+        <think> first (``_reasons``), the text after </think>; "" when there is
         none (counted in ``truncated``)."""
-        if not self._thinks:
+        if not self._reasons(response):
             return response
         if self._cut_off(response):
             self.truncated += 1
