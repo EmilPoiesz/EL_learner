@@ -81,6 +81,7 @@ def _run_reasoner_demo(
     eq: str = "oracle",
     epsilon: float = 0.2,
     delta: float = 0.1,
+    reuse_counterexamples: bool = False,
 ) -> bool:
     from learner.reasoner_oracle import ReasonerOracle
 
@@ -90,6 +91,8 @@ def _run_reasoner_demo(
     _section("EL Learner — ReasonerOracle")
     print(f"\n  Ontology : {ontology}")
     print(f"  Reasoner : {reasoner}")
+    if reuse_counterexamples:
+        print("  Reuse    : a counterexample H still misses is processed again before the next EQ")
 
     try:
         with ReasonerOracle(
@@ -105,7 +108,8 @@ def _run_reasoner_demo(
             },
         ) as oracle:
             _run_and_report(_with_eq(oracle, eq, epsilon, delta, seed, oracle.info), verbose=verbose,
-                            output=output, info=oracle.info)
+                            output=output, info=oracle.info,
+                            reuse_counterexamples=reuse_counterexamples)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -152,14 +156,17 @@ def query_report(oracle: Oracle, seconds: float) -> list[str]:
 
 def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, judge: Callable[[GCI], bool] | None = None,
                     info: OntologyInfo | None = None, max_eqs: int | None = None,
-                    precomputation: bool = True, max_failed_eqs: int = 0) -> None:
+                    precomputation: bool = True, max_failed_eqs: int = 0,
+                    reuse_counterexamples: bool = False) -> None:
     """Run the learner and print a comparison report against oracle.axioms.
     ``info``: the ontology as the OWL API reads it, whose classes (with owl:Thing
     when the file mentions it) and roles the paper metric is computed over.
     ``max_eqs``: stop after this many equivalence queries (one per iteration).
     ``precomputation``: start H with an MQ for every ordered pair of concept names
     (Phase 1); without it H starts empty and grows only from counterexamples.
-    ``max_failed_eqs``: EQs in a row without a usable answer before learning stops."""
+    ``max_failed_eqs``: EQs in a row without a usable answer before learning stops.
+    ``reuse_counterexamples``: process a counterexample again, without an EQ, while H
+    still misses it after a round that extended H."""
     # With PAC sampling the sample budget bounds the run; every counterexample is
     # one iteration, so a cap of 50 would cut a yes-biased LLM's run short.
     max_iterations = 100_000 if getattr(oracle, "sampler", None) is not None else 50
@@ -170,7 +177,8 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
     start = time.perf_counter()
     try:
         H = learn_el_terminology(oracle, max_iterations=max_iterations, precomputation=precomputation,
-                                 max_failed_eqs=max_failed_eqs)
+                                 max_failed_eqs=max_failed_eqs,
+                                 reuse_counterexamples=reuse_counterexamples)
     finally:
         logging.disable(logging.NOTSET)
     # Before scoring, which may ask the oracle again.
@@ -273,6 +281,7 @@ def _run_grounded_llm_demo(
     max_eqs: int | None = None,
     precomputation: bool = True,
     max_failed_eqs: int = 0,
+    reuse_counterexamples: bool = False,
 ) -> bool:
     """
     LLM oracle over an ontology file, scored against it.  ``include_axioms``:
@@ -304,6 +313,8 @@ def _run_grounded_llm_demo(
         print("  Phase 1  : skipped, H starts empty (no MQ per pair of concept names)")
     if max_failed_eqs:
         print(f"  Stopping : after {max_failed_eqs + 1} EQs in a row without a usable answer")
+    if reuse_counterexamples:
+        print("  Reuse    : a counterexample H still misses is processed again before the next EQ")
     if mq_asked_as != "paper":
         print("  MQs      : asked as the counterexample check is (Phase 1 and refinement)")
 
@@ -343,7 +354,8 @@ def _run_grounded_llm_demo(
                 print()
                 _run_and_report(learner_oracle, verbose=verbose, output=output, judge=judge, info=info,
                                 max_eqs=max_eqs, precomputation=precomputation,
-                                max_failed_eqs=max_failed_eqs)
+                                max_failed_eqs=max_failed_eqs,
+                                reuse_counterexamples=reuse_counterexamples)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -595,6 +607,14 @@ def build_parser() -> argparse.ArgumentParser:
              "count towards --max-eqs.",
     )
     parser.add_argument(
+        "--reuse-counterexamples", action=argparse.BooleanOptionalAction, default=False,
+        help="Not in the paper: keep what a counterexample taught.  A ⊑ A′ is added to H "
+             "when decomposition on the right moves from A to a name A′ of the root (already "
+             "confirmed by O), and after a round that extended H the same counterexample is "
+             "processed again, without an EQ, as long as H does not entail it.  Reused rounds "
+             "don't count towards --max-eqs.",
+    )
+    parser.add_argument(
         "--no-precompute", action="store_true",
         help="With an LLM over an ontology (axioms, signature): skip Phase 1, the MQ for "
              "every ordered pair of concept names, so H starts empty and grows only from "
@@ -719,6 +739,7 @@ if __name__ == "__main__":
             eq=args.eq,
             epsilon=args.epsilon,
             delta=args.delta,
+            reuse_counterexamples=args.reuse_counterexamples,
         )
     elif args.oracle in ("axioms", "signature"):
         max_new_tokens = args.max_new_tokens
@@ -762,6 +783,7 @@ if __name__ == "__main__":
             max_eqs=args.max_eqs,
             precomputation=not args.no_precompute,
             max_failed_eqs=args.max_failed_eqs,
+            reuse_counterexamples=args.reuse_counterexamples,
             mq_asked_as=args.mq_asked_as,
         )
     else:

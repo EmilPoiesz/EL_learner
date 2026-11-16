@@ -67,6 +67,11 @@ Test catalogue
 47  learn_el_terminology    — max_failed_eqs: an EQ's OracleError is tolerated that many times in a row
 48  saturate_concept_rhs   — a rejected candidate is not asked again once the node grows (inconsistent oracle)
 49  saturate_concept_rhs   — a rejection inside a filler still applies after the root gains a name
+50  learn_el_terminology    — reuse: a counterexample H still misses is processed again without an EQ
+51  learn_el_terminology    — reuse: reused rounds don't count towards max_iterations (EQs)
+52  learn_el_terminology    — reuse: a reused round that adds nothing ends the reuse; the next round asks an EQ
+53  compute_right_essential — links: decomposition at the root from Cat to Carnivore reports Cat ⊑ Carnivore
+54  learn_el_terminology    — reuse: the link is added with α, so H covers the counterexample after one round
 """
 
 from __future__ import annotations
@@ -932,3 +937,166 @@ def test_49_saturate_filler_rejection_survives_root_change():
     assert result == ELConcept(frozenset({"A", "B"}), frozenset({("r", C)}))
     assert len(asked) == 4                      # root B, root C, filler A, filler B
     assert len(set(asked)) == len(asked)        # nothing asked twice
+
+
+# ===========================================================================
+# 50–52  learn_el_terminology: reusing a counterexample (not in the paper)
+# ===========================================================================
+# Added 2026-11-16.  Lemma 6's zoom (the proofs page's grandparent example): the
+# counterexample ∃hasChild.∃hasChild.Human ⊑ Grandparent first teaches
+# ∃hasChild.Human ⊑ Parent, which H needs before O's second rule.  H still misses
+# the counterexample afterwards, so with reuse the next round takes it again
+# instead of asking an EQ.
+
+_HUMAN = ELConcept(frozenset({"Human"}))
+_PARENT = ELConcept(frozenset({"Parent"}))
+_GRANDPARENT = ELConcept(frozenset({"Grandparent"}))
+
+
+def _some(role: str, filler: ELConcept) -> ELConcept:
+    return ELConcept(existentials=frozenset({(role, filler)}))
+
+
+_PARENT_RULE = GCI(_some("hasChild", _HUMAN), _PARENT)              # ∃hasChild.Human ⊑ Parent
+_GRANDPARENT_RULE = GCI(_some("hasChild", _PARENT), _GRANDPARENT)   # ∃hasChild.Parent ⊑ Grandparent
+_FAMILY_O = {_PARENT_RULE, _GRANDPARENT_RULE}
+_FAMILY_CE = GCI(_some("hasChild", _some("hasChild", _HUMAN)), _GRANDPARENT)
+
+
+def _entails(tbox, gci: GCI) -> bool:
+    """tbox ⊨ gci for a small acyclic EL TBox: grow the left side's tree with every
+    right side whose left side it matches (structurally), children first, until
+    nothing changes; then check the right side structurally."""
+    from learner.el_algorithm import subsumed_without_axioms
+
+    def grow(c: ELConcept, depth: int = 0) -> ELConcept:
+        assert depth < 20, "cyclic TBox"
+        for _ in range(50):
+            c = ELConcept(c.atoms, frozenset((r, grow(f, depth + 1)) for r, f in c.existentials))
+            atoms, exs = set(c.atoms), set(c.existentials)
+            for ax in tbox:
+                if subsumed_without_axioms(c, ax.lhs):
+                    atoms |= ax.rhs.atoms
+                    exs |= ax.rhs.existentials
+            if atoms == c.atoms and exs == c.existentials:
+                return c
+            c = ELConcept(frozenset(atoms), frozenset(exs))
+        raise AssertionError("no fixpoint")
+
+    return subsumed_without_axioms(grow(gci.lhs), gci.rhs)
+
+
+class _FamilyOracle:
+    """Teacher for O (default _FAMILY_O).  EQ: the counterexample (default _FAMILY_CE)
+    while H misses it, then whichever axiom of O H still misses, then None."""
+
+    def __init__(self, O=None, ce=None, signature=None):
+        self.O = _FAMILY_O if O is None else O
+        self.ce = _FAMILY_CE if ce is None else ce
+        self.signature = signature or {"Grandparent", "Human", "Parent"}
+        self.mq_count = 0
+        self.eq_count = 0
+
+    def MQ(self, gci: GCI) -> bool:
+        self.mq_count += 1
+        return _entails(self.O, gci)
+
+    def EQ(self, H):
+        self.eq_count += 1
+        for gci in (self.ce, *sorted(self.O, key=str)):
+            if not _entails(H, gci):
+                return gci
+        return None
+
+    def make_H_MQ(self, H):
+        return lambda gci: _entails(H, gci)
+
+    def on_H_add(self, gci):
+        pass
+
+
+@pytest.mark.parametrize("reuse, expected_eqs", [(False, 3), (True, 2)])
+def test_50_reuse_counterexample_saves_an_eq(reuse, expected_eqs):
+    # Without reuse: EQ 1 sends the counterexample (zoom: the Parent rule), EQ 2
+    # sends it again (cut: the Grandparent rule), EQ 3 says H ≡ O.  With reuse the
+    # second round needs no EQ.  Both learn O.
+    oracle = _FamilyOracle()
+    H = learn_el_terminology(oracle, max_iterations=10, precomputation=False,
+                             reuse_counterexamples=reuse)
+    assert H == _FAMILY_O
+    assert oracle.eq_count == expected_eqs
+
+
+def test_51_reused_rounds_do_not_count_as_eqs():
+    # max_iterations counts EQs: one EQ is enough to learn both rules from the
+    # counterexample when it is reused.
+    oracle = _FamilyOracle()
+    H = learn_el_terminology(oracle, max_iterations=1, precomputation=False,
+                             reuse_counterexamples=True)
+    assert H == _FAMILY_O
+    assert oracle.eq_count == 1
+
+
+def test_52_unproductive_reuse_falls_back_to_eq(monkeypatch, caplog):
+    # An inconsistent oracle (as an LLM can be): every round on the counterexample
+    # yields the Parent rule.  The reused round adds nothing, so the reuse ends and
+    # the next round asks an EQ, which returns the same counterexample; that second
+    # unproductive round with H unchanged stops learning, as without reuse.
+    import learner.el_algorithm as el
+    monkeypatch.setattr(el, "compute_left_essential", lambda **kw: _PARENT_RULE)
+    oracle = _FamilyOracle()
+    with caplog.at_level("WARNING", logger="learner.el_algorithm"):
+        H = el.learn_el_terminology(oracle, max_iterations=10, precomputation=False,
+                                    reuse_counterexamples=True)
+    assert H == {_PARENT_RULE}
+    assert oracle.eq_count == 2
+    assert "no progress is possible" in caplog.text
+
+
+# ===========================================================================
+# 53–54  decomposition links (with reuse_counterexamples; not in the paper)
+# ===========================================================================
+# Added 2026-11-16, from cex32 animals seed 2: Cat ⊑ Animal ⊓ ∃eats.Meat taught
+# a rule about Carnivore, but H (no Phase 1) never learned Cat ⊑ Carnivore, so
+# it could not give the counterexample back.
+
+_CAT, _CARNIVORE, _MEAT = (ELConcept(frozenset({n})) for n in ("Cat", "Carnivore", "Meat"))
+_CAT_LINK = GCI(_CAT, _CARNIVORE)                                   # Cat ⊑ Carnivore
+_CARNIVORE_RULE = GCI(_CARNIVORE, _some("eats", _MEAT))             # Carnivore ⊑ ∃eats.Meat
+_CAT_O = {_CAT_LINK, _CARNIVORE_RULE}
+_CAT_CE = GCI(_CAT, _some("eats", _MEAT))                           # Cat ⊑ ∃eats.Meat
+_CAT_SIG = {"Carnivore", "Cat", "Meat"}
+
+
+def test_53_right_essential_reports_root_link():
+    # Saturation writes Carnivore into the root (MQ Cat ⊑ Carnivore ⊓ ∃eats.Meat);
+    # decomposition then moves to Carnivore ⊑ ∃eats.Meat, new to H.  The move from
+    # Cat to Carnivore is reported as the link Cat ⊑ Carnivore.
+    mq = lambda gci: _entails(_CAT_O, gci)
+    links: list[GCI] = []
+    alpha = compute_right_essential(lhs=_CAT, rhs=_CAT_CE.rhs, hypothesis=set(), MQ=mq,
+                                    signature=_CAT_SIG, H_MQ=lambda gci: False, links=links)
+    assert alpha == _CARNIVORE_RULE
+    assert links == [_CAT_LINK]
+    # Without the list (the default), nothing is reported and α is the same.
+    assert compute_right_essential(lhs=_CAT, rhs=_CAT_CE.rhs, hypothesis=set(), MQ=mq,
+                                   signature=_CAT_SIG, H_MQ=lambda gci: False) == alpha
+
+
+@pytest.mark.parametrize("reuse, expected_eqs", [
+    # Without: H = {Carnivore rule} misses Cat ⊑ ∃eats.Meat, so the teacher sends it
+    # again and a second round cuts it down to Cat ⊑ Carnivore.
+    (False, 3),
+    # With: the link comes with α, so H covers the counterexample at once; no
+    # reused round is needed.
+    (True, 2),
+])
+def test_54_link_added_with_alpha(caplog, reuse, expected_eqs):
+    oracle = _FamilyOracle(O=_CAT_O, ce=_CAT_CE, signature=_CAT_SIG)
+    with caplog.at_level("INFO", logger="learner.el_algorithm"):
+        H = learn_el_terminology(oracle, max_iterations=10, precomputation=False,
+                                 reuse_counterexamples=reuse)
+    assert all(_entails(H, ax) for ax in _CAT_O)
+    assert oracle.eq_count == expected_eqs
+    assert ("link from decomposition" in caplog.text) is reuse
+    assert "reused" not in caplog.text

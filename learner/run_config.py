@@ -122,6 +122,19 @@ OPTIONS: tuple[Option, ...] = (
            "From 2026-11-16 the standard sets 0 and oracle.eq.counterexample.attempts 10: one rule, stop "
            "after 10 unusable answers in a row (before: 3 attempts per EQ, 6 failed EQs, 18 attempts).",
            flag="--max-failed-eqs", default=0, env="MAX_FAILED_EQS", see=("cex19",)),
+    Option("learner.reuse_counterexamples", "Keep what a counterexample taught", "bool",
+           "Whether the learner holds on to a counterexample's information beyond the paper's round. "
+           "Not in the paper; added 2026-11-16 (note counterexample-reuse). A round can learn a fact other "
+           "than the one sent, and without Phase 1 H can then still miss the counterexample (cex26+: 4 of "
+           "232 true accepted counterexamples).",
+           flag="--reuse-counterexamples", default=False, env="REUSE_COUNTEREXAMPLES",
+           choices=((True, "(1) When decomposition on the right moves from A to a name A′ of the root's "
+                           "label, A ⊑ A′ (already confirmed) is added to H too if H lacks it. (2) After a "
+                           "round that extended H, the same counterexample again, without an EQ, while H does "
+                           "not entail it; reused rounds don't count towards learner.max_eqs, and one that adds "
+                           "nothing ends the reuse."),
+                    (False, "As in the paper: each round adds one O-essential inclusion and starts with an EQ.")),
+           see=()),
     # --- Oracle ----------------------------------------------------------------
     Option("oracle.kind", "Oracle", "choice",
            "What the model is given. Before 2026-11-11 these were called taught (axioms) and "

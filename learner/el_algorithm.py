@@ -635,7 +635,8 @@ def decompose_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool], H_
 # O-essential GCI computation  (the core of the algorithm)
 # ---------------------------------------------------------------------------
 
-def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], signature: set[str], H_MQ: Callable[[GCI], bool]) -> GCI:
+def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], signature: set[str], H_MQ: Callable[[GCI], bool],
+                            links: Optional[list[GCI]] = None) -> GCI:
     """
     Compute a *right O-essential* α from the GCI  lhs ⊑ rhs
     (used in line 6 of Algorithm 1, when lhs ∈ Σ_O ∩ N_C).
@@ -657,6 +658,15 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
 
     This corresponds to line 6:
       Compute a right O-essential α from C' ⊑ D' ⊓ ⊓_{C'⊑F'∈H} F'
+
+    ``links`` (not in the paper): when given, each decomposition case (a) at
+    the root, which moves from the left side A to a name A′ in the root's
+    label, appends A ⊑ A′.  O ⊨ it is already known: the root's label only
+    holds names of the counterexample's (confirmed) right side, of H's right
+    sides for A, and names saturation's MQs confirmed.  Phase 1 puts every
+    such inclusion in H; without Phase 1, H may lack it, and then α (about A′)
+    does not give H the counterexample back.  The caller decides whether to
+    add the links.
     """
 
     # Collect all right-hand sides of H-axioms whose lhs == C'
@@ -714,6 +724,10 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
             )
             break
         logger.info(f"decomposed {candidate}")
+        # Case (a) at the root: the left side moves to a name of the root's label.
+        if links is not None and candidate.lhs != current_lhs and \
+                candidate.lhs.atoms <= current_rhs.atoms and not candidate.lhs.existentials:
+            links.append(GCI(current_lhs, candidate.lhs))
         current_lhs = candidate.lhs
         current_rhs = candidate.rhs
         if candidate in visited:
@@ -871,7 +885,7 @@ def normalise_counterexample(
 # ---------------------------------------------------------------------------
 
 def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000, precomputation: bool = True,
-                         max_failed_eqs: int = 0) -> set[GCI]:
+                         max_failed_eqs: int = 0, reuse_counterexamples: bool = False) -> set[GCI]:
     """
     Algorithm 1: Learn an EL terminology from an equivalence oracle.
 
@@ -917,10 +931,23 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000, precomputat
     returned, minimised as usual.  ``max_failed_eqs``: an EQ that raises it is
     tolerated this many times in a row (the next iteration asks again, with H
     unchanged); each failed EQ counts towards ``max_iterations``.
+
+    ``reuse_counterexamples`` (not in the paper) keeps what a counterexample
+    taught.  (1) When decomposition on the right moves from the left side A to
+    a name A′ of the root's label, A ⊑ A′ is added to H too if H lacks it (O ⊨
+    it is already confirmed; Phase 1 would have added it).  (2) After a round
+    that extended H, the same counterexample is processed again, without an EQ,
+    as long as H does not entail it.  It is still a positive counterexample: O ⊨ it (the
+    teacher said so) and H ⊭ it (checked).  A round often learns a smaller
+    inclusion than the one sent (a zoom in Lemma 6, a decomposition in Lemma
+    5), so the counterexample can hold more for H to learn.  Reused rounds
+    don't count towards ``max_iterations``, which counts EQs.  A reused round
+    that adds nothing (an inconsistent oracle) ends the reuse, and the next
+    round asks an EQ.  Each reused round adds a new GCI to H, so the reuse ends.
     """
     H: set[GCI] = set()
     try:
-        _learn(oracle, H, max_iterations, precomputation, max_failed_eqs)
+        _learn(oracle, H, max_iterations, precomputation, max_failed_eqs, reuse_counterexamples)
     except OracleError as exc:
         logger.warning(
             "Stopping: the oracle could not give a usable answer (%s). "
@@ -931,7 +958,7 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000, precomputat
 
 
 def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: bool = True,
-           max_failed_eqs: int = 0) -> None:
+           max_failed_eqs: int = 0, reuse_counterexamples: bool = False) -> None:
     """Phase 1 and the refinement loop of ``learn_el_terminology``, adding to *H*
     in place, so that what was learned survives an ``OracleError``."""
 
@@ -973,27 +1000,45 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
     # progress guard below); None after a round that extended H.
     unproductive_counterexample: Optional[GCI] = None
     failed_eqs = 0   # EQs in a row that raised OracleError
-    for iteration in range(max_iterations):
+    # With reuse_counterexamples: the last counterexample, while H still misses it
+    # after a round that extended H; the next round processes it without an EQ.
+    pending: Optional[GCI] = None
+    iteration = 0    # EQs asked so far; reused rounds don't count
+    while True:
 
-        # Line 3: Ask the oracle for a positive counterexample
-        try:
-            with step("EQ"):   # the EQ's own MQs: the check, PAC sampling
-                counterexample = oracle.EQ(H)
-        except OracleError as exc:
-            failed_eqs += 1
-            if failed_eqs > max_failed_eqs:
-                raise
-            logger.warning("EQ %d gave no usable answer (%s); failed EQ %d of %d allowed in a "
-                           "row, asking again.", iteration + 1, exc, failed_eqs, max_failed_eqs)
-            continue
-        failed_eqs = 0
+        if pending is not None:
+            counterexample, pending = pending, None
+            logger.info("Iteration %d, reused | Counterexample: %s (H still misses it)",
+                        iteration, counterexample)
+        else:
+            if iteration >= max_iterations:
+                logger.warning(
+                    "Reached max_iterations=%d without convergence. "
+                    "H may not yet be equivalent to O.",
+                    max_iterations,
+                )
+                break
+            # Line 3: Ask the oracle for a positive counterexample
+            try:
+                with step("EQ"):   # the EQ's own MQs: the check, PAC sampling
+                    counterexample = oracle.EQ(H)
+            except OracleError as exc:
+                failed_eqs += 1
+                iteration += 1
+                if failed_eqs > max_failed_eqs:
+                    raise
+                logger.warning("EQ %d gave no usable answer (%s); failed EQ %d of %d allowed in a "
+                               "row, asking again.", iteration, exc, failed_eqs, max_failed_eqs)
+                continue
+            failed_eqs = 0
 
-        if counterexample is None:
-            # oracle says H ≡ O  →  we are done
-            logger.info("Oracle confirmed H ≡ O after %d iteration(s).", iteration)
-            break
+            if counterexample is None:
+                # oracle says H ≡ O  →  we are done
+                logger.info("Oracle confirmed H ≡ O after %d iteration(s).", iteration)
+                break
+            iteration += 1
 
-        logger.info("Iteration %d | Counterexample: %s", iteration + 1, counterexample)
+            logger.info("Iteration %d | Counterexample: %s", iteration, counterexample)
 
         # A positive counterexample must not follow from H.  An oracle that is
         # not a reasoner (e.g. an LLM) can return one that does; the rest of the
@@ -1003,7 +1048,7 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
             logger.warning(
                 "Counterexample %s is already entailed by H; it cannot refine H. "
                 "Stopping after %d iteration(s); H may not be equivalent to O.",
-                counterexample, iteration,
+                counterexample, iteration - 1,
             )
             break
 
@@ -1025,7 +1070,7 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
                     "Counterexample %s again cannot be normalised: the oracle's answers "
                     "are inconsistent (see the previous warning), so no progress is "
                     "possible. Stopping after %d iteration(s); H may not be equivalent to O.",
-                    counterexample, iteration + 1,
+                    counterexample, iteration,
                 )
                 break
             logger.warning(
@@ -1041,6 +1086,9 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
 
         C_prime = normalised.lhs
         D_prime = normalised.rhs
+        # With reuse_counterexamples: A ⊑ A′ for each move of decomposition at
+        # the root from A to A′ (compute_right_essential), added to H below.
+        links: Optional[list[GCI]] = [] if reuse_counterexamples else None
 
         # Determine whether C' or D' is atomic (∈ Σ_O ∩ N_C)
         C_prime_is_atomic = (
@@ -1079,6 +1127,7 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
                 MQ=oracle.MQ,
                 signature=oracle.signature,
                 H_MQ=H_MQ,
+                links=links,
             )
         else:
             # Lines 7–8: D' ∈ Σ_O ∩ N_C  →  compute a LEFT O-essential
@@ -1102,13 +1151,24 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
         # answers the same H with the same counterexample (a deterministic LLM
         # judge) would loop, so a second unproductive round on the same
         # counterexample with H unchanged stops learning.
-        if H_MQ(alpha):
+        # Not in the paper: the links decomposition confirmed on the way.  Without
+        # Phase 1 H may lack A ⊑ A′, and then α (about A′) alone does not give H
+        # the counterexample back.  A new link counts as progress.
+        new_links = []
+        for link in links or ():
+            if not H_MQ(link):
+                logger.info("  Adding to H (link from decomposition): %s", link)
+                H.add(link)
+                oracle.on_H_add(link)
+                new_links.append(link)
+
+        if H_MQ(alpha) and not new_links:
             if counterexample == unproductive_counterexample:
                 logger.warning(
                     "Counterexample %s again yields O-essential %s, already entailed "
                     "by H; no progress is possible. Stopping after %d iteration(s); "
                     "H may not be equivalent to O.",
-                    counterexample, alpha, iteration + 1,
+                    counterexample, alpha, iteration,
                 )
                 break
             logger.warning(
@@ -1120,17 +1180,17 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
         unproductive_counterexample = None
 
         # Line 10: Add the essential GCI to H
-        logger.info("  Adding to H: %s", alpha)
-        H.add(alpha)
-        oracle.on_H_add(alpha)
+        if not H_MQ(alpha):
+            logger.info("  Adding to H: %s", alpha)
+            H.add(alpha)
+            oracle.on_H_add(alpha)
         logger.info("  |H| = %d", len(H))
 
-    else:
-        logger.warning(
-            "Reached max_iterations=%d without convergence. "
-            "H may not yet be equivalent to O.",
-            max_iterations,
-        )
+        # Not in the paper: the counterexample may hold more than α (e.g. α came
+        # from a zoom into a subtree).  While H misses it, it is still a positive
+        # counterexample, so the next round takes it again instead of an EQ.
+        if reuse_counterexamples and not H_MQ(counterexample):
+            pending = counterexample
 
 
 def _minimise(H: set[GCI]) -> set[GCI]:
