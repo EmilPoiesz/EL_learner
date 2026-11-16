@@ -139,7 +139,7 @@ The core of the learner is `learn_el_terminology` in `el_algorithm.py`.  When a 
 
 **Right O-essential** (C is atomic):
 
-1. **Concept saturation** (`saturate_concept_rhs`) — close the RHS under O-subsumptions to add all implied atomic names.
+1. **Concept saturation** (`saturate_concept_rhs`) — close the RHS under O-subsumptions to add all implied atomic names.  *Not in the paper (since 2026-11-16):* a candidate RHS at least as specific as one the MQ already rejected in the same saturation (structurally, with no axioms: `subsumed_without_axioms`) is answered False without an MQ, since O ⊭ lhs ⊑ R and R′ ⊑ R give O ⊭ lhs ⊑ R′.  The paper's rule re-tries every rejected name after each addition; with a correct oracle the learned H is the same (checked on all five ontologies with ELK) and saturation asks about half the MQs (animals 648 → 327, university 144 → 76, football 238 → 111, generations 1030 → 506).  With an LLM it also stops the model from accepting a filler that contains one it rejected.  Tests 48–49 in `tests/test_el_algorithm.py`.
 2. **Sibling merge** (`sibling_merge`) — merge same-role existentials validated against O.
 3. **RHS decomposition** (`decompose_rhs`) — split off sub-GCIs already known to H.
 

@@ -65,6 +65,8 @@ Test catalogue
 45  compute_right_essential — an inconsistent oracle's decomposition cycle stops at the first repeat
 46  learn_el_terminology    — precomputation=False skips Phase 1: no MQ before the first EQ, H starts empty
 47  learn_el_terminology    — max_failed_eqs: an EQ's OracleError is tolerated that many times in a row
+48  saturate_concept_rhs   — a rejected candidate is not asked again once the node grows (inconsistent oracle)
+49  saturate_concept_rhs   — a rejection inside a filler still applies after the root gains a name
 """
 
 from __future__ import annotations
@@ -882,3 +884,51 @@ def test_47_failed_eqs_tolerated(caplog, max_failed_eqs, expected_eqs, expected_
                                  max_failed_eqs=max_failed_eqs)
     assert oracle.eq_count == expected_eqs
     assert H == expected_h
+
+
+# ===========================================================================
+# 48–49  saturate_concept_rhs: rejected candidates are not asked again
+# ===========================================================================
+# Added 2026-11-16 (not in the paper): O ⊭ lhs ⊑ R and R′ ⊑ R with no axioms give
+# O ⊭ lhs ⊑ R′, so saturation answers such an R′ False without an MQ.
+
+
+def test_48_saturate_rejected_not_asked_again():
+    # An oracle that contradicts itself, as an LLM can: A ⊑ A ⊓ B is rejected, but
+    # A ⊑ A ⊓ B ⊓ C would be accepted.  Names are tried in sorted order, so B is
+    # rejected, then C added; the paper's rule then asks B again (as A ⊓ B ⊓ C)
+    # and would add it.  The rejection now stands.
+    answers = {frozenset({"A", "B"}): False, frozenset({"A", "C"}): True,
+               frozenset({"A", "B", "C"}): True}
+    asked: list[frozenset] = []
+
+    def mq(gci: GCI) -> bool:
+        assert gci.lhs == A and not gci.rhs.existentials
+        asked.append(gci.rhs.atoms)
+        return answers[gci.rhs.atoms]
+
+    result = saturate_concept_rhs(A, {"A", "B", "C"}, mq, lhs=A)
+    assert result.atoms == frozenset({"A", "C"})
+    assert asked == [frozenset({"A", "B"}), frozenset({"A", "C"})]
+
+
+def test_49_saturate_filler_rejection_survives_root_change():
+    # lhs A, RHS A ⊓ ∃r.C.  True exactly when the root's names are within {A, B} and
+    # the filler's within {C}.  Pass 1 adds B at the root and rejects C at the root
+    # and A, B in the filler; pass 2 (the root changed) asks none of them again,
+    # although the candidates now carry B at the root.
+    def ok(rhs: ELConcept) -> bool:
+        (role, filler), = rhs.existentials
+        return rhs.atoms <= {"A", "B"} and filler.atoms <= {"C"}
+
+    asked: list[ELConcept] = []
+
+    def mq(gci: GCI) -> bool:
+        asked.append(gci.rhs)
+        return ok(gci.rhs)
+
+    start = ELConcept(frozenset({"A"}), frozenset({("r", C)}))
+    result = saturate_concept_rhs(start, {"A", "B", "C"}, mq, lhs=A)
+    assert result == ELConcept(frozenset({"A", "B"}), frozenset({("r", C)}))
+    assert len(asked) == 4                      # root B, root C, filler A, filler B
+    assert len(set(asked)) == len(asked)        # nothing asked twice

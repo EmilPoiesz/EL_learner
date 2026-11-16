@@ -20,7 +20,8 @@ from typing import Callable, Optional, TypeVar
 from transformers import pipeline, GenerationConfig, set_seed
 
 from learner.cache.cache import LLMCache
-from learner.el_algorithm import Oracle, OracleError, ELConcept, GCI, current_step
+from learner.el_algorithm import (Oracle, OracleError, ELConcept, GCI, current_step,
+                                  subsumed_without_axioms)
 from learner.el_syntax import (IS_A_PATTERN, NAME_PATTERN, gci_names, gci_to_manchester, gci_to_nl,
                                gci_to_triple, parse_manchester_gci, parse_nl_gci, parse_triple,
                                without_brackets)
@@ -56,11 +57,7 @@ EQ_MIN_NEW_TOKENS = 128
 QUERY_STATS = ("asked", "cached", "generated", "prompt_tokens", "new_tokens", "seconds")
 
 
-def _subsumed(c: ELConcept, d: ELConcept) -> bool:
-    """c ⊑ d with no axioms at all: every atom of d is in c, and every ∃r.F of d has
-    an ∃r.F' in c with F' ⊑ F."""
-    return d.atoms <= c.atoms and all(
-        any(r == s and _subsumed(f2, f) for s, f2 in c.existentials) for r, f in d.existentials)
+_subsumed = subsumed_without_axioms   # c ⊑ d with no axioms (el_algorithm)
 
 
 def _trivial(gci: GCI) -> bool:

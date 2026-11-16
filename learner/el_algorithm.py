@@ -102,6 +102,15 @@ def existential_key(existential: Tuple[str, ELConcept]) -> Tuple[str, str]:
     return existential[0], str(existential[1])
 
 
+def subsumed_without_axioms(c: ELConcept, d: ELConcept) -> bool:
+    """c ⊑ d with no axioms at all (structural subsumption): every atom of d is in c,
+    and every ∃r.F of d has an ∃r.F' in c with F' ⊑ F.  Then c ⊑ d holds in every
+    ontology, so O ⊨ X ⊑ c implies O ⊨ X ⊑ d."""
+    return d.atoms <= c.atoms and all(
+        any(r == s and subsumed_without_axioms(f2, f) for s, f2 in c.existentials)
+        for r, f in d.existentials)
+
+
 @dataclass(frozen=True)
 class GCI:
     """
@@ -262,6 +271,7 @@ def saturate_concept_rhs(
     MQ: Callable[[GCI], bool],
     lhs: ELConcept,
     _rebuild: Callable[[ELConcept], ELConcept] = lambda x: x,
+    _rejected: Optional[list[ELConcept]] = None,
 ) -> ELConcept:
     """
     Saturate the RHS concept tree, per the paper's concept saturation rule:
@@ -274,7 +284,36 @@ def saturate_concept_rhs(
     ``_rebuild`` is an internal continuation used during recursion to reconstruct
     the full RHS from a modified subtree, so the MQ is always  lhs ⊑ full_rhs.
     External callers only pass the first four arguments.
+
+    Rejected candidates are not asked again (not in the paper)
+    ---------------------------------------------------------------------------
+    The rule as stated re-tries every name not yet in a node after every change
+    (the ``while changed`` loop), so a name rejected once is asked again, about a
+    larger tree, after each later addition anywhere in the RHS.  This function
+    keeps every full RHS the MQ rejected in ``_rejected`` (one list per top-level
+    call, shared with the recursive calls on the fillers) and answers a candidate
+    False without an MQ when it is at least as specific as a rejected one:
+
+        O ⊭ lhs ⊑ R   and   R′ ⊑ R with no axioms (``subsumed_without_axioms``)
+        give  O ⊭ lhs ⊑ R′   (else O ⊨ lhs ⊑ R′ ⊑ R).
+
+    Saturation only ever adds names, so every later candidate built from a
+    rejected one (the same name at the same node, in a larger tree) is caught,
+    whichever node it is at. Candidates are compared with the earlier rejections 
+    of this call only, not across calls or ``lhs`` values.
     """
+    rejected: list[ELConcept] = [] if _rejected is None else _rejected
+
+    def holds(rhs: ELConcept) -> bool:
+        """MQ lhs ⊑ rhs, or False without asking when rhs is at least as specific
+        as a rejected RHS; a rejection is remembered."""
+        if any(subsumed_without_axioms(rhs, r) for r in rejected):
+            return False
+        if MQ(GCI(lhs, rhs)):
+            return True
+        rejected.append(rhs)
+        return False
+
     atoms = set(concept.atoms)
     existentials = set(concept.existentials)
 
@@ -289,7 +328,7 @@ def saturate_concept_rhs(
             # New RHS concept with atom_prime added at this node; the rest of the tree is unchanged.
             candidate = ELConcept(frozenset(new_atoms | {atom_prime}), frozenset(existentials))
             # Check if O entails lhs ⊑ candidate (where candidate is the full RHS with atom_prime added at this node).
-            if MQ(GCI(lhs, _rebuild(candidate))):
+            if holds(_rebuild(candidate)):
                 new_atoms.add(atom_prime)
                 changed = True
         atoms = new_atoms
@@ -301,7 +340,8 @@ def saturate_concept_rhs(
                 role, filler, frozenset(atoms), frozenset(existentials), _rebuild
             )
             # Recursively saturate the filler concept; the rebuild function ensures that the MQ check is always against the full RHS with the updated filler.
-            saturated_filler = saturate_concept_rhs(filler, signature, MQ, lhs, filler_rebuild)
+            saturated_filler = saturate_concept_rhs(filler, signature, MQ, lhs, filler_rebuild,
+                                                    rejected)
             new_existentials.add((role, saturated_filler))
 
             if saturated_filler != filler:
