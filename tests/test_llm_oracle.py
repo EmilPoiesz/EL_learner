@@ -25,6 +25,7 @@ is replaced by a stub that returns scripted responses.
 49 EQ: why an answer failed, explained in one sentence naming nothing of the signature
 50 EQ: the explain setting adds those sentences to the retry lines, and only it
 51 EQ: a repeated unusable answer gets one retry line, saying how often (streaks of 10 from 2026-11-16)
+52 EQ: shuffle lists the concept names in a new, reproducible order per attempt; off, sorted
 """
 
 from __future__ import annotations
@@ -853,3 +854,31 @@ def test_51_repeated_reason_listed_once(tmp_path):
     assert "(you gave this answer" not in second
     assert third.count("'not a statement'") == 1
     assert "could not be used (you gave this answer 2 times): 'not a statement'" in third
+
+
+def _scope_line(prompt: str) -> list[str]:
+    line = next(ln for ln in prompt.splitlines() if ln.startswith("Concept names in scope: "))
+    return line.removeprefix("Concept names in scope: ").rstrip(".").split(", ")
+
+
+@pytest.mark.parametrize("shuffle", [False, True])
+def test_52_eq_shuffle(tmp_path, shuffle):
+    # judge no; an unusable answer, then a usable one the check accepts.  Shuffled,
+    # each attempt lists the names in its own order, the same in a second run.
+    names = {"A", "B", "C", "D", "E", "F", "G", "H"}
+    orders = []
+    for run in ("one", "two"):
+        (tmp_path / run).mkdir()
+        oracle = _oracle(tmp_path / run, ["no", "not a statement", "A SubClassOf B", "yes"])
+        oracle._sig = set(names)
+        oracle._eq = EQSettings(shuffle=shuffle)
+        assert oracle.EQ(set()) == _GCI
+        first, retry = _scope_line(oracle._pipe.prompts[1]), _scope_line(oracle._pipe.prompts[2])
+        assert set(first) == set(retry) == names
+        orders.append((first, retry))
+        if not shuffle:
+            assert first == retry == sorted(names)
+        else:
+            assert first != retry and sorted(names) not in (first, retry)
+    assert orders[0] == orders[1]
+    assert ("concept names shuffled" in EQSettings(shuffle=shuffle).describe()) is shuffle

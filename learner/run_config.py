@@ -213,6 +213,15 @@ OPTIONS: tuple[Option, ...] = (
                            "they are not proposed again."),
                     (False, "Only the current EQ's failed answers are listed.")),
            see=("cex10",)),
+    Option("oracle.eq.counterexample.shuffle", "Shuffled concept names", "bool",
+           "Whether the counterexample prompt lists the concept names in a new order for each "
+           "attempt. Added 2026-11-16 against fixation (a run proposing nearly everything about one "
+           "concept, cex30/cex31).",
+           flag="--eq-shuffle", default=False, env="EQ_SHUFFLE",
+           choices=((True, "A new order per attempt, drawn from the seed, the EQ and the attempt "
+                           "(reproducible). Roles, the judge and the check unchanged."),
+                    (False, "Sorted, the same in every prompt.")),
+           see=()),
     Option("oracle.eq.counterexample.explain", "Explain failures", "bool",
            "Whether a retry line also says what to do instead of the failed answer.",
            flag="--eq-explain", default=False, env="EQ_EXPLAIN",

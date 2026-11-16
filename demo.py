@@ -554,6 +554,12 @@ def build_parser() -> argparse.ArgumentParser:
              "not a concept, nothing H already implies).",
     )
     parser.add_argument(
+        "--eq-shuffle", action=argparse.BooleanOptionalAction, default=False,
+        help="With an LLM's own equivalence queries: list the concept names in the "
+             "counterexample prompt in a new order for each attempt (from the seed, the EQ "
+             "and the attempt) instead of sorted.",
+    )
+    parser.add_argument(
         "--eq-temperature", type=float, default=0.0, metavar="T",
         help="With an LLM's own equivalence queries: sample only the counterexample "
              "prompts at T (Ollama's other defaults, seeded by --seed); the MQs, the "
@@ -728,6 +734,7 @@ if __name__ == "__main__":
                 check_question=args.eq_check_question,
                 memory=args.eq_memory,
                 explain=args.eq_explain,
+                shuffle=args.eq_shuffle,
                 temperature=args.eq_temperature,
                 generation=args.eq_generation,
                 attempts=args.eq_attempts,

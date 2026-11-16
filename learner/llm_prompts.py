@@ -14,8 +14,11 @@ from learner.el_algorithm import GCI, existential_key
 from learner.el_syntax import gci_to_manchester, gci_to_nl, hypothesis_to_manchester, hypothesis_to_nl
 
 
-def _scope(sig: set[str], roles: set[str]) -> tuple[str, str]:
-    return ", ".join(sorted(sig)), ", ".join(sorted(roles)) if roles else "(none)"
+def _scope(sig: set[str] | Sequence[str], roles: set[str]) -> tuple[str, str]:
+    """The concept names and roles as listed in a prompt: sorted, except a *sig* given
+    as a list or tuple, which keeps its order (EQSettings.shuffle)."""
+    names = list(sig) if isinstance(sig, (list, tuple)) else sorted(sig)
+    return ", ".join(names), ", ".join(sorted(roles)) if roles else "(none)"
 
 
 # ---------------------------------------------------------------------------
