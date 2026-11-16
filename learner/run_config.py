@@ -118,7 +118,9 @@ OPTIONS: tuple[Option, ...] = (
            flag="--max-eqs", nullable=True, env="MAX_EQS", see=("cex12", "cex19")),
     Option("learner.max_failed_eqs", "Failed EQs tolerated", "int",
            "EQs in a row without a usable counterexample before learning stops. The next EQ asks again, "
-           "with the reasons the earlier answers failed in its prompt. 0: the first failed EQ ends learning.",
+           "with the reasons the earlier answers failed in its prompt. 0: the first failed EQ ends learning. "
+           "From 2026-11-16 the standard sets 0 and oracle.eq.counterexample.attempts 10: one rule, stop "
+           "after 10 unusable answers in a row (before: 3 attempts per EQ, 6 failed EQs, 18 attempts).",
            flag="--max-failed-eqs", default=0, env="MAX_FAILED_EQS", see=("cex19",)),
     # --- Oracle ----------------------------------------------------------------
     Option("oracle.kind", "Oracle", "choice",
@@ -224,7 +226,9 @@ OPTIONS: tuple[Option, ...] = (
            see=("cex28",)),
     Option("oracle.eq.counterexample.attempts", "Attempts per EQ", "int",
            "Attempts at a usable counterexample per EQ; each retry lists why the earlier answers "
-           "could not be used.", flag="--eq-attempts", default=3, env="EQ_ATTEMPTS", minimum=1),
+           "could not be used (each reason once). With learner.max_failed_eqs 0 (the standard from "
+           "2026-11-16, attempts 10) this is the stopping rule: learning stops after this many unusable "
+           "answers in a row, and an accepted counterexample starts the count again.", flag="--eq-attempts", default=3, env="EQ_ATTEMPTS", minimum=1),
     Option("oracle.eq.counterexample.max_new_tokens", "Tokens per counterexample", "int",
            "The generation budget of the counterexample prompts only; the MQs, the judge and the check "
            "keep oracle.max_new_tokens. Unset: that budget, but at least 128. A reasoning model has to "

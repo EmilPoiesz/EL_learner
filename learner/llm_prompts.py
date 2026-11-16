@@ -317,9 +317,13 @@ def repeated_feedback(failed: int) -> str:
     return f"The previous {queries} in a row gave no usable answer; this is a new one."
 
 
-def unusable_feedback(reason: str) -> str:
-    """The retry line for an answer of this EQ that could not be used."""
-    return f"Your previous answer could not be used: {reason}."
+def unusable_feedback(reason: str, times: int = 1) -> str:
+    """The retry line for an answer of this EQ that could not be used; *times*: how
+    often it failed this way in this EQ (said when more than once).  Each reason gets
+    one line, and the count keeps the prompt changing when the model repeats itself:
+    an identical prompt would get the identical (cached) answer for every attempt left."""
+    again = f" (you gave this answer {times} times)" if times > 1 else ""
+    return f"Your previous answer could not be used{again}: {reason}."
 
 
 # Why an answer failed, explained (EQSettings.explain, cex28).  In cex25-cex27 Qwen

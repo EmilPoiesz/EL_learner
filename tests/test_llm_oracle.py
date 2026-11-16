@@ -24,6 +24,7 @@ is replaced by a stub that returns scripted responses.
 48 ... but not a clause on a filler, not the left-hand side, not in Manchester syntax
 49 EQ: why an answer failed, explained in one sentence naming nothing of the signature
 50 EQ: the explain setting adds those sentences to the retry lines, and only it
+51 EQ: a repeated unusable answer gets one retry line, saying how often (streaks of 10 from 2026-11-16)
 """
 
 from __future__ import annotations
@@ -842,3 +843,13 @@ def test_50_explain_setting_in_retry_lines(tmp_path):
         assert ("true of anything" in last) is explain
         assert ("H already implies it" in last) is explain
         assert ("no 'not'" in last) is explain
+
+
+def test_51_repeated_reason_listed_once(tmp_path):
+    # judge no; the same unusable answer twice, then a usable one the check accepts.
+    oracle = _oracle(tmp_path, ["no", "not a statement", "not a statement", "A SubClassOf B", "yes"])
+    assert oracle.EQ(set()) == _GCI
+    second, third = oracle._pipe.prompts[2], oracle._pipe.prompts[3]
+    assert "(you gave this answer" not in second
+    assert third.count("'not a statement'") == 1
+    assert "could not be used (you gave this answer 2 times): 'not a statement'" in third

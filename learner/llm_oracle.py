@@ -914,7 +914,10 @@ class LLMOracle(Oracle):
         earlier = again + [prompts.rejected_earlier_feedback(text) for text in self._rejected]
         earlier += [prompts.unusable_feedback(r) for r in self._failed]
         for attempt in range(1, settings.attempts + 1):
-            feedback = earlier + [prompts.unusable_feedback(r) for r in reasons]
+            # Each reason once, with how often it came (a streak can be 10 attempts long):
+            # a repeated line only lengthened the prompt, and without the count a repeat
+            # would leave the prompt as it was, so every attempt left got the cached answer.
+            feedback = earlier + [prompts.unusable_feedback(r, n) for r, n in Counter(reasons).items()]
             prompt = build(self._sig, self._roles, hypothesis, feedback, language)
             try:
                 counterexample = self._query(prompt, parse=parse, label=label,
