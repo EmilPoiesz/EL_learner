@@ -282,6 +282,7 @@ def _run_grounded_llm_demo(
     precomputation: bool = True,
     max_failed_eqs: int = 0,
     reuse_counterexamples: bool = False,
+    thinking: bool = True,
 ) -> bool:
     """
     LLM oracle over an ontology file, scored against it.  ``include_axioms``:
@@ -315,6 +316,8 @@ def _run_grounded_llm_demo(
         print(f"  Stopping : after {max_failed_eqs + 1} EQs in a row without a usable answer")
     if reuse_counterexamples:
         print("  Reuse    : a counterexample H still misses is processed again before the next EQ")
+    if not thinking:
+        print("  Thinking : off (enable_thinking=False in the chat template)")
     if mq_asked_as != "paper":
         print("  MQs      : asked as the counterexample check is (Phase 1 and refinement)")
 
@@ -343,6 +346,7 @@ def _run_grounded_llm_demo(
                 seed=seed or 0,
                 eq_settings=eq_settings,
                 truth=judge,   # labels proposals in the log; never used for learning
+                thinking=thinking,
                 mq_asked_as=mq_asked_as,
                 # None keeps LLMOracle's default budget.
                 **({} if max_new_tokens is None else {"max_new_tokens": max_new_tokens}),
@@ -621,6 +625,12 @@ def build_parser() -> argparse.ArgumentParser:
              "don't count towards --max-eqs.",
     )
     parser.add_argument(
+        "--no-thinking", action="store_true",
+        help="With an LLM over an ontology (axioms, signature): pass enable_thinking=False "
+             "to the chat template, which switches a hybrid model's reasoning off (Qwen3-8B, "
+             "14B, 32B); other templates ignore it.",
+    )
+    parser.add_argument(
         "--no-precompute", action="store_true",
         help="With an LLM over an ontology (axioms, signature): skip Phase 1, the MQ for "
              "every ordered pair of concept names, so H starts empty and grows only from "
@@ -791,6 +801,7 @@ if __name__ == "__main__":
             precomputation=not args.no_precompute,
             max_failed_eqs=args.max_failed_eqs,
             reuse_counterexamples=args.reuse_counterexamples,
+            thinking=not args.no_thinking,
             mq_asked_as=args.mq_asked_as,
         )
     else:

@@ -326,6 +326,13 @@ class LLMOracle(Oracle):
         check is (``EQSettings``), so the model is not asked one statement in two forms
         within a run (cex19: half the accepted counterexamples were denied by the next
         refinement MQ).  Needs a paper prompt style.
+    thinking : bool
+        True (default): the chat template as it is.  False: ``enable_thinking=False``
+        is passed to the chat template, which switches a hybrid model's reasoning
+        off (Qwen3-8B/14B/32B: the template fills in an empty <think></think>, and
+        the model answers at once); templates without the switch ignore it.  Part
+        of the cache key.  Added 2026-11-16: with thinking on, an MQ took minutes
+        and the hybrids' runs (cex35-37) ran into the time limit.
     truth : callable, optional
         Whether O entails a GCI (e.g. ELK over the ontology file).  Only to label
         the proposed counterexamples in the log and in ``eq_outcomes``: it is
@@ -342,6 +349,7 @@ class LLMOracle(Oracle):
     _thinks = False
     truncated = 0
     _generate_kwargs: dict = {}   # model_defaults_off(model)
+    _template_kwargs: dict = {}   # passed to the chat template ({"enable_thinking": False})
     _failed_eqs = 0               # EQs in a row that gave no usable answer
     _mq_as_check = False          # mq_asked_as == "check"
     _truth: Callable[[GCI], bool] | None = None   # labels proposals for the log only
@@ -365,8 +373,10 @@ class LLMOracle(Oracle):
         eq_settings: EQSettings = EQSettings(),
         truth: Callable[[GCI], bool] | None = None,
         mq_asked_as: str = "paper",
+        thinking: bool = True,
     ):
         super().__init__()
+        self._template_kwargs = {} if thinking else {"enable_thinking": False}
         if prompt_style not in PROMPT_STYLES:
             raise ValueError(f"prompt_style must be one of {PROMPT_STYLES}, not {prompt_style!r}")
         self._prompt_style = prompt_style
@@ -406,8 +416,10 @@ class LLMOracle(Oracle):
         self._pad_token_id = (
             tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         )
+        # With thinking off, a hybrid's template ends with an empty <think></think>.
         self._thinks = tokenizer.apply_chat_template(
             [{"role": "user", "content": "x"}], tokenize=False, add_generation_prompt=True,
+            **self._template_kwargs,
         ).rstrip().endswith("<think>")
         self._generate_kwargs = model_defaults_off(self._pipe.model)
         self._model_name = model_name_or_path
@@ -503,7 +515,8 @@ class LLMOracle(Oracle):
         ]
         # Part of the cache key: a response generated under other settings is not reused.
         params = {"max_new_tokens": max_new_tokens or self._max_new_tokens,
-                  **(sampling or self._sampling or {"do_sample": False})}
+                  **(sampling or self._sampling or {"do_sample": False}),
+                  **self._template_kwargs}
 
         kind = (current_step(), query_kind(label))
         # Cache lookup
@@ -524,11 +537,13 @@ class LLMOracle(Oracle):
                 logger.warning("Cached %s response does not parse; regenerating.", label)
 
         # The seed only keys the cache; set_seed in __init__ seeded the generator.
-        config = {k: v for k, v in params.items() if k != "seed"}
+        config = {k: v for k, v in params.items() if k != "seed" and k not in self._template_kwargs}
         generation_config = GenerationConfig(**config, pad_token_id=self._pad_token_id)
 
         start = time.perf_counter()
-        outputs = self._pipe(messages, generation_config=generation_config, **self._generate_kwargs)
+        template = {"tokenizer_encode_kwargs": self._template_kwargs} if self._template_kwargs else {}
+        outputs = self._pipe(messages, generation_config=generation_config, **self._generate_kwargs,
+                             **template)
         seconds = time.perf_counter() - start
         response = outputs[0]["generated_text"][-1]["content"].strip()
         self._record(kind, asked=1, generated=1, seconds=seconds, **self._tokens(messages, response))
@@ -566,7 +581,8 @@ class LLMOracle(Oracle):
         if tokenizer is None:
             return {}
         try:
-            prompt = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+            prompt = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
+                                                   **self._template_kwargs)
             return {"prompt_tokens": len(prompt),
                     "new_tokens": len(tokenizer(response, add_special_tokens=False)["input_ids"])}
         except Exception:   # a count is not worth a failed run

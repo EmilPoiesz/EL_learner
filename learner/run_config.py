@@ -144,6 +144,16 @@ OPTIONS: tuple[Option, ...] = (
                     ("signature", "Only the concept and role names; the model answers from its own knowledge, "
                                   "as in the paper. The ontology is only what the result is scored against.")),
            aliases=(("taught", "axioms"), ("parametric", "signature"))),
+    Option("oracle.thinking", "Thinking", "bool",
+           "Whether a hybrid model reasons before it answers (Qwen3-8B/14B/32B). Added 2026-11-16: with "
+           "thinking on an MQ took minutes and cex35-37 ran into the time limit. Models without the switch "
+           "in their chat template are not affected.",
+           flag="--no-thinking", default=True, invert=True, env="THINKING",
+           choices=((True, "The chat template as it is: a hybrid reasons in <think> first; only the text "
+                           "after </think> is read."),
+                    (False, "enable_thinking=False is passed to the chat template: a hybrid answers at once, "
+                            "like an Instruct model. Part of the cache key.")),
+           see=("cex35", "cex36", "cex37")),
     Option("oracle.temperature", "Decoding", "float",
            "0: greedy. Above 0: sampled at this temperature with Ollama's other defaults (top-k 40, top-p "
            "0.9, repeat penalty 1.1), seeded by the seed. Applies to the MQs, the judge and the check; the "

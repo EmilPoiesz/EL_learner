@@ -27,6 +27,7 @@ is replaced by a stub that returns scripted responses.
 51 EQ: a repeated unusable answer gets one retry line, saying how often (streaks of 10 from 2026-11-16)
 52 EQ: shuffle lists the concept names in a new, reproducible order per attempt; off, sorted
 53 EQ: mask: after the first accepted counterexample, N EQs show an empty H with H's left-side concepts out of scope
+54 thinking off: enable_thinking=False reaches the chat template, and keys the cache apart from thinking on
 """
 
 from __future__ import annotations
@@ -935,3 +936,19 @@ def test_53_eq_mask_phase(tmp_path):
     assert "A SubClassOf D" in last                             # the rejection is back
     assert "masked phase of 2" in EQSettings(mask=2).describe()
     assert "masked" not in EQSettings().describe()
+
+
+def test_54_thinking_off_reaches_template_and_cache_key(tmp_path):
+    # Thinking on (the default) passes nothing to the chat template; off passes
+    # enable_thinking=False.  The same MQ asked with thinking off is not served from
+    # the answer cached with thinking on.
+    oracle = _oracle(tmp_path, ["yes", "no"])
+    assert oracle.MQ(_GCI) is True
+    assert "tokenizer_encode_kwargs" not in oracle._pipe.kwargs[0]
+
+    oracle._template_kwargs = {"enable_thinking": False}
+    assert oracle.MQ(_GCI) is False                      # generated again, not the cached "yes"
+    assert oracle._pipe.calls == 2
+    assert oracle._pipe.kwargs[1]["tokenizer_encode_kwargs"] == {"enable_thinking": False}
+    assert oracle.MQ(_GCI) is False                      # now cached under its own key
+    assert oracle._pipe.calls == 2
