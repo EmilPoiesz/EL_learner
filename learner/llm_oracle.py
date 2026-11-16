@@ -181,6 +181,18 @@ class EQSettings:
         about one concept (cex30 animals: Bird in 132 of 132), and the
         alphabetical list puts the same names first in every prompt.  The roles,
         the judge and the check are not changed.
+    mask : int
+        0 (default): off.  N > 0: a masked phase of N accepted counterexamples,
+        starting after the run's first accepted one.  In it the prompts (judge
+        and counterexample) show an empty H, as at the start of a fresh run, and
+        leave out of scope every concept on the left side of an axiom of H (what
+        H is about), so an answer using one is unusable like any name not in
+        scope; the mask grows as H does.  Rejections remembered and carried
+        retry lines that use a masked name are left out too.  Afterwards
+        everything is as without the mask.  Only the prompts change: "follows
+        from H" and the learner use the real H.  Added 2026-11-16 against
+        fixation, after shuffling alone did not move animals off Bird (note
+        fixation-probe).
     """
 
     mode: str = "judge"
@@ -190,6 +202,7 @@ class EQSettings:
     memory: bool = False
     explain: bool = False
     shuffle: bool = False
+    mask: int = 0
     temperature: float = 0.0
     attempts: int = 3
     generation: str = "default"
@@ -207,6 +220,8 @@ class EQSettings:
         if self.check_question not in CHECK_QUESTIONS:
             raise ValueError(f"check_question must be one of {CHECK_QUESTIONS}, "
                              f"not {self.check_question!r}")
+        if self.mask < 0:
+            raise ValueError(f"mask must be at least 0, not {self.mask}")
         if self.attempts < 1:
             raise ValueError(f"attempts must be at least 1, not {self.attempts}")
         if self.language not in EQ_LANGUAGES:
@@ -227,6 +242,8 @@ class EQSettings:
                 + (", rejections remembered across EQs" if self.memory else "")
                 + (", failed answers explained" if self.explain else "")
                 + (", concept names shuffled per attempt" if self.shuffle else "")
+                + (f", masked phase of {self.mask} counterexamples after the first (empty H shown, "
+                   f"H's concepts out of scope)" if self.mask else "")
                 + (f", counterexamples sampled at temperature {self.temperature}, seed {seed}"
                    if self.temperature > 0 else "")
                 + (f", {self.attempts} attempts per EQ" if self.attempts != 3 else "")
@@ -368,6 +385,9 @@ class LLMOracle(Oracle):
                              f"syntax only, not in natural language")
         self._rejected: tuple[str, ...] = ()   # with memory: the check's rejections so far
         self._failed: tuple[str, ...] = ()     # why the answers of the EQs that just failed could not be used
+        self._accepted = 0          # counterexamples accepted so far
+        self._mask_accepted = 0     # of those, accepted in the masked phase (EQSettings.mask)
+        self._scope: set[str] | None = None   # the concept names in scope, if not all (masked phase)
         self._h_reasoner = h_reasoner
         self._max_new_tokens = max_new_tokens
         self._seed = seed
@@ -793,7 +813,8 @@ class LLMOracle(Oracle):
         except ValueError:
             raise ValueError(f"{line!r} is not of the form {form}")
         atoms, roles = gci_names(gci)
-        unknown = sorted(atoms - self._sig)
+        scope = self._sig if self._scope is None else self._scope
+        unknown = sorted(atoms - scope)
         unknown_roles = sorted(roles - self._roles)
         problems = []
         if unknown:
@@ -894,19 +915,49 @@ class LLMOracle(Oracle):
         repeated EQ is never the same prompt.  With ``verbose``, each step's
         outcome is printed after the exchange, as ``[EQ n] ...``.
         """
+        settings = self._eq
+        # After failed EQs every prompt of this one says so, so that it is never the same
+        # prompt again (a greedy model would give the same answer, or the cache would).
+        again = [prompts.repeated_feedback(self._failed_eqs)] if self._failed_eqs else []
+        # The masked phase (EQSettings.mask): the prompts show an empty H and leave the
+        # concepts H is about out of scope.  The real H still decides "follows from H".
+        masked = self._masked(hypothesis)
+        shown = hypothesis if masked is None else set()
+        sig = self._sig if masked is None else self._sig - masked
+        if masked is not None:
+            self._eq_log(f"masked phase, counterexample {self._mask_accepted + 1} of {settings.mask}: "
+                         f"H shown empty, out of scope: {', '.join(sorted(masked))}")
+        try:
+            self._scope = None if masked is None else sig
+            return self._EQ_view(hypothesis, shown, sig, masked or set(), again)
+        finally:
+            self._scope = None
+
+    def _masked(self, hypothesis: set[GCI]) -> set[str] | None:
+        """In the masked phase (EQSettings.mask), the concepts to leave out: the names
+        on the left side of H's axioms; None outside it, or when nothing would be
+        left in scope."""
+        if not self._eq.mask or not self._accepted or self._mask_accepted >= self._eq.mask:
+            return None
+        masked = {name for gci in hypothesis for name in gci_names(GCI(gci.lhs, ELConcept()))[0]}
+        return masked if masked and self._sig - masked else None
+
+    def _EQ_view(self, hypothesis: set[GCI], shown: set[GCI], sig: set[str], masked: set[str],
+                 again: list[str]) -> Optional[GCI]:
+        """The rest of ``_EQ``, with the prompts showing *shown* as H and *sig* as the
+        concept names in scope; feedback lines that name a *masked* concept are left out."""
         settings, language = self._eq, self._eq_language
         ask = dict(system=self._eq_system_msg,
                    max_new_tokens=max(self._max_new_tokens, EQ_MIN_NEW_TOKENS))
         plain = gci_to_nl if language == "nl" else gci_to_manchester
         # The feedback names statements as the answer is asked for: as triples with G3.
         render = (lambda gci: gci_to_triple(gci) or plain(gci)) if settings.generation in TRIPLE_GENERATIONS else plain
-        # After failed EQs every prompt of this one says so, so that it is never the same
-        # prompt again (a greedy model would give the same answer, or the cache would).
-        again = [prompts.repeated_feedback(self._failed_eqs)] if self._failed_eqs else []
+        names_in = re.compile(r"\b(" + "|".join(map(re.escape, sorted(masked))) + r")\b") if masked else None
+        visible = (lambda line: True) if names_in is None else (lambda line: not names_in.search(line))
         if settings.mode == "judge":
             try:
                 equivalent = self._query(
-                    prompts.eq_judge_prompt(self._sig, self._roles, hypothesis, language, again),
+                    prompts.eq_judge_prompt(sig, self._roles, shown, language, again),
                     parse=lambda r: self._parse_yes_no(r, "EQ judge"),
                     label="EQ (judge)", **ask,
                 )
@@ -931,16 +982,17 @@ class LLMOracle(Oracle):
         # unchanged, and the same prompt would get the same cached answer); a
         # rejection only without memory, which lists it anyway.
         carry: list[str] = []
-        earlier = again + [prompts.rejected_earlier_feedback(text) for text in self._rejected]
-        earlier += [prompts.unusable_feedback(r) for r in self._failed]
+        earlier = again + [prompts.rejected_earlier_feedback(text) for text in self._rejected
+                           if visible(text)]
+        earlier += [prompts.unusable_feedback(r) for r in self._failed if visible(r)]
         for attempt in range(1, settings.attempts + 1):
             # Each reason once, with how often it came (a streak can be 10 attempts long):
             # a repeated line only lengthened the prompt, and without the count a repeat
             # would leave the prompt as it was, so every attempt left got the cached answer.
             feedback = earlier + [prompts.unusable_feedback(r, n) for r, n in Counter(reasons).items()]
-            names = (shuffled_names(self._sig, self._seed, self.eq_count, attempt)
-                     if settings.shuffle else self._sig)
-            prompt = build(names, self._roles, hypothesis, feedback, language)
+            names = (shuffled_names(sig, self._seed, self.eq_count, attempt)
+                     if settings.shuffle else sig)
+            prompt = build(names, self._roles, shown, feedback, language)
             try:
                 counterexample = self._query(prompt, parse=parse, label=label,
                                              sampling=sampling, **generate)
@@ -966,6 +1018,9 @@ class LLMOracle(Oracle):
                 label = self._label(counterexample, "accepted")
                 self._eq_log(f"attempt {attempt}: counterexample {counterexample}{label}")
                 self._failed, self._failed_eqs = (), 0
+                if masked:
+                    self._mask_accepted += 1
+                self._accepted += 1
                 return counterexample
             # The model named an axiom it then rejects: its answers are inconsistent.
             reasons.append(self._explained(f"asked whether '{render(counterexample)}' is true in O, you answered no",

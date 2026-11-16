@@ -226,6 +226,15 @@ OPTIONS: tuple[Option, ...] = (
                            "they are not proposed again."),
                     (False, "Only the current EQ's failed answers are listed.")),
            see=("cex10",)),
+    Option("oracle.eq.counterexample.mask", "Masked phase", "int",
+           "Accepted counterexamples in a masked phase after the first one; 0: off. In the phase the "
+           "prompts (judge and counterexample) show an empty H, as in a fresh run, and leave every concept "
+           "on the left side of an axiom of H out of scope, so an answer using one is unusable; the mask "
+           "grows with H. Remembered rejections and carried retry lines that name a masked concept are "
+           "left out. Only the prompts change: 'follows from H' and the learner use the real H. Added "
+           "2026-11-16 against fixation, after shuffling alone did not move animals off Bird (note "
+           "fixation-probe).",
+           flag="--eq-mask", default=0, env="EQ_MASK", minimum=0, see=()),
     Option("oracle.eq.counterexample.shuffle", "Shuffled concept names", "bool",
            "Whether the counterexample prompt lists the concept names in a new order for each "
            "attempt. Added 2026-11-16 against fixation (a run proposing nearly everything about one "

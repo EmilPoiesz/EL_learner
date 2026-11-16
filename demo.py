@@ -566,6 +566,12 @@ def build_parser() -> argparse.ArgumentParser:
              "not a concept, nothing H already implies).",
     )
     parser.add_argument(
+        "--eq-mask", type=int, default=0, metavar="N",
+        help="With an LLM's own equivalence queries: after the first accepted "
+             "counterexample, a masked phase of N accepted counterexamples, whose prompts "
+             "show an empty H and leave the concepts H is about out of scope (default 0: off).",
+    )
+    parser.add_argument(
         "--eq-shuffle", action=argparse.BooleanOptionalAction, default=False,
         help="With an LLM's own equivalence queries: list the concept names in the "
              "counterexample prompt in a new order for each attempt (from the seed, the EQ "
@@ -756,6 +762,7 @@ if __name__ == "__main__":
                 memory=args.eq_memory,
                 explain=args.eq_explain,
                 shuffle=args.eq_shuffle,
+                mask=args.eq_mask,
                 temperature=args.eq_temperature,
                 generation=args.eq_generation,
                 attempts=args.eq_attempts,

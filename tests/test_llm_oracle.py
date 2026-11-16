@@ -26,6 +26,7 @@ is replaced by a stub that returns scripted responses.
 50 EQ: the explain setting adds those sentences to the retry lines, and only it
 51 EQ: a repeated unusable answer gets one retry line, saying how often (streaks of 10 from 2026-11-16)
 52 EQ: shuffle lists the concept names in a new, reproducible order per attempt; off, sorted
+53 EQ: mask: after the first accepted counterexample, N EQs show an empty H with H's left-side concepts out of scope
 """
 
 from __future__ import annotations
@@ -88,6 +89,8 @@ def _oracle(tmp_path, responses: list[str]) -> LLMOracle:
     oracle._eq_system_msg = None          # None: the MQ system message
     oracle._rejected = ()
     oracle._failed = ()
+    oracle._accepted = oracle._mask_accepted = 0
+    oracle._scope = None
     return oracle
 
 
@@ -882,3 +885,53 @@ def test_52_eq_shuffle(tmp_path, shuffle):
             assert first != retry and sorted(names) not in (first, retry)
     assert orders[0] == orders[1]
     assert ("concept names shuffled" in EQSettings(shuffle=shuffle).describe()) is shuffle
+
+
+def _gci(text: str) -> GCI:
+    return parse_manchester_gci(text)
+
+
+def test_53_eq_mask_phase(tmp_path):
+    # mask=2 on Σ = {A, B, C, D}.  EQ 1 is as without the mask.  EQs 2 and 3 are the
+    # masked phase: the prompts show an empty H, and the concepts on the left of H's
+    # axioms (A, then A and C) are out of scope, so an answer about A is unusable; a
+    # remembered rejection naming A is left out.  EQ 4 is as without the mask again.
+    oracle = _oracle(tmp_path, [
+        "no", "A SubClassOf B", "yes",                          # EQ 1
+        "no", "A SubClassOf C", "C SubClassOf D", "yes",        # EQ 2: A masked
+        "no", "D SubClassOf B", "yes",                          # EQ 3: A, C masked
+        "no", "B SubClassOf D", "yes",                          # EQ 4: phase over
+    ])
+    oracle._sig = {"A", "B", "C", "D"}
+    oracle._eq = EQSettings(mask=2, memory=True)
+    H: set[GCI] = set()
+
+    assert oracle.EQ(H) == _gci("A SubClassOf B")
+    assert _scope_line(oracle._pipe.prompts[1]) == ["A", "B", "C", "D"]
+    H.add(_gci("A SubClassOf B"))
+    oracle._rejected = ("A SubClassOf D",)
+
+    start = len(oracle._pipe.prompts)
+    assert oracle.EQ(H) == _gci("C SubClassOf D")
+    eq2 = oracle._pipe.prompts[start:]
+    for prompt in (eq2[0], eq2[1], eq2[2]):                     # judge, two attempts
+        assert _scope_line(prompt) == ["B", "C", "D"]
+        assert "A SubClassOf B" not in prompt                   # H shown empty
+        assert "A SubClassOf D" not in prompt                   # rejection naming A left out
+    assert "A is not a concept name in scope" in eq2[2]
+    H.add(_gci("C SubClassOf D"))
+
+    start = len(oracle._pipe.prompts)
+    assert oracle.EQ(H) == _gci("D SubClassOf B")
+    assert _scope_line(oracle._pipe.prompts[start + 1]) == ["B", "D"]
+    H.add(_gci("D SubClassOf B"))
+    assert oracle._mask_accepted == 2
+
+    start = len(oracle._pipe.prompts)
+    assert oracle.EQ(H) == _gci("B SubClassOf D")
+    last = oracle._pipe.prompts[start + 1]
+    assert _scope_line(last) == ["A", "B", "C", "D"]
+    assert "A SubClassOf B" in last and "C SubClassOf D" in last
+    assert "A SubClassOf D" in last                             # the rejection is back
+    assert "masked phase of 2" in EQSettings(mask=2).describe()
+    assert "masked" not in EQSettings().describe()
