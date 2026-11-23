@@ -82,6 +82,7 @@ def _run_reasoner_demo(
     epsilon: float = 0.2,
     delta: float = 0.1,
     reuse_counterexamples: bool = False,
+    saturation: str = "paper",
 ) -> bool:
     from learner.reasoner_oracle import ReasonerOracle
 
@@ -93,6 +94,8 @@ def _run_reasoner_demo(
     print(f"  Reasoner : {reasoner}")
     if reuse_counterexamples:
         print("  Reuse    : a counterexample H still misses is processed again before the next EQ")
+    if saturation != "paper":
+        print("  Saturate : names tried general first by H's hierarchy; candidates H rules out are not asked")
 
     try:
         with ReasonerOracle(
@@ -109,7 +112,8 @@ def _run_reasoner_demo(
         ) as oracle:
             _run_and_report(_with_eq(oracle, eq, epsilon, delta, seed, oracle.info), verbose=verbose,
                             output=output, info=oracle.info,
-                            reuse_counterexamples=reuse_counterexamples)
+                            reuse_counterexamples=reuse_counterexamples,
+                                saturation=saturation)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -157,7 +161,7 @@ def query_report(oracle: Oracle, seconds: float) -> list[str]:
 def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, judge: Callable[[GCI], bool] | None = None,
                     info: OntologyInfo | None = None, max_eqs: int | None = None,
                     precomputation: bool = True, max_failed_eqs: int = 0,
-                    reuse_counterexamples: bool = False) -> None:
+                    reuse_counterexamples: bool = False, saturation: str = "paper") -> None:
     """Run the learner and print a comparison report against oracle.axioms.
     ``info``: the ontology as the OWL API reads it, whose classes (with owl:Thing
     when the file mentions it) and roles the paper metric is computed over.
@@ -166,7 +170,8 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
     (Phase 1); without it H starts empty and grows only from counterexamples.
     ``max_failed_eqs``: EQs in a row without a usable answer before learning stops.
     ``reuse_counterexamples``: process a counterexample again, without an EQ, while H
-    still misses it after a round that extended H."""
+    still misses it after a round that extended H.  ``saturation``: ``"paper"`` or
+    ``"hierarchy"`` (saturation also uses H's subclass hierarchy; learn_el_terminology)."""
     # With PAC sampling the sample budget bounds the run; every counterexample is
     # one iteration, so a cap of 50 would cut a yes-biased LLM's run short.
     max_iterations = 100_000 if getattr(oracle, "sampler", None) is not None else 50
@@ -178,7 +183,7 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
     try:
         H = learn_el_terminology(oracle, max_iterations=max_iterations, precomputation=precomputation,
                                  max_failed_eqs=max_failed_eqs,
-                                 reuse_counterexamples=reuse_counterexamples)
+                                 reuse_counterexamples=reuse_counterexamples, saturation=saturation)
     finally:
         logging.disable(logging.NOTSET)
     # Before scoring, which may ask the oracle again.
@@ -282,6 +287,7 @@ def _run_grounded_llm_demo(
     precomputation: bool = True,
     max_failed_eqs: int = 0,
     reuse_counterexamples: bool = False,
+    saturation: str = "paper",
     thinking: bool = True,
     resample: bool = False,
 ) -> bool:
@@ -317,6 +323,8 @@ def _run_grounded_llm_demo(
         print(f"  Stopping : after {max_failed_eqs + 1} EQs in a row without a usable answer")
     if reuse_counterexamples:
         print("  Reuse    : a counterexample H still misses is processed again before the next EQ")
+    if saturation != "paper":
+        print("  Saturate : names tried general first by H's hierarchy; candidates H rules out are not asked")
     if not thinking:
         print("  Thinking : off (enable_thinking=False in the chat template)")
     if resample:
@@ -363,7 +371,8 @@ def _run_grounded_llm_demo(
                 _run_and_report(learner_oracle, verbose=verbose, output=output, judge=judge, info=info,
                                 max_eqs=max_eqs, precomputation=precomputation,
                                 max_failed_eqs=max_failed_eqs,
-                                reuse_counterexamples=reuse_counterexamples)
+                                reuse_counterexamples=reuse_counterexamples,
+                                saturation=saturation)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -628,6 +637,13 @@ def build_parser() -> argparse.ArgumentParser:
              "count towards --max-eqs.",
     )
     parser.add_argument(
+        "--saturation", choices=["paper", "hierarchy"], default="paper",
+        help="How the learner saturates a right side.  'paper': every name at every node, in "
+             "alphabetical order.  'hierarchy' (not in the paper): names general first by H's "
+             "subclass hierarchy, and a candidate H shows to be at least as specific as a rejected "
+             "one is not asked.  Same result with a sound H, fewer MQs (13%% in the simulation).",
+    )
+    parser.add_argument(
         "--reuse-counterexamples", action=argparse.BooleanOptionalAction, default=False,
         help="Not in the paper: keep what a counterexample taught.  A ⊑ A′ is added to H "
              "when decomposition on the right moves from A to a name A′ of the root (already "
@@ -774,6 +790,7 @@ if __name__ == "__main__":
             epsilon=args.epsilon,
             delta=args.delta,
             reuse_counterexamples=args.reuse_counterexamples,
+            saturation=args.saturation,
         )
     elif args.oracle in ("axioms", "signature"):
         max_new_tokens = args.max_new_tokens
@@ -820,6 +837,7 @@ if __name__ == "__main__":
             precomputation=not args.no_precompute,
             max_failed_eqs=args.max_failed_eqs,
             reuse_counterexamples=args.reuse_counterexamples,
+            saturation=args.saturation,
             thinking=not args.no_thinking,
             resample=args.resample,
             mq_asked_as=args.mq_asked_as,

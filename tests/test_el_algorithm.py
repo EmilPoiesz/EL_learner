@@ -72,6 +72,7 @@ Test catalogue
 52  learn_el_terminology    — reuse: a reused round that adds nothing ends the reuse; the next round asks an EQ
 53  compute_right_essential — links: decomposition at the root from Cat to Carnivore reports Cat ⊑ Carnivore
 54  learn_el_terminology    — reuse: the link is added with α, so H covers the counterexample after one round
+55  saturate_concept_rhs    — hierarchy: a no to a name rules out the names H puts below it; same result, fewer MQs
 """
 
 from __future__ import annotations
@@ -1100,3 +1101,25 @@ def test_54_link_added_with_alpha(caplog, reuse, expected_eqs):
     assert oracle.eq_count == expected_eqs
     assert ("link from decomposition" in caplog.text) is reuse
     assert "reused" not in caplog.text
+
+
+def test_55_saturation_hierarchy_skips_names_below_a_rejected_one():
+    # O says only X ⊑ C; H knows B ⊑ A.  Saturating X ⊑ C tries every name.  With H's
+    # hierarchy, A (nothing above it) is tried before B; once X ⊑ C ⊓ A is rejected,
+    # X ⊑ C ⊓ B is answered no without an MQ (H ⊨ C ⊓ B ⊑ C ⊓ A).  Same result.
+    from learner.el_algorithm import saturate_concept_rhs
+    X, C = ELConcept(frozenset({"X"})), ELConcept(frozenset({"C"}))
+    O = {GCI(X, C)}
+    H = {GCI(ELConcept(frozenset({"B"})), ELConcept(frozenset({"A"})))}
+    sig = {"A", "B", "C", "X"}
+    asked = {"paper": [], "hierarchy": []}
+
+    def mq(mode):
+        return lambda gci: asked[mode].append(gci) or _entails(O, gci)
+
+    paper = saturate_concept_rhs(C, sig, mq("paper"), lhs=X)
+    hier = saturate_concept_rhs(C, sig, mq("hierarchy"), lhs=X, H_MQ=lambda gci: _entails(H, gci))
+    assert paper == hier == ELConcept(frozenset({"C", "X"}))
+    with_B = GCI(X, ELConcept(frozenset({"B", "C"})))
+    assert with_B in asked["paper"] and with_B not in asked["hierarchy"]
+    assert len(asked["hierarchy"]) == len(asked["paper"]) - 1

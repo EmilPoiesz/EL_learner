@@ -272,6 +272,8 @@ def saturate_concept_rhs(
     lhs: ELConcept,
     _rebuild: Callable[[ELConcept], ELConcept] = lambda x: x,
     _rejected: Optional[list[ELConcept]] = None,
+    H_MQ: Optional[Callable[[GCI], bool]] = None,
+    _order: Optional[list[str]] = None,
 ) -> ELConcept:
     """
     Saturate the RHS concept tree, per the paper's concept saturation rule:
@@ -301,13 +303,34 @@ def saturate_concept_rhs(
     rejected one (the same name at the same node, in a larger tree) is caught,
     whichever node it is at. Candidates are compared with the earlier rejections 
     of this call only, not across calls or ``lhs`` values.
+
+    With ``H_MQ`` (``learner.saturation = "hierarchy"``, not in the paper)
+    -----------------------------------------------------------------------
+    Two shortcuts that use what H already knows, without changing the result
+    (saturation's result does not depend on the order, and only questions whose
+    answer is already fixed are skipped), as long as H is sound:
+
+    * a candidate is also answered False without an MQ when H entails that it is
+      at least as specific as a rejected RHS (H ⊨ R′ ⊑ R): a no to ∃lays.(Egg ⊓
+      Animal) then rules out every name H puts below Animal;
+    * the names are tried general first: ordered by how many other names H puts
+      above them (``_order``, computed once per top-level call), so that a no to
+      a general name rules out its subclasses before they are asked.
     """
     rejected: list[ELConcept] = [] if _rejected is None else _rejected
+    if H_MQ is not None and _order is None:
+        def above(name: str) -> int:
+            return sum(1 for other in signature if other != name and H_MQ(GCI(
+                ELConcept(atoms=frozenset({name})), ELConcept(atoms=frozenset({other})))))
+        _order = sorted(signature, key=lambda n: (above(n), n))
+    names = _order if _order is not None else sorted(signature)
 
     def holds(rhs: ELConcept) -> bool:
         """MQ lhs ⊑ rhs, or False without asking when rhs is at least as specific
-        as a rejected RHS; a rejection is remembered."""
+        as a rejected RHS (with ``H_MQ``, also by H); a rejection is remembered."""
         if any(subsumed_without_axioms(rhs, r) for r in rejected):
+            return False
+        if H_MQ is not None and any(H_MQ(GCI(rhs, r)) for r in rejected):
             return False
         if MQ(GCI(lhs, rhs)):
             return True
@@ -322,7 +345,7 @@ def saturate_concept_rhs(
         changed = False
 
         new_atoms = set(atoms)
-        for atom_prime in sorted(signature):
+        for atom_prime in names:
             if atom_prime in new_atoms:
                 continue
             # New RHS concept with atom_prime added at this node; the rest of the tree is unchanged.
@@ -341,7 +364,7 @@ def saturate_concept_rhs(
             )
             # Recursively saturate the filler concept; the rebuild function ensures that the MQ check is always against the full RHS with the updated filler.
             saturated_filler = saturate_concept_rhs(filler, signature, MQ, lhs, filler_rebuild,
-                                                    rejected)
+                                                    rejected, H_MQ, _order)
             new_existentials.add((role, saturated_filler))
 
             if saturated_filler != filler:
@@ -636,7 +659,7 @@ def decompose_left(lhs: ELConcept, rhs: ELConcept, MQ: Callable[[GCI], bool], H_
 # ---------------------------------------------------------------------------
 
 def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI], MQ: Callable[[GCI], bool], signature: set[str], H_MQ: Callable[[GCI], bool],
-                            links: Optional[list[GCI]] = None) -> GCI:
+                            links: Optional[list[GCI]] = None, saturation: str = "paper") -> GCI:
     """
     Compute a *right O-essential* α from the GCI  lhs ⊑ rhs
     (used in line 6 of Algorithm 1, when lhs ∈ Σ_O ∩ N_C).
@@ -690,7 +713,9 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
     # 1) Concept Saturation
     saturate, merge = _in_step("saturation", MQ), _in_step("sibling merge", MQ)
     decompose = _in_step("decomposition", MQ)
-    rhs_saturated = saturate_concept_rhs(rhs_refined, signature, saturate, lhs=lhs)
+    # saturation "hierarchy" (not in the paper): saturation also uses H (saturate_concept_rhs).
+    by_H = {"H_MQ": H_MQ} if saturation == "hierarchy" else {}
+    rhs_saturated = saturate_concept_rhs(rhs_refined, signature, saturate, lhs=lhs, **by_H)
 
     # 2) Sibling Merge — each merge step is validated against T via MQ so that
     #    merging two same-role existentials (e.g. ∃r.D1 and ∃r.D2) is only
@@ -735,7 +760,7 @@ def compute_right_essential(lhs: ELConcept, rhs: ELConcept, hypothesis: set[GCI]
             break
         visited.add(candidate)
 
-        current_rhs = saturate_concept_rhs(current_rhs, signature, saturate, lhs=current_lhs)
+        current_rhs = saturate_concept_rhs(current_rhs, signature, saturate, lhs=current_lhs, **by_H)
         current_rhs = sibling_merge(current_rhs, lhs=current_lhs, MQ=merge)
         logger.info(f"re-saturated/merged: {current_lhs} ⊑ {current_rhs}")
 
@@ -885,7 +910,8 @@ def normalise_counterexample(
 # ---------------------------------------------------------------------------
 
 def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000, precomputation: bool = True,
-                         max_failed_eqs: int = 0, reuse_counterexamples: bool = False) -> set[GCI]:
+                         max_failed_eqs: int = 0, reuse_counterexamples: bool = False,
+                         saturation: str = "paper") -> set[GCI]:
     """
     Algorithm 1: Learn an EL terminology from an equivalence oracle.
 
@@ -944,10 +970,17 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000, precomputat
     don't count towards ``max_iterations``, which counts EQs.  A reused round
     that adds nothing (an inconsistent oracle) ends the reuse, and the next
     round asks an EQ.  Each reused round adds a new GCI to H, so the reuse ends.
+
+    ``saturation`` (not in the paper): ``"paper"`` (default) tries every name at
+    every node in alphabetical order; ``"hierarchy"`` tries names general first by
+    H's subclass hierarchy and skips a candidate H shows to be at least as specific
+    as a rejected one (``saturate_concept_rhs``).  Same result with a sound H, fewer
+    MQs.  Added 2026-11-23: saturation is ~3/4 of a run's model calls, ~7 in 8 of
+    its fresh answers a no.
     """
     H: set[GCI] = set()
     try:
-        _learn(oracle, H, max_iterations, precomputation, max_failed_eqs, reuse_counterexamples)
+        _learn(oracle, H, max_iterations, precomputation, max_failed_eqs, reuse_counterexamples, saturation)
     except OracleError as exc:
         logger.warning(
             "Stopping: the oracle could not give a usable answer (%s). "
@@ -958,7 +991,7 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000, precomputat
 
 
 def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: bool = True,
-           max_failed_eqs: int = 0, reuse_counterexamples: bool = False) -> None:
+           max_failed_eqs: int = 0, reuse_counterexamples: bool = False, saturation: str = "paper") -> None:
     """Phase 1 and the refinement loop of ``learn_el_terminology``, adding to *H*
     in place, so that what was learned survives an ``OracleError``."""
 
@@ -1128,6 +1161,7 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
                 signature=oracle.signature,
                 H_MQ=H_MQ,
                 links=links,
+                saturation=saturation,
             )
         else:
             # Lines 7–8: D' ∈ Σ_O ∩ N_C  →  compute a LEFT O-essential

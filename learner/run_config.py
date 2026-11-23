@@ -135,6 +135,16 @@ OPTIONS: tuple[Option, ...] = (
                            "nothing ends the reuse."),
                     (False, "As in the paper: each round adds one O-essential inclusion and starts with an EQ.")),
            see=()),
+    Option("learner.saturation", "Saturation", "choice",
+           "How the learner saturates a right side (most of a run's model calls: cex44 animals ~3/4, ~7 in 8 "
+           "of its fresh answers a no). Added 2026-11-23; in the simulation (scripts/explore_saturation.py) the "
+           "same H in 119 of 120 cases and 13% fewer model questions.",
+           flag="--saturation", default="paper", env="SATURATION",
+           choices=(("paper", "As in the paper: every name at every node, in alphabetical order."),
+                    ("hierarchy", "Not in the paper: names general first by H's subclass hierarchy, and a "
+                                  "candidate that H shows to be at least as specific as a rejected one is not "
+                                  "asked (a no to Animal rules out every name H puts below it). The same result "
+                                  "with a sound H."))),
     # --- Oracle ----------------------------------------------------------------
     Option("oracle.kind", "Oracle", "choice",
            "What the model is given. Before 2026-11-11 these were called taught (axioms) and "
