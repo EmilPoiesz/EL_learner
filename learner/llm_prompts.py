@@ -119,20 +119,63 @@ _CHECK_EVERY_MEMBER = (
     "  - every Wheel has_part some Car: False, the relation goes the other way: the car "
     "has the wheel."
 )
+# "literal" (2026-11-16): Qwen3-14B with thinking read nonsense questions charitably
+# ("'Animal that is also Backbone that is also Meat that is also Water' ... maybe the user
+# meant a carnivorous vertebrate that drinks water", True), and took a part for a kind
+# (Bird ⊑ Backbone). It says, without examples from any domain, not to repair a question.
+_CHECK_LITERAL = (
+    "Answer with only True or False.\n\n"
+    "Read the statement literally. Every name is the name of a category and means exactly "
+    "what it says; do not guess that a name or the statement was meant differently, and do "
+    "not repair a statement that looks malformed. If the statement only holds under another "
+    "reading, it is False. A statement about a category is True only if it holds for every "
+    "member of that category. Something described as several categories at once must belong "
+    "to every one of them at the same time."
+)
 CHECK_SYSTEM_PROMPTS: dict[str, str | None] = {
     "paper": None,                                   # the run's own MQ system prompt
     "s1": "Answer with only True or False.",         # the paper's simple one (upstream.py)
     "s2": _CHECK_RULES_HEAD,                         # rule 2 restated
     "s3": _CHECK_RULES_HEAD + _CHECK_EL_READING,     # S2 + how EL statements read
     "s4": _CHECK_RULES_HEAD + _CHECK_EVERY_MEMBER,   # S2 + every member, and direction
+    "literal": _CHECK_LITERAL,                       # s1 + read literally, do not repair
 }
+
+# What the check's system prompt says about the domain (EQSettings.check_domain): "off",
+# nothing; "names" (2026-11-17), a note listing the run's own concept names and roles,
+# saying they come from one domain.  In the MQ benchmark Qwen3-14B read a name in its
+# widest everyday sense ("not every Teacher is employed by a University: some teach at
+# schools") and, under "literal", asked for facts it had not been given ("no data is
+# provided, so I can't verify it").  The domain is named only through the signature, so
+# the note is the same kind of text for every ontology, never written for one.
+CHECK_DOMAINS = ("off", "names")
+
+
+def domain_note(sig: set[str], roles: set[str]) -> str:
+    """The "names" note: the signature (sorted, without owl:Thing) and the advice to read
+    the names in the sense of their shared domain, from the model's own knowledge."""
+    concepts, relations = _scope(sorted(n for n in sig if n not in ("owl:Thing", "Thing")), roles)
+    return ("The statements use these category names: " + concepts + "; and these relations: "
+            + relations + ". They all come from one domain. Read each name in the sense it has "
+            "in that domain, together with the other names, and answer from your own knowledge "
+            "of that domain.")
+
+
+def check_system(base: str, domain: str, sig: set[str], roles: set[str]) -> str:
+    """The check's system prompt: *base* (a ``CHECK_SYSTEM_PROMPTS`` text or the MQs'
+    own), followed by the domain note when *domain* asks for one."""
+    if domain == "off":
+        return base
+    return f"{base}\n\n{domain_note(sig, roles)}"
 
 # The question the check asks (EQSettings.check_question): "paper", the paper's MQ
 # (upstream_natural_language with --eq-check nl: "Can Teacher be considered a
 # subcategory of 'Professor'?"), or "every", which says what the statement claims:
 # "Is it true that every Teacher is a Professor?".  "Can … be considered" may invite
-# a yes to what holds for some members only.
-CHECK_QUESTIONS = ("paper", "every")
+# a yes to what holds for some members only.  "atonce" (2026-11-16) is "every" with a
+# conjunction spelled out as one thing that is all of its names at once, so that a
+# filler like "Meat that is also Water" reads as the one thing it is.
+CHECK_QUESTIONS = ("paper", "every", "atonce")
 
 
 def _article(name: str) -> str:
@@ -156,6 +199,44 @@ def every_question(gci: GCI) -> str:
     parts += [f"is related by {role} to some {_concept_phrase(filler)}"
               for role, filler in sorted(gci.rhs.existentials, key=existential_key)]
     return f"Is it true that every {_concept_phrase(gci.lhs)} {' and '.join(parts)}?"
+
+
+def _list(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _atonce_phrase(concept) -> str:
+    """A concept as a noun phrase that names every part: "a Cat"; "something that is at
+    once a Meat and a Water"; "something that is at once an Animal and related by eats to
+    a Plant"; "anything" for owl:Thing."""
+    atoms = sorted(concept.atoms)
+    exists = sorted(concept.existentials, key=existential_key)
+    if len(atoms) == 1 and not exists:
+        return f"{_article(atoms[0])} {atoms[0]}"
+    parts = [f"{_article(a)} {a}" for a in atoms]
+    parts += [f"related by {role} to {_atonce_phrase(filler)}" for role, filler in exists]
+    if not parts:
+        return "anything"
+    return f"something that is {'at once ' if len(parts) > 1 else ''}{_list(parts)}"
+
+
+def atonce_question(gci: GCI) -> str:
+    """The check as "Is it true that every C is …?", with every conjunction spelled out:
+    "Is it true that every Cat is related by eats to something that is at once an Animal
+    and a Meat?"."""
+    lhs = gci.lhs
+    if len(lhs.atoms) == 1 and not lhs.existentials:
+        subject = f"every {next(iter(lhs.atoms))}"
+    else:
+        subject = "everything that is " + _atonce_phrase(lhs).removeprefix("something that is ")
+    parts = [f"{_article(a)} {a}" for a in sorted(gci.rhs.atoms)]
+    parts += [f"related by {role} to {_atonce_phrase(filler)}"
+              for role, filler in sorted(gci.rhs.existentials, key=existential_key)]
+    return f"Is it true that {subject} is {_list(parts)}?"
+
+
+# The check's question by name; "paper" has none (the MQ as "asked as" says).
+CHECK_QUESTION_TEXT = {"every": every_question, "atonce": atonce_question}
 
 
 # ---------------------------------------------------------------------------

@@ -294,15 +294,30 @@ OPTIONS: tuple[Option, ...] = (
                     ("s3", "s2, and how EL statements read."),
                     ("s4", "s2, and: True only if it holds for every member, by definition, in the direction "
                            "written. Fewest false accepts in the check benchmark; Olmo took it literally and "
-                           "rejected true statements.")),
+                           "rejected true statements."),
+                    ("literal", "s1, and: read every name literally, do not repair a statement that looks "
+                                "malformed, True only for every member, several categories at once means all "
+                                "of them. Against Qwen3's charitable readings (2026-11-16).")),
            see=("cex6", "cex8", "check-benchmark-the-check-on-its-own", "cex18", "cex20")),
     Option("oracle.eq.check.question", "Question", "choice",
            "The check's question. With a paper prompt only.",
            flag="--eq-check-question", default="paper", env="EQ_CHECK_QUESTION",
            choices=(("paper", "The MQ as 'asked as' says."),
                     ("every", "\"Is it true that every C …?\" It rejects more of everything, true "
-                              "existentials included.")),
+                              "existentials included."),
+                    ("atonce", "As every, with each conjunction spelled out: \"Is it true that every Cat is "
+                               "related by eats to something that is at once an Animal and a Meat?\"")),
            see=("check-benchmark-the-check-on-its-own",)),
+    Option("oracle.eq.check.domain", "Domain", "choice",
+           "What the check's system prompt says about the domain. With a paper prompt only; with "
+           "MQs asked as the check, the learner's MQs get it too.",
+           flag="--eq-check-domain", default="off", env="EQ_CHECK_DOMAIN",
+           choices=(("off", "Nothing."),
+                    ("names", "A note after the system prompt: the run's concept names and roles, which "
+                              "come from one domain; read each name in that domain's sense and answer from "
+                              "your knowledge of it. Against reading a name in its widest everyday sense "
+                              "(Teacher: school teachers too), 2026-11-17.")),
+           see=("mq-wording-bench",)),
 )
 
 BY_KEY: dict[str, Option] = {o.key: o for o in OPTIONS}

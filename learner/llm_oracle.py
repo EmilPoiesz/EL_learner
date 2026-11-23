@@ -28,7 +28,7 @@ from learner.el_syntax import (IS_A_PATTERN, NAME_PATTERN, gci_names, gci_to_man
                                without_brackets)
 from learner.hypothesis_reasoner import HypothesisReasoner
 from learner import llm_prompts as prompts
-from learner.llm_prompts import (CHECK_QUESTIONS, CHECK_SYSTEM_PROMPTS, GENERATIONS,
+from learner.llm_prompts import (CHECK_DOMAINS, CHECK_QUESTIONS, CHECK_SYSTEM_PROMPTS, GENERATIONS,
                                  MANCHESTER_ONLY_GENERATIONS, TRIPLE_GENERATIONS)
 from learner.upstream import (OLLAMA_SAMPLING, PAPER_NL_STYLES, PAPER_SYSTEM_PROMPTS, desaturate,
                               paper_is_true, rhs_conjuncts, upstream_gci_text,
@@ -132,11 +132,20 @@ class EQSettings:
     check_system : str
         With a paper prompt style, the system prompt of that check: ``"paper"``
         (default: the MQs' own), or a variant from ``CHECK_SYSTEM_PROMPTS``
-        (``"s1"`` … ``"s4"``).  The MQs of learning keep the paper's.
+        (``"s1"`` … ``"s4"``, ``"literal"``).  The MQs of learning keep the paper's.
     check_question : str
         With a paper prompt style, the question of that check (``CHECK_QUESTIONS``):
         ``"paper"`` (default), the MQ as ``check`` says; ``"every"``, "Is it
-        true that every C …?" (``llm_prompts.every_question``).
+        true that every C …?" (``llm_prompts.every_question``); ``"atonce"``, the same
+        with each conjunction spelled out (``llm_prompts.atonce_question``).
+    check_domain : str
+        With a paper prompt style, what the check's system prompt says about the
+        domain (``CHECK_DOMAINS``): ``"off"`` (default), nothing; ``"names"``, a note
+        after it listing the run's concept names and roles, saying they come from one
+        domain, to be read in its sense and answered from the model's knowledge of it
+        (``llm_prompts.domain_note``).  Always the whole signature, also in the masked
+        phase.  Added 2026-11-17: Qwen3-14B rejected true university statements by
+        reading a name in its widest sense (Teacher: school teachers too).
     explain : bool
         False (default): a retry line says only why the earlier answer failed.
         True: it adds a sentence on what to do instead (``llm_prompts.explain_unusable``,
@@ -199,6 +208,7 @@ class EQSettings:
     check: str = "mq"
     check_system: str = "paper"
     check_question: str = "paper"
+    check_domain: str = "off"
     memory: bool = False
     explain: bool = False
     shuffle: bool = False
@@ -220,6 +230,9 @@ class EQSettings:
         if self.check_question not in CHECK_QUESTIONS:
             raise ValueError(f"check_question must be one of {CHECK_QUESTIONS}, "
                              f"not {self.check_question!r}")
+        if self.check_domain not in CHECK_DOMAINS:
+            raise ValueError(f"check_domain must be one of {CHECK_DOMAINS}, "
+                             f"not {self.check_domain!r}")
         if self.mask < 0:
             raise ValueError(f"mask must be at least 0, not {self.mask}")
         if self.attempts < 1:
@@ -239,6 +252,7 @@ class EQSettings:
                 + (", counterexamples checked by a natural-language MQ" if self.check == "nl" else "")
                 + (f", check system prompt {self.check_system}" if self.check_system != "paper" else "")
                 + (f", check question {self.check_question}" if self.check_question != "paper" else "")
+                + (f", check domain {self.check_domain}" if self.check_domain != "off" else "")
                 + (", rejections remembered across EQs" if self.memory else "")
                 + (", failed answers explained" if self.explain else "")
                 + (", concept names shuffled per attempt" if self.shuffle else "")
@@ -1066,20 +1080,29 @@ class LLMOracle(Oracle):
         ``check_system`` say; counted as an MQ."""
         check, system, question = self._eq.check, self._eq.check_system, self._eq.check_question
         if self._prompt_style in PAPER_SYSTEM_PROMPTS and (
-                check == "nl" or system != "paper" or question != "paper"):
+                check == "nl" or system != "paper" or question != "paper"
+                or self._eq.check_domain != "off"):
             self.count_mq()
             return self._check_style_MQ(gci, "MQ (check")
         return self.MQ(gci)
 
     def _check_style_MQ(self, gci: GCI, label: str) -> bool:
         """The paper's MQ as the counterexample check asks it: in natural language with
-        ``check == "nl"``, under the check's system prompt, with the check's question."""
+        ``check == "nl"``, under the check's system prompt (with ``check_domain``, the
+        domain note after it), with the check's question."""
         check, system, question = self._eq.check, self._eq.check_system, self._eq.check_question
+        domain = self._eq.check_domain
+        base = CHECK_SYSTEM_PROMPTS[system]
+        if domain != "off":
+            base = prompts.check_system(self._system_msg if base is None else base,
+                                        domain, self._sig, self._roles)
         return self._paper_MQ(
             gci, nl=True if check == "nl" else None,
-            system=CHECK_SYSTEM_PROMPTS[system],
-            question=prompts.every_question if question == "every" else None,
-            label=f"{label}, {system} system prompt" + (", every question)" if question == "every" else ")"))
+            system=base,
+            question=prompts.CHECK_QUESTION_TEXT.get(question),
+            label=f"{label}, {system} system prompt"
+                  + (f", {domain} domain" if domain != "off" else "")
+                  + (f", {question} question)" if question != "paper" else ")"))
 
     def _outcome(self, kind: str) -> None:
         if self.eq_outcomes is None:

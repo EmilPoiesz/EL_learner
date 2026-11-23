@@ -64,7 +64,7 @@ def test_1_catalogue_matches_parser():
 
 def test_2_choices_are_the_codes():
     from learner.llm_oracle import EQ_CHECKS, EQ_LANGUAGES, EQ_MODES, PROMPT_STYLES
-    from learner.llm_prompts import CHECK_QUESTIONS, CHECK_SYSTEM_PROMPTS, GENERATIONS
+    from learner.llm_prompts import CHECK_DOMAINS, CHECK_QUESTIONS, CHECK_SYSTEM_PROMPTS, GENERATIONS
     choices = lambda key: [c for c, _ in BY_KEY[key].choices]
     assert choices("oracle.mq.prompt") == list(PROMPT_STYLES)
     assert choices("oracle.eq.mode") == list(EQ_MODES)
@@ -72,6 +72,7 @@ def test_2_choices_are_the_codes():
     assert choices("oracle.eq.check.asked_as") == list(EQ_CHECKS)
     assert choices("oracle.eq.check.system") == list(CHECK_SYSTEM_PROMPTS)
     assert choices("oracle.eq.check.question") == list(CHECK_QUESTIONS)
+    assert choices("oracle.eq.check.domain") == list(CHECK_DOMAINS)
     assert choices("oracle.eq.counterexample.prompt") == list(GENERATIONS)
     for opt in OPTIONS:
         assert opt.title and opt.help, opt.key

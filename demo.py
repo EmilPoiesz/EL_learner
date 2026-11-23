@@ -544,18 +544,25 @@ def build_parser() -> argparse.ArgumentParser:
              "the paper's natural-language form ('nl'), whatever the style.",
     )
     parser.add_argument(
-        "--eq-check-system", choices=["paper", "s1", "s2", "s3", "s4"], default="paper",
+        "--eq-check-system", choices=["paper", "s1", "s2", "s3", "s4", "literal"], default="paper",
         help="With an LLM's own equivalence queries and a paper prompt: the system prompt "
              "of the counterexample check.  'paper': the MQs' own; 's1': the paper's simple "
              "one; 's2': the advanced one with its has-part rule restated; 's3': s2 and how "
              "EL statements read; 's4': s2 and 'every member, in the direction written' "
-             "(learner/llm_prompts.py CHECK_SYSTEM_PROMPTS).",
+             "and 'literal': s1 and 'read literally, do not repair' (learner/llm_prompts.py CHECK_SYSTEM_PROMPTS).",
     )
     parser.add_argument(
-        "--eq-check-question", choices=["paper", "every"], default="paper",
+        "--eq-check-question", choices=["paper", "every", "atonce"], default="paper",
         help="With an LLM's own equivalence queries and a paper prompt: the question of the "
              "counterexample check.  'paper': the MQ as --eq-check says; 'every': \"Is it "
-             "true that every C ...?\".",
+             "true that every C ...?\"; 'atonce': the same with each conjunction spelled out.",
+    )
+    parser.add_argument(
+        "--eq-check-domain", choices=["off", "names"], default="off",
+        help="With an LLM's own equivalence queries and a paper prompt: what the check's "
+             "system prompt says about the domain.  'off': nothing; 'names': a note listing "
+             "the run's concept names and roles, which come from one domain, to be read in "
+             "that domain's sense (learner/llm_prompts.py domain_note).",
     )
     parser.add_argument(
         "--eq-memory", action=argparse.BooleanOptionalAction, default=False,
@@ -686,7 +693,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--mq-asked-as", choices=["paper", "check"], default="paper",
         help="With a paper prompt: ask the learner's own MQs (Phase 1, refinement) as the "
              "paper does ('paper'), or exactly as the counterexample check is asked "
-             "('check': --eq-check, --eq-check-system, --eq-check-question), so that one "
+             "('check': --eq-check, --eq-check-system, --eq-check-question, "
+             "--eq-check-domain), so that one "
              "statement gets one answer within a run.",
     )
     llm_grp.add_argument(
@@ -769,6 +777,7 @@ if __name__ == "__main__":
                 check=args.eq_check,
                 check_system=args.eq_check_system,
                 check_question=args.eq_check_question,
+                check_domain=args.eq_check_domain,
                 memory=args.eq_memory,
                 explain=args.eq_explain,
                 shuffle=args.eq_shuffle,

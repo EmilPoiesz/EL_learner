@@ -536,10 +536,31 @@ def test_34_every_question(text, expected):
     assert prompts.every_question(parse_manchester_gci(text)) == expected
 
 
+@pytest.mark.parametrize("text, expected", [
+    ("Teacher SubClassOf Professor", "Is it true that every Teacher is a Professor?"),
+    ("Elephant SubClassOf Animal", "Is it true that every Elephant is an Animal?"),
+    ("Bird SubClassOf has_part some Wing",
+     "Is it true that every Bird is related by has_part to a Wing?"),
+    ("Cat SubClassOf eats some (Animal and Meat and Water)",
+     "Is it true that every Cat is related by eats to something that is at once an Animal, "
+     "a Meat and a Water?"),
+    ("Cat SubClassOf eats some (Meat and (lives_in some Water))",
+     "Is it true that every Cat is related by eats to something that is at once a Meat and "
+     "related by lives_in to a Water?"),
+    ("Animal and (eats some Meat) SubClassOf Carnivore",
+     "Is it true that everything that is at once an Animal and related by eats to a Meat "
+     "is a Carnivore?"),
+])
+def test_34b_atonce_question(text, expected):
+    # 2026-11-16: a conjunction spelled out, against "Animal that is also Meat that is also Water".
+    assert prompts.atonce_question(parse_manchester_gci(text)) == expected
+
+
 @pytest.mark.parametrize("system, question, expected_prompt", [
     ("s1", "paper", "Can A be considered a subcategory of 'B'?"),
     ("s4", "every", "Is it true that every A is a B?"),
     ("paper", "every", "Is it true that every A is a B?"),
+    ("literal", "atonce", "Is it true that every A is a B?"),
 ])
 def test_35_check_question_and_system(tmp_path, system, question, expected_prompt):
     # judge, counterexample, then the check as the settings say.
@@ -952,3 +973,29 @@ def test_54_thinking_off_reaches_template_and_cache_key(tmp_path):
     assert oracle._pipe.kwargs[1]["tokenizer_encode_kwargs"] == {"enable_thinking": False}
     assert oracle.MQ(_GCI) is False                      # now cached under its own key
     assert oracle._pipe.calls == 2
+
+
+@pytest.mark.parametrize("system", ["s1", "paper"])
+def test_55_check_domain_names(tmp_path, system):
+    # 2026-11-17: the domain note follows the check's system prompt (or the MQs' own),
+    # and lists the run's own signature, not any ontology's words.
+    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True", "True"])
+    oracle._prompt_style = "paper-advanced"
+    oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
+    oracle._sig, oracle._roles = {"A", "B", "owl:Thing"}, {"r"}
+    oracle._mq_as_check = True
+    oracle._eq = EQSettings(check="nl", check_system=system, check_domain="names")
+    assert oracle.EQ(set()) == _GCI
+    base = CHECK_SYSTEM_PROMPTS[system] or PAPER_SYSTEM_PROMPTS["paper-advanced"]
+    note = ("The statements use these category names: A, B; and these relations: r. They all "
+            "come from one domain. Read each name in the sense it has in that domain, together "
+            "with the other names, and answer from your own knowledge of that domain.")
+    assert oracle._pipe.systems[2] == f"{base}\n\n{note}"
+    # The learner's MQs, asked as the check, get the note too.
+    assert oracle.MQ(GCI(ELConcept({"B"}), ELConcept({"A"}))) is True
+    assert oracle._pipe.systems[3] == f"{base}\n\n{note}"
+    assert prompts.check_system("S", "off", {"A"}, set()) == "S"
+    assert "(none)" in prompts.domain_note({"A"}, set())
+    assert EQSettings(check_domain="names").describe() == "judge, check domain names"
+    with pytest.raises(ValueError, match="check_domain must be one of"):
+        EQSettings(check_domain="university")
