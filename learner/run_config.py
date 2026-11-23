@@ -158,6 +158,17 @@ OPTIONS: tuple[Option, ...] = (
            "0: greedy. Above 0: sampled at this temperature with Ollama's other defaults (top-k 40, top-p "
            "0.9, repeat penalty 1.1), seeded by the seed. Applies to the MQs, the judge and the check; the "
            "counterexample prompts have their own.", flag="--temperature", default=0.0, env="TEMPERATURE"),
+    Option("oracle.resample", "Repeated questions", "bool",
+           "What a question asked again gets, when oracle.temperature is above 0. Added 2026-11-23: a greedy "
+           "answer, or a sampled one replayed from the cache, is the same every time saturation asks the "
+           "question again, so a wrong yes (\"Bird ⊑ Backbone?\") keeps coming back.",
+           flag="--resample", default=False, env="RESAMPLE",
+           choices=((False, "The answer is generated once and replayed from the cache: the answers behave "
+                            "like one ontology."),
+                    (True, "The oracle's sampled queries (MQs, the check, the judge) skip the cache and are "
+                           "sampled afresh each time; a repeated wrong yes can come out no, but the same "
+                           "question can get different answers within a run. Counterexample prompts are not "
+                           "affected."))),
     Option("oracle.max_new_tokens", "Tokens per answer", "int",
            "The generation budget of every answer. Unset: 2 with a paper prompt, as the paper; EQ answers "
            "always get at least 128, and the counterexample prompts can have their own. A reasoning model needs room to finish thinking: an answer cut off "

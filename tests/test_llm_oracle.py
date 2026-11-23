@@ -28,6 +28,7 @@ is replaced by a stub that returns scripted responses.
 52 EQ: shuffle lists the concept names in a new, reproducible order per attempt; off, sorted
 53 EQ: mask: after the first accepted counterexample, N EQs show an empty H with H's left-side concepts out of scope
 54 thinking off: enable_thinking=False reaches the chat template, and keys the cache apart from thinking on
+56 resample: a sampled MQ asked again is generated afresh, not replayed; greedy and resample off still use the cache
 """
 
 from __future__ import annotations
@@ -999,3 +1000,31 @@ def test_55_check_domain_names(tmp_path, system):
     assert EQSettings(check_domain="names").describe() == "judge, check domain names"
     with pytest.raises(ValueError, match="check_domain must be one of"):
         EQSettings(check_domain="university")
+
+
+def test_56_resample_skips_cache_for_sampled_queries(tmp_path):
+    from learner.llm_oracle import sampling_params
+    # Sampled, resample off (default): the second ask is replayed from the cache.
+    (tmp_path / "off").mkdir()
+    oracle = _oracle(tmp_path / "off", ["yes", "no"])
+    oracle._sampling = sampling_params(0.6, 0)
+    assert oracle.MQ(_GCI) is True
+    assert oracle.MQ(_GCI) is True
+    assert oracle._pipe.calls == 1
+
+    # Sampled, resample on: every ask is a fresh generation, so the answer can change.
+    (tmp_path / "on").mkdir()
+    oracle = _oracle(tmp_path / "on", ["yes", "no"])
+    oracle._sampling = sampling_params(0.6, 0)
+    oracle._resample = True
+    assert oracle.MQ(_GCI) is True
+    assert oracle.MQ(_GCI) is False
+    assert oracle._pipe.calls == 2
+
+    # Greedy: resample changes nothing, the cache still answers the repeat.
+    (tmp_path / "greedy").mkdir()
+    oracle = _oracle(tmp_path / "greedy", ["yes", "no"])
+    oracle._resample = True
+    assert oracle.MQ(_GCI) is True
+    assert oracle.MQ(_GCI) is True
+    assert oracle._pipe.calls == 1

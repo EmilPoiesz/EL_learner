@@ -347,6 +347,15 @@ class LLMOracle(Oracle):
         the model answers at once); templates without the switch ignore it.  Part
         of the cache key.  Added 2026-11-16: with thinking on, an MQ took minutes
         and the hybrids' runs (cex35-37) ran into the time limit.
+    resample : bool
+        False (default): a query asked again is answered from the cache.  True: the
+        oracle's own sampled queries (MQs, the check, the judge, with ``temperature``
+        above 0) skip the cache lookup, so a repeated question is sampled afresh
+        (still stored, for the per-job cache's record of progress).  Counterexample
+        prompts are not affected.  Added 2026-11-23: a greedy model, or a sampled
+        answer replayed from the cache, gives the same wrong yes every time
+        saturation asks the question again ("Bird ⊑ Backbone?"); a fresh sample can
+        come out the other way.  The answers then no longer behave like one ontology.
     truth : callable, optional
         Whether O entails a GCI (e.g. ELK over the ontology file).  Only to label
         the proposed counterexamples in the log and in ``eq_outcomes``: it is
@@ -364,6 +373,7 @@ class LLMOracle(Oracle):
     truncated = 0
     _generate_kwargs: dict = {}   # model_defaults_off(model)
     _template_kwargs: dict = {}   # passed to the chat template ({"enable_thinking": False})
+    _resample = False             # sampled oracle queries skip the cache lookup
     _failed_eqs = 0               # EQs in a row that gave no usable answer
     _mq_as_check = False          # mq_asked_as == "check"
     _truth: Callable[[GCI], bool] | None = None   # labels proposals for the log only
@@ -388,8 +398,10 @@ class LLMOracle(Oracle):
         truth: Callable[[GCI], bool] | None = None,
         mq_asked_as: str = "paper",
         thinking: bool = True,
+        resample: bool = False,
     ):
         super().__init__()
+        self._resample = resample
         self._template_kwargs = {} if thinking else {"enable_thinking": False}
         if prompt_style not in PROMPT_STYLES:
             raise ValueError(f"prompt_style must be one of {PROMPT_STYLES}, not {prompt_style!r}")
@@ -533,8 +545,9 @@ class LLMOracle(Oracle):
                   **self._template_kwargs}
 
         kind = (current_step(), query_kind(label))
-        # Cache lookup
-        cached = self._cache.get(self._model_name, messages, params)
+        # Cache lookup; with resample, the oracle's own sampled queries are generated afresh.
+        fresh = self._resample and sampling is None and self._sampling is not None
+        cached = None if fresh else self._cache.get(self._model_name, messages, params)
         if cached is not None and self._cut_off(cached):
             logger.warning("Cached %s response was cut off while reasoning; regenerating.", label)
             cached = None
