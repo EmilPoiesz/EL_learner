@@ -21,7 +21,7 @@ from typing import Callable, Optional, TypeVar
 from transformers import pipeline, GenerationConfig, set_seed
 
 from learner.cache.cache import LLMCache
-from learner.el_algorithm import (Oracle, OracleError, ELConcept, GCI, current_step,
+from learner.el_algorithm import (Oracle, OracleError, ELConcept, GCI, current_step, gci_implies,
                                   subsumed_without_axioms)
 from learner.el_syntax import (IS_A_PATTERN, NAME_PATTERN, gci_names, gci_to_manchester, gci_to_nl,
                                gci_to_triple, parse_manchester_gci, parse_nl_gci, parse_triple,
@@ -514,6 +514,24 @@ class LLMOracle(Oracle):
     def on_H_add(self, gci: GCI) -> None:
         self._h_reasoner.add(gci)
 
+    def on_H_replace(self, H: set[GCI]) -> None:
+        """The repair step changed H (learner.repair): the H-reasoner holds *H* again."""
+        self._h_reasoner.reset(H)
+
+    def direct_MQ(self, gci: GCI) -> bool:
+        """The repair step's question: *gci* asked as an MQ, in the same words and under
+        the same system prompt, but without the H layer (H entails the culprit's parts,
+        so with it every one would be answered yes without asking the model).  Counted
+        as an MQ; a refuted statement is answered no."""
+        self.count_mq()
+        if any(gci_implies(gci, n) for n in self.__dict__.get("refuted", ())):
+            return False
+        if self._prompt_style in PAPER_SYSTEM_PROMPTS:
+            if self._mq_as_check:
+                return self._check_style_MQ(gci, "MQ (repair, as check", use_H=False)
+            return self._paper_MQ(gci, label="MQ (repair)", use_H=False)
+        return self._MQ(gci)
+
     # ------------------------------------------------------------------
     # LLM query helper
     # ------------------------------------------------------------------
@@ -901,7 +919,8 @@ class LLMOracle(Oracle):
         )
 
     def _paper_MQ(self, gci: GCI, nl: bool | None = None, system: str | None = None,
-                  label: str = "MQ", question: Callable[[GCI], str] | None = None) -> bool:
+                  label: str = "MQ", question: Callable[[GCI], str] | None = None,
+                  use_H: bool = True) -> bool:
         """
         MQ as the original ExactLearner-LLM's LLMEngine with its AxiomSimplifier:
         True without asking if H entails the GCI; otherwise the right-hand
@@ -915,14 +934,17 @@ class LLMOracle(Oracle):
         """
         if nl is None:
             nl = self._prompt_style in PAPER_NL_STYLES
-        if self._h_reasoner(gci):
-            return True
-        unknown = [c for c in rhs_conjuncts(gci.rhs) if not self._h_reasoner(GCI(gci.lhs, c))]
-        rhs = ELConcept(frozenset().union(*(c.atoms for c in unknown)),
-                        frozenset().union(*(c.existentials for c in unknown)))
-        # Dropping a name only generalises, so equivalence is "H entails new ⊑ old".
-        lhs = desaturate(gci.lhs, lambda c, old=gci.lhs: self._h_reasoner(GCI(c, old)))
-        rhs = desaturate(rhs, lambda c, old=rhs: self._h_reasoner(GCI(c, old)))
+        if not use_H:      # the repair step's question: asked as it is (direct_MQ)
+            lhs, rhs = gci.lhs, gci.rhs
+        else:
+            if self._h_reasoner(gci):
+                return True
+            unknown = [c for c in rhs_conjuncts(gci.rhs) if not self._h_reasoner(GCI(gci.lhs, c))]
+            rhs = ELConcept(frozenset().union(*(c.atoms for c in unknown)),
+                            frozenset().union(*(c.existentials for c in unknown)))
+            # Dropping a name only generalises, so equivalence is "H entails new ⊑ old".
+            lhs = desaturate(gci.lhs, lambda c, old=gci.lhs: self._h_reasoner(GCI(c, old)))
+            rhs = desaturate(rhs, lambda c, old=rhs: self._h_reasoner(GCI(c, old)))
         for conjunct in rhs_conjuncts(rhs):
             part = GCI(lhs, conjunct)
             text = upstream_gci_text(part)
@@ -1056,6 +1078,9 @@ class LLMOracle(Oracle):
                 carry.append(reasons[-1])
                 self._outcome("follows from H")
                 self._eq_log(f"attempt {attempt}: {counterexample} already follows from H")
+                # For the learner's repair step (learner.repair): a proposal that follows
+                # from H points at a wrong GCI in it.
+                self.__dict__.setdefault("followed_from_H", []).append(counterexample)
                 continue
             if self._check_counterexample(counterexample):
                 label = self._label(counterexample, "accepted")
@@ -1099,7 +1124,7 @@ class LLMOracle(Oracle):
             return self._check_style_MQ(gci, "MQ (check")
         return self.MQ(gci)
 
-    def _check_style_MQ(self, gci: GCI, label: str) -> bool:
+    def _check_style_MQ(self, gci: GCI, label: str, use_H: bool = True) -> bool:
         """The paper's MQ as the counterexample check asks it: in natural language with
         ``check == "nl"``, under the check's system prompt (with ``check_domain``, the
         domain note after it), with the check's question."""
@@ -1113,6 +1138,7 @@ class LLMOracle(Oracle):
             gci, nl=True if check == "nl" else None,
             system=base,
             question=prompts.CHECK_QUESTION_TEXT.get(question),
+            use_H=use_H,
             label=f"{label}, {system} system prompt"
                   + (f", {domain} domain" if domain != "off" else "")
                   + (f", {question} question)" if question != "paper" else ")"))

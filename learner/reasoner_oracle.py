@@ -173,6 +173,10 @@ class ReasonerOracle(Oracle):
         """Keep the H-reasoner in sync when a GCI is added to H."""
         self._h_reasoner.add(gci)
 
+    def on_H_replace(self, H: set[GCI]) -> None:
+        """The repair step changed H (learner.repair): the H-reasoner holds *H* again."""
+        self._h_reasoner.reset(H)
+
     def _MQ(self, gci: GCI) -> bool:
         """Membership query via the configured reasoner: O |= lhs ⊑ rhs?"""
         if gci not in self._mq_cache:

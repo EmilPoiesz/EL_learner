@@ -135,6 +135,18 @@ OPTIONS: tuple[Option, ...] = (
                            "nothing ends the reuse."),
                     (False, "As in the paper: each round adds one O-essential inclusion and starts with an EQ.")),
            see=()),
+    Option("learner.repair", "Repair from proposals that follow from H", "bool",
+           "Not in the paper; added 2026-11-23 (Exploration page, \"Finding mistakes\"). In the Qwen3-14B runs "
+           "every counterexample proposal that already followed from H followed from one wrong H axiom (58 of 58), "
+           "mostly its correct core; asked on its own, the model denies the wrong parts (repair probe: 17 correct, "
+           "0 wrong). In the simulation every wrong answer the model is inconsistent about is removed.",
+           flag="--repair", default=False, env="REPAIR",
+           choices=((False, "As in the paper: such a proposal is unusable and the EQ asks again."),
+                    (True, "The H axioms the proposal follows from are found; each of their parts is asked on its "
+                           "own (without the H layer) and the denied parts are refuted (a filler part by part); H "
+                           "is weakened until it entails no refuted statement, also at every EQ; a refuted statement "
+                           "is answered no by every later MQ. The proposal is then learned if H misses it and the "
+                           "model confirms it."))),
     Option("learner.saturation", "Saturation", "choice",
            "How the learner saturates a right side (most of a run's model calls: cex44 animals ~3/4, ~7 in 8 "
            "of its fresh answers a no). Added 2026-11-23; in the simulation (scripts/explore_saturation.py) the "

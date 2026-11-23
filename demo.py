@@ -83,6 +83,7 @@ def _run_reasoner_demo(
     delta: float = 0.1,
     reuse_counterexamples: bool = False,
     saturation: str = "paper",
+    repair: bool = False,
 ) -> bool:
     from learner.reasoner_oracle import ReasonerOracle
 
@@ -96,6 +97,8 @@ def _run_reasoner_demo(
         print("  Reuse    : a counterexample H still misses is processed again before the next EQ")
     if saturation != "paper":
         print("  Saturate : names tried general first by H's hierarchy; candidates H rules out are not asked")
+    if repair:
+        print("  Repair   : proposals that follow from H are used to find and weaken wrong GCIs")
 
     try:
         with ReasonerOracle(
@@ -113,7 +116,7 @@ def _run_reasoner_demo(
             _run_and_report(_with_eq(oracle, eq, epsilon, delta, seed, oracle.info), verbose=verbose,
                             output=output, info=oracle.info,
                             reuse_counterexamples=reuse_counterexamples,
-                                saturation=saturation)
+                                saturation=saturation, repair=repair)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -161,7 +164,8 @@ def query_report(oracle: Oracle, seconds: float) -> list[str]:
 def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, judge: Callable[[GCI], bool] | None = None,
                     info: OntologyInfo | None = None, max_eqs: int | None = None,
                     precomputation: bool = True, max_failed_eqs: int = 0,
-                    reuse_counterexamples: bool = False, saturation: str = "paper") -> None:
+                    reuse_counterexamples: bool = False, saturation: str = "paper",
+                    repair: bool = False) -> None:
     """Run the learner and print a comparison report against oracle.axioms.
     ``info``: the ontology as the OWL API reads it, whose classes (with owl:Thing
     when the file mentions it) and roles the paper metric is computed over.
@@ -183,7 +187,8 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
     try:
         H = learn_el_terminology(oracle, max_iterations=max_iterations, precomputation=precomputation,
                                  max_failed_eqs=max_failed_eqs,
-                                 reuse_counterexamples=reuse_counterexamples, saturation=saturation)
+                                 reuse_counterexamples=reuse_counterexamples, saturation=saturation,
+                                 repair=repair)
     finally:
         logging.disable(logging.NOTSET)
     # Before scoring, which may ask the oracle again.
@@ -203,6 +208,22 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
     # Not an axiom of O, but O entails it.  Only these are derivable: an LLM oracle
     # can also put GCIs in H that O does not entail (the extra ones).
     redundant = [g for g in H if g not in target_O and g not in extra]
+
+    repairs = getattr(oracle, "repair_log", None)
+    if repairs:
+        _section("Repairs")
+        for ev in repairs:
+            print(f"\n  EQ {ev['eq']}: {ev['proposal']}  ({ev['outcome']})")
+            for c in ev["culprits"]:
+                print(f"      follows from {c}")
+            for r in ev["refuted"]:
+                print(f"      refuted      {r}")
+            for w in ev["weakened"]:
+                print(f"      weakened     {w}")
+            for n in ev.get("still_entailed", []):
+                print(f"      still entailed {n}")
+        refuted = [str(n) for n in getattr(oracle, "refuted", [])]
+        print(f"\n  REPAIRS {json.dumps({'repairs': len(repairs), 'refuted': refuted}, ensure_ascii=False)}")
 
     _section("Result")
     print(f"\n  |H| = {len(H)}  (target |O| = {len(target_O)})")
@@ -288,6 +309,7 @@ def _run_grounded_llm_demo(
     max_failed_eqs: int = 0,
     reuse_counterexamples: bool = False,
     saturation: str = "paper",
+    repair: bool = False,
     thinking: bool = True,
     resample: bool = False,
 ) -> bool:
@@ -325,6 +347,8 @@ def _run_grounded_llm_demo(
         print("  Reuse    : a counterexample H still misses is processed again before the next EQ")
     if saturation != "paper":
         print("  Saturate : names tried general first by H's hierarchy; candidates H rules out are not asked")
+    if repair:
+        print("  Repair   : proposals that follow from H are used to find and weaken wrong GCIs")
     if not thinking:
         print("  Thinking : off (enable_thinking=False in the chat template)")
     if resample:
@@ -372,7 +396,7 @@ def _run_grounded_llm_demo(
                                 max_eqs=max_eqs, precomputation=precomputation,
                                 max_failed_eqs=max_failed_eqs,
                                 reuse_counterexamples=reuse_counterexamples,
-                                saturation=saturation)
+                                saturation=saturation, repair=repair)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -637,6 +661,12 @@ def build_parser() -> argparse.ArgumentParser:
              "count towards --max-eqs.",
     )
     parser.add_argument(
+        "--repair", action="store_true",
+        help="Not in the paper: when a counterexample proposal already follows from H, ask about "
+             "the parts of the H axioms it follows from, refute the parts the teacher denies, and "
+             "weaken H; refuted statements are answered no from then on.",
+    )
+    parser.add_argument(
         "--saturation", choices=["paper", "hierarchy"], default="paper",
         help="How the learner saturates a right side.  'paper': every name at every node, in "
              "alphabetical order.  'hierarchy' (not in the paper): names general first by H's "
@@ -791,6 +821,7 @@ if __name__ == "__main__":
             delta=args.delta,
             reuse_counterexamples=args.reuse_counterexamples,
             saturation=args.saturation,
+            repair=args.repair,
         )
     elif args.oracle in ("axioms", "signature"):
         max_new_tokens = args.max_new_tokens
@@ -838,6 +869,7 @@ if __name__ == "__main__":
             max_failed_eqs=args.max_failed_eqs,
             reuse_counterexamples=args.reuse_counterexamples,
             saturation=args.saturation,
+            repair=args.repair,
             thinking=not args.no_thinking,
             resample=args.resample,
             mq_asked_as=args.mq_asked_as,

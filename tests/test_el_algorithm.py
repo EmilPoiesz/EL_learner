@@ -73,6 +73,9 @@ Test catalogue
 53  compute_right_essential — links: decomposition at the root from Cat to Carnivore reports Cat ⊑ Carnivore
 54  learn_el_terminology    — reuse: the link is added with α, so H covers the counterexample after one round
 55  saturate_concept_rhs    — hierarchy: a no to a name rules out the names H puts below it; same result, fewer MQs
+56  repair                  — a proposal that follows from H: the denied part is refuted, H weakened, later MQs say no
+57  repair                  — a wrong filler is refuted part by part; the proposal is queued as a counterexample
+58  learn_el_terminology    — repair: one wrong belief, learning with repair ends with H ≡ O, without it does not
 """
 
 from __future__ import annotations
@@ -82,6 +85,7 @@ import pytest
 from learner.el_algorithm import (
     ELConcept,
     GCI,
+    Oracle,
     compute_left_essential,
     compute_right_essential,
     decompose_left,
@@ -1123,3 +1127,97 @@ def test_55_saturation_hierarchy_skips_names_below_a_rejected_one():
     with_B = GCI(X, ELConcept(frozenset({"B", "C"})))
     assert with_B in asked["paper"] and with_B not in asked["hierarchy"]
     assert len(asked["hierarchy"]) == len(asked["paper"]) - 1
+
+
+class _BeliefOracle(Oracle):
+    """A teacher with one wrong belief: its MQs answer as O ∪ {the wrong belief}; asked
+    on its own (direct_MQ) it answers from O; at an EQ it first proposes the correct core of a wrong H axiom (which follows
+    from H, as Qwen3-14B did), else the first axiom of O that H misses."""
+
+    def __init__(self, O, wrong, signature):
+        super().__init__()
+        self.O, self.wrong, self._signature = set(O), set(wrong), set(signature)
+        self.proposed = set()
+
+    @property
+    def signature(self):
+        return self._signature
+
+    def _MQ(self, gci):
+        return _entails(self.O | self.wrong, gci)          # it believes O ∪ {the wrong belief}
+
+    def direct_MQ(self, gci):
+        self.count_mq()
+        return _entails(self.O, gci)
+
+    def _EQ(self, H):
+        from learner.el_algorithm import _conj, _conjuncts
+        for h in sorted(H, key=str):
+            if _entails(self.O, h):
+                continue
+            core = [c for c in _conjuncts(h.rhs) if _entails(self.O, GCI(h.lhs, c))]
+            alpha = GCI(h.lhs, _conj(core)) if core else None
+            if alpha is not None and (h, alpha) not in self.proposed:
+                self.proposed.add((h, alpha))
+                self.__dict__.setdefault("followed_from_H", []).append(alpha)
+        for gci in sorted(self.O, key=str):
+            if not _entails(H, gci):
+                return gci
+        return None
+
+    def make_H_MQ(self, H):
+        return lambda gci: _entails(H, gci)
+
+    def on_H_add(self, gci):
+        pass
+
+    def on_H_replace(self, H):
+        pass
+
+
+_BIRD, _ANIMAL, _BACKBONE, _EGG = (ELConcept(frozenset({n})) for n in ("Bird", "Animal", "Backbone", "Egg"))
+
+
+def test_56_repair_refutes_the_denied_part_and_weakens_H():
+    from learner.el_algorithm import _repair_followed
+    O = {GCI(_BIRD, _ANIMAL)}
+    oracle = _BeliefOracle(O, {GCI(_BIRD, _BACKBONE)}, {"Animal", "Backbone", "Bird"})
+    H = {GCI(_BIRD, ELConcept(frozenset({"Animal", "Backbone"})))}
+    oracle.followed_from_H = [GCI(_BIRD, _ANIMAL)]
+    queue = []
+    assert _repair_followed(oracle, H, lambda g: _entails(H, g), 1, queue)
+    assert oracle.refuted == [GCI(_BIRD, _BACKBONE)]
+    assert H == {GCI(_BIRD, _ANIMAL)}
+    # The wrong belief still holds for the teacher's MQs, but the refutation comes first.
+    assert oracle.MQ(GCI(_BIRD, ELConcept(frozenset({"Animal", "Backbone"})))) is False
+    assert oracle.repair_log[0]["outcome"] == "repaired"
+
+
+def test_57_repair_refutes_a_filler_part_by_part():
+    from learner.el_algorithm import _repair_followed
+    lays = lambda f: ELConcept(existentials=frozenset({("lays", f)}))
+    O = {GCI(_BIRD, lays(_EGG))}
+    oracle = _BeliefOracle(O, {GCI(_BIRD, lays(ELConcept(frozenset({"Animal", "Egg"}))))},
+                           {"Animal", "Bird", "Egg"})
+    H = {GCI(_BIRD, lays(ELConcept(frozenset({"Animal", "Egg"}))))}
+    oracle.followed_from_H = [GCI(_BIRD, lays(_EGG))]
+    queue = []
+    _repair_followed(oracle, H, lambda g: _entails(H, g), 1, queue)
+    # Only the part denied on its own is refuted: it blocks every filler holding Animal.
+    assert oracle.refuted == [GCI(_BIRD, lays(_ANIMAL))]
+    assert H == set()
+    assert queue == [GCI(_BIRD, lays(_EGG))]          # the proposal, confirmed, comes next
+    assert oracle.MQ(GCI(_BIRD, lays(ELConcept(frozenset({"Animal", "Bird", "Egg"}))))) is False
+
+
+@pytest.mark.parametrize("repair", [False, True])
+def test_58_learning_with_repair_removes_the_wrong_belief(repair):
+    lays = lambda f: ELConcept(existentials=frozenset({("lays", f)}))
+    O = {GCI(_BIRD, _ANIMAL), GCI(_BIRD, lays(_EGG))}
+    oracle = _BeliefOracle(O, {GCI(_BIRD, _BACKBONE)}, {"Animal", "Backbone", "Bird", "Egg"})
+    H = learn_el_terminology(oracle, max_iterations=10, precomputation=False, repair=repair)
+    assert all(_entails(H, ax) for ax in O)
+    wrong_kept = _entails(H, GCI(_BIRD, _BACKBONE))
+    assert wrong_kept is (not repair)
+    if repair:
+        assert GCI(_BIRD, _BACKBONE) in oracle.refuted

@@ -29,6 +29,7 @@ is replaced by a stub that returns scripted responses.
 53 EQ: mask: after the first accepted counterexample, N EQs show an empty H with H's left-side concepts out of scope
 54 thinking off: enable_thinking=False reaches the chat template, and keys the cache apart from thinking on
 56 resample: a sampled MQ asked again is generated afresh, not replayed; greedy and resample off still use the cache
+57 repair: direct_MQ asks the model even where H entails the GCI (an MQ is answered from H); a refuted GCI is no without asking
 """
 
 from __future__ import annotations
@@ -1028,3 +1029,16 @@ def test_56_resample_skips_cache_for_sampled_queries(tmp_path):
     assert oracle.MQ(_GCI) is True
     assert oracle.MQ(_GCI) is True
     assert oracle._pipe.calls == 1
+
+
+def test_57_direct_mq_skips_the_h_layer(tmp_path):
+    oracle = _oracle(tmp_path, ["no", "yes"])
+    oracle._prompt_style = "paper-advanced"
+    oracle._h_reasoner = lambda gci: True             # H entails everything
+    assert oracle.MQ(_GCI) is True                    # answered from H: the model is not asked
+    assert oracle._pipe.calls == 0
+    assert oracle.direct_MQ(_GCI) is False            # asked as it is: the model says no
+    assert oracle._pipe.calls == 1
+    oracle.refuted = [_GCI]
+    assert oracle.direct_MQ(_GCI) is False and oracle.MQ(_GCI) is False
+    assert oracle._pipe.calls == 1                    # a refuted GCI is never asked

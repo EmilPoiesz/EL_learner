@@ -43,6 +43,14 @@ class HypothesisReasoner:
     def add(self, gci: GCI) -> None:
         self._owl.add_gci(encode(gci.lhs), encode(gci.rhs))
 
+    def reset(self, axioms) -> None:
+        """Replace the reasoner's ontology with *axioms* (no new JVM).  For the learner's
+        repair step (``learner.repair``), which weakens H and checks subsets of it."""
+        self._owl.clear()
+        self._entailed_cache.clear()
+        for g in axioms:
+            self.add(g)
+
     def entails(self, gci: GCI) -> bool:
         if gci in self._entailed_cache:
             return True
