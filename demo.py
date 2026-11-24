@@ -312,6 +312,7 @@ def _run_grounded_llm_demo(
     repair: bool = False,
     thinking: bool = True,
     resample: bool = False,
+    repair_temperature: float = 0.0,
 ) -> bool:
     """
     LLM oracle over an ontology file, scored against it.  ``include_axioms``:
@@ -348,7 +349,9 @@ def _run_grounded_llm_demo(
     if saturation != "paper":
         print("  Saturate : names tried general first by H's hierarchy; candidates H rules out are not asked")
     if repair:
-        print("  Repair   : proposals that follow from H are used to find and weaken wrong GCIs")
+        print("  Repair   : proposals that follow from H are used to find and weaken wrong GCIs"
+              + (f"; its questions sampled afresh at temperature {repair_temperature} (never from the cache)"
+                 if repair_temperature > 0 else ""))
     if not thinking:
         print("  Thinking : off (enable_thinking=False in the chat template)")
     if resample:
@@ -383,6 +386,7 @@ def _run_grounded_llm_demo(
                 truth=judge,   # labels proposals in the log; never used for learning
                 thinking=thinking,
                 resample=resample,
+                repair_temperature=repair_temperature,
                 mq_asked_as=mq_asked_as,
                 # None keeps LLMOracle's default budget.
                 **({} if max_new_tokens is None else {"max_new_tokens": max_new_tokens}),
@@ -688,6 +692,12 @@ def build_parser() -> argparse.ArgumentParser:
              "Counterexample prompts are not affected.",
     )
     parser.add_argument(
+        "--repair-temperature", type=float, default=0.0,
+        help="With --repair: 0 (default) asks the repair step's questions like every other MQ "
+             "(a question asked before is answered from the cache). Above 0: they are sampled "
+             "at this temperature, from a random stream of their own, and never read from the cache.",
+    )
+    parser.add_argument(
         "--no-thinking", action="store_true",
         help="With an LLM over an ontology (axioms, signature): pass enable_thinking=False "
              "to the chat template, which switches a hybrid model's reasoning off (Qwen3-8B, "
@@ -872,6 +882,7 @@ if __name__ == "__main__":
             repair=args.repair,
             thinking=not args.no_thinking,
             resample=args.resample,
+            repair_temperature=args.repair_temperature,
             mq_asked_as=args.mq_asked_as,
         )
     else:

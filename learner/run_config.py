@@ -191,6 +191,14 @@ OPTIONS: tuple[Option, ...] = (
                            "sampled afresh each time; a repeated wrong yes can come out no, but the same "
                            "question can get different answers within a run. Counterexample prompts are not "
                            "affected."))),
+    Option("oracle.repair_temperature", "Repair questions", "float",
+           "How the repair step (learner.repair) asks the parts of the H axiom it disputes. Added 2026-11-23: "
+           "in cex49 every repair question had already been asked by saturation in the same words, so the "
+           "cached greedy answer, the yes that put the wrong part into H, was replayed and nothing was denied. "
+           "0: as every other MQ (greedy or oracle.temperature, from the cache). Above 0: sampled at this "
+           "temperature with Ollama's other defaults and never read from the cache, from a random stream of "
+           "their own seeded by the seed, so the rest of the run draws what it would without them.",
+           flag="--repair-temperature", default=0.0, env="REPAIR_TEMPERATURE", see=("cex49",)),
     Option("oracle.max_new_tokens", "Tokens per answer", "int",
            "The generation budget of every answer. Unset: 2 with a paper prompt, as the paper; EQ answers "
            "always get at least 128, and the counterexample prompts can have their own. A reasoning model needs room to finish thinking: an answer cut off "

@@ -30,6 +30,7 @@ is replaced by a stub that returns scripted responses.
 54 thinking off: enable_thinking=False reaches the chat template, and keys the cache apart from thinking on
 56 resample: a sampled MQ asked again is generated afresh, not replayed; greedy and resample off still use the cache
 57 repair: direct_MQ asks the model even where H entails the GCI (an MQ is answered from H); a refuted GCI is no without asking
+58 repair_temperature: repair questions are sampled afresh (never from the cache) from their own random stream; 0 replays the cache
 """
 
 from __future__ import annotations
@@ -1042,3 +1043,32 @@ def test_57_direct_mq_skips_the_h_layer(tmp_path):
     oracle.refuted = [_GCI]
     assert oracle.direct_MQ(_GCI) is False and oracle.MQ(_GCI) is False
     assert oracle._pipe.calls == 1                    # a refuted GCI is never asked
+
+
+def test_58_repair_temperature_samples_repair_questions_afresh(tmp_path):
+    import torch
+    from learner.llm_oracle import sampling_params
+    # Default (0): the repair question saturation already asked is replayed from the cache.
+    (tmp_path / "off").mkdir()
+    oracle = _oracle(tmp_path / "off", ["True", "False"])
+    oracle._prompt_style = "paper-advanced"
+    assert oracle.MQ(_GCI) is True
+    assert oracle.direct_MQ(_GCI) is True
+    assert oracle._pipe.calls == 1
+
+    # Above 0: generated afresh, sampled, and the global random stream is left as it was.
+    (tmp_path / "on").mkdir()
+    oracle = _oracle(tmp_path / "on", ["True", "False", "False"])
+    oracle._prompt_style = "paper-advanced"
+    oracle._repair_sampling = sampling_params(0.6, 0)
+    assert oracle.MQ(_GCI) is True
+    torch.manual_seed(123)
+    before = torch.get_rng_state()
+    assert oracle.direct_MQ(_GCI) is False
+    assert oracle._pipe.calls == 2
+    assert torch.equal(torch.get_rng_state(), before)
+    assert oracle._repair_rng is not None
+    assert oracle.MQ(_GCI) is True                    # the other MQs still use the cache
+    assert oracle._pipe.calls == 2
+    assert oracle.direct_MQ(_GCI) is False            # asked again: a fresh sample again
+    assert oracle._pipe.calls == 3

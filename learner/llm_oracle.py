@@ -14,6 +14,7 @@ import random
 import re
 import time
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import Callable, Optional, TypeVar
@@ -356,6 +357,15 @@ class LLMOracle(Oracle):
         answer replayed from the cache, gives the same wrong yes every time
         saturation asks the question again ("Bird ⊑ Backbone?"); a fresh sample can
         come out the other way.  The answers then no longer behave like one ontology.
+    repair_temperature : float
+        0 (default): the repair step's questions (``direct_MQ``) are asked like every
+        other MQ, so a question the run already asked is answered from the cache.
+        Above 0: they are sampled at this temperature (``OLLAMA_SAMPLING``) and never
+        read from the cache, from a random stream of their own (seeded by *seed*), so
+        the rest of the run draws exactly what it would without them.  Added
+        2026-11-23: in cex49 every repair question had been asked by saturation in the
+        same words, and the greedy answer replayed from the cache was the yes that put
+        the wrong part into H.
     truth : callable, optional
         Whether O entails a GCI (e.g. ELK over the ontology file).  Only to label
         the proposed counterexamples in the log and in ``eq_outcomes``: it is
@@ -374,6 +384,8 @@ class LLMOracle(Oracle):
     _generate_kwargs: dict = {}   # model_defaults_off(model)
     _template_kwargs: dict = {}   # passed to the chat template ({"enable_thinking": False})
     _resample = False             # sampled oracle queries skip the cache lookup
+    _repair_sampling: dict | None = None   # repair_temperature > 0: how direct_MQ samples
+    _repair_rng: tuple | None = None       # its own torch RNG state between repair questions
     _failed_eqs = 0               # EQs in a row that gave no usable answer
     _mq_as_check = False          # mq_asked_as == "check"
     _truth: Callable[[GCI], bool] | None = None   # labels proposals for the log only
@@ -399,9 +411,11 @@ class LLMOracle(Oracle):
         mq_asked_as: str = "paper",
         thinking: bool = True,
         resample: bool = False,
+        repair_temperature: float = 0.0,
     ):
         super().__init__()
         self._resample = resample
+        self._repair_sampling = sampling_params(repair_temperature, seed)
         self._template_kwargs = {} if thinking else {"enable_thinking": False}
         if prompt_style not in PROMPT_STYLES:
             raise ValueError(f"prompt_style must be one of {PROMPT_STYLES}, not {prompt_style!r}")
@@ -526,11 +540,41 @@ class LLMOracle(Oracle):
         self.count_mq()
         if any(gci_implies(gci, n) for n in self.__dict__.get("refuted", ())):
             return False
-        if self._prompt_style in PAPER_SYSTEM_PROMPTS:
+        if self._prompt_style not in PAPER_SYSTEM_PROMPTS:
+            return self._MQ(gci)
+        sampling = self._repair_sampling
+        with self._repair_stream():
             if self._mq_as_check:
-                return self._check_style_MQ(gci, "MQ (repair, as check", use_H=False)
-            return self._paper_MQ(gci, label="MQ (repair)", use_H=False)
-        return self._MQ(gci)
+                return self._check_style_MQ(gci, "MQ (repair, as check", use_H=False,
+                                            sampling=sampling, fresh=sampling is not None)
+            return self._paper_MQ(gci, label="MQ (repair)", use_H=False,
+                                  sampling=sampling, fresh=sampling is not None)
+
+    @contextmanager
+    def _repair_stream(self):
+        """With repair_temperature > 0: the repair questions draw from a torch random
+        stream of their own (seeded by the oracle's seed), and the global stream is put
+        back afterwards, so the counterexample samples of the rest of the run are the
+        ones it would draw without the repair questions."""
+        if self._repair_sampling is None:
+            yield
+            return
+        import torch
+        cuda = torch.cuda.is_available()
+        saved = (torch.get_rng_state(), torch.cuda.get_rng_state_all() if cuda else None)
+        if self._repair_rng is None:
+            torch.manual_seed(self._seed + 1_000_003)   # also seeds every CUDA device
+        else:
+            torch.set_rng_state(self._repair_rng[0])
+            if cuda and self._repair_rng[1] is not None:
+                torch.cuda.set_rng_state_all(self._repair_rng[1])
+        try:
+            yield
+        finally:
+            self._repair_rng = (torch.get_rng_state(), torch.cuda.get_rng_state_all() if cuda else None)
+            torch.set_rng_state(saved[0])
+            if cuda and saved[1] is not None:
+                torch.cuda.set_rng_state_all(saved[1])
 
     # ------------------------------------------------------------------
     # LLM query helper
@@ -538,7 +582,8 @@ class LLMOracle(Oracle):
 
     def _query(self, prompt: str, parse: Callable[[str], T], label: str = "QUERY",
                axiom: str | None = None, system: str | None = None,
-               max_new_tokens: int | None = None, sampling: dict | None = None) -> T:
+               max_new_tokens: int | None = None, sampling: dict | None = None,
+               fresh: bool = False) -> T:
         """
         Ask the LLM and return ``parse(response)``.
 
@@ -551,6 +596,7 @@ class LLMOracle(Oracle):
         is treated as a miss and regenerated.  *axiom*: the
         query's GCI, shown after the prompt in verbose output.  *system*,
         *max_new_tokens*, *sampling*: instead of the oracle's own (for EQs).
+        *fresh*: never answered from the cache (the repair step's sampled questions).
         """
         shown = prompt + (f"\n[AXIOM]\n{axiom}" if axiom else "")
         messages = [
@@ -564,7 +610,7 @@ class LLMOracle(Oracle):
 
         kind = (current_step(), query_kind(label))
         # Cache lookup; with resample, the oracle's own sampled queries are generated afresh.
-        fresh = self._resample and sampling is None and self._sampling is not None
+        fresh = fresh or (self._resample and sampling is None and self._sampling is not None)
         cached = None if fresh else self._cache.get(self._model_name, messages, params)
         if cached is not None and self._cut_off(cached):
             logger.warning("Cached %s response was cut off while reasoning; regenerating.", label)
@@ -920,7 +966,7 @@ class LLMOracle(Oracle):
 
     def _paper_MQ(self, gci: GCI, nl: bool | None = None, system: str | None = None,
                   label: str = "MQ", question: Callable[[GCI], str] | None = None,
-                  use_H: bool = True) -> bool:
+                  use_H: bool = True, sampling: dict | None = None, fresh: bool = False) -> bool:
         """
         MQ as the original ExactLearner-LLM's LLMEngine with its AxiomSimplifier:
         True without asking if H entails the GCI; otherwise the right-hand
@@ -930,7 +976,8 @@ class LLMOracle(Oracle):
         message), stopping at the first that is not True.  *nl*: ask in natural
         language (default: as the prompt style does).  *system*: instead of the
         style's system prompt.  *question*: writes each conjunct's question
-        instead (then *nl* does not apply).
+        instead (then *nl* does not apply).  *sampling*, *fresh*: passed to ``_query``
+        (the repair step's sampled questions).
         """
         if nl is None:
             nl = self._prompt_style in PAPER_NL_STYLES
@@ -954,7 +1001,7 @@ class LLMOracle(Oracle):
                 text = upstream_natural_language(text)
             # The axiom in this project's syntax, for scripts/score_mqs.py.
             if not self._query(text, parse=paper_is_true, label=label, axiom=gci_to_manchester(part),
-                               system=system):
+                               system=system, sampling=sampling, fresh=fresh):
                 return False
         return True
 
@@ -1124,7 +1171,8 @@ class LLMOracle(Oracle):
             return self._check_style_MQ(gci, "MQ (check")
         return self.MQ(gci)
 
-    def _check_style_MQ(self, gci: GCI, label: str, use_H: bool = True) -> bool:
+    def _check_style_MQ(self, gci: GCI, label: str, use_H: bool = True,
+                        sampling: dict | None = None, fresh: bool = False) -> bool:
         """The paper's MQ as the counterexample check asks it: in natural language with
         ``check == "nl"``, under the check's system prompt (with ``check_domain``, the
         domain note after it), with the check's question."""
@@ -1138,7 +1186,7 @@ class LLMOracle(Oracle):
             gci, nl=True if check == "nl" else None,
             system=base,
             question=prompts.CHECK_QUESTION_TEXT.get(question),
-            use_H=use_H,
+            use_H=use_H, sampling=sampling, fresh=fresh,
             label=f"{label}, {system} system prompt"
                   + (f", {domain} domain" if domain != "off" else "")
                   + (f", {question} question)" if question != "paper" else ")"))
