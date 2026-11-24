@@ -53,7 +53,8 @@ jobs:
           # -f: an HTTP error fails here, not as a broken jar in javac; retried, then checked.
           curl -fsSL --retry 5 --retry-all-errors -o java/elk-owlapi-standalone-0.4.2.jar \
             https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/elk-owlapi-standalone-0.4.2-bin.jar
-          echo "57bb37047dc329f49481846bc984c4251e78a2a4ce6a46c3769d29c109d64379  java/elk-owlapi-standalone-0.4.2.jar" | shasum -a 256 -c -
+          # Python, not shasum: Windows' Git Bash has no shasum.
+          python3 -c "import hashlib, sys; h = hashlib.sha256(open('java/elk-owlapi-standalone-0.4.2.jar', 'rb').read()).hexdigest(); print('ELK jar sha256', h); sys.exit(h != '57bb37047dc329f49481846bc984c4251e78a2a4ce6a46c3769d29c109d64379')"
         shell: bash
 
       - name: Compile OWLGateway.java
