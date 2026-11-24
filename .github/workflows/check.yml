@@ -50,7 +50,10 @@ jobs:
 
       - name: Download ELK reasoner jar
         run: |
-          curl -L -o java/elk-owlapi-standalone-0.4.2.jar https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/elk-owlapi-standalone-0.4.2-bin.jar
+          # -f: an HTTP error fails here, not as a broken jar in javac; retried, then checked.
+          curl -fsSL --retry 5 --retry-all-errors -o java/elk-owlapi-standalone-0.4.2.jar \
+            https://repo1.maven.org/maven2/org/semanticweb/elk/elk-owlapi-standalone/0.4.2/elk-owlapi-standalone-0.4.2-bin.jar
+          echo "57bb37047dc329f49481846bc984c4251e78a2a4ce6a46c3769d29c109d64379  java/elk-owlapi-standalone-0.4.2.jar" | shasum -a 256 -c -
         shell: bash
 
       - name: Compile OWLGateway.java
