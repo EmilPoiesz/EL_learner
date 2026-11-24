@@ -353,11 +353,14 @@ def eq_judge_prompt(sig: set[str], roles: set[str], H: set[GCI],
 
 def eq_counterexample_prompt(sig: set[str], roles: set[str], H: set[GCI],
                              feedback: Sequence[str] = (), language: str = "manchester",
-                             generation: str = "default") -> str:
+                             generation: str = "default", allow_none: bool = False) -> str:
+    """*allow_none* (EQSettings.none): the one-word answer "none" is allowed when there
+    is no counterexample."""
     if generation in MANCHESTER_ONLY_GENERATIONS and language != "manchester":
         raise ValueError(f"generation {generation} is written in Manchester syntax only")
     head = _eq_context(sig, roles, H, language, feedback) + (
-        "Name one counterexample: a statement that is true in O but does not follow from H.\n")
+        "Name one counterexample: a statement that is true in O but does not follow from H.\n"
+        + (NONE_LINE if allow_none else ""))
     if generation == "g3":
         return head + _G3_FORMAT + "Output nothing else."
     if generation == "g3b":
@@ -377,6 +380,11 @@ def eq_counterexample_prompt(sig: set[str], roles: set[str], H: set[GCI],
         + (_G1_RULES if generation == "g1" else "")
         + "Output nothing else."
     )
+
+
+# EQSettings.none: the way out when the model knows nothing true that H misses.
+NONE_LINE = ("If every statement you know to be true in O already follows from H, reply with "
+             "exactly one word instead: none.\n")
 
 
 def eq_combined_prompt(sig: set[str], roles: set[str], H: set[GCI],

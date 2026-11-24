@@ -266,6 +266,17 @@ OPTIONS: tuple[Option, ...] = (
            "2026-11-16 against fixation, after shuffling alone did not move animals off Bird (note "
            "fixation-probe).",
            flag="--eq-mask", default=0, env="EQ_MASK", minimum=0, see=()),
+    Option("oracle.eq.counterexample.none", "'none' as an answer", "bool",
+           "Whether the counterexample prompt lets the model answer 'none' when it knows nothing true in O "
+           "that H misses; a 'none' ends learning like the judge's yes. Mode judge only; not offered in the "
+           "masked phase. Added 2026-11-24: the judge said no in every Qwen3 run (0 yes of 281), and at the "
+           "end of a university run the model, with nothing left it believes, reasoned until the token "
+           "budget ran out (cex50: 30 empty answers, about 80 minutes).",
+           flag="--eq-none", default=False, env="EQ_NONE", see=("cex50",),
+           choices=((False, "One statement and nothing else; a run ends only when the judge says yes or "
+                            "the EQs fail."),
+                    (True, "The prompt adds: if every statement you know to be true in O already follows "
+                           "from H, reply with exactly one word instead: none."))),
     Option("oracle.eq.counterexample.shuffle", "Shuffled concept names", "bool",
            "Whether the counterexample prompt lists the concept names in a new order for each "
            "attempt. Added 2026-11-16 against fixation (a run proposing nearly everything about one "

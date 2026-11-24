@@ -202,6 +202,14 @@ class EQSettings:
         from H" and the learner use the real H.  Added 2026-11-16 against
         fixation, after shuffling alone did not move animals off Bird (note
         fixation-probe).
+    none : bool
+        False (default): the counterexample prompt asks for one statement and nothing
+        else.  True (mode judge only): it also allows the one-word answer "none" when
+        nothing true in O is missing from H; a "none" ends learning like the judge's
+        yes.  Not offered in the masked phase, whose prompts show only part of H.
+        Added 2026-11-24: in every Qwen3 run the judge said no (0 yes of 281), and at
+        the end of a university run, with nothing left the model believes, it reasoned
+        until the token budget ran out (cex50: 30 empty answers, about 80 minutes).
     """
 
     mode: str = "judge"
@@ -213,6 +221,7 @@ class EQSettings:
     explain: bool = False
     shuffle: bool = False
     mask: int = 0
+    none: bool = False
     temperature: float = 0.0
     attempts: int = 3
     generation: str = "default"
@@ -243,6 +252,8 @@ class EQSettings:
             raise ValueError(f"max_new_tokens must be at least 1, not {self.max_new_tokens}")
         if self.generation not in GENERATIONS:
             raise ValueError(f"generation must be one of {GENERATIONS}, not {self.generation!r}")
+        if self.none and self.mode != "judge":
+            raise ValueError("none needs mode 'judge' (mode combined has its own yes)")
         if self.generation != "default" and self.mode != "judge":
             raise ValueError(f"generation {self.generation} needs mode 'judge'")
 
@@ -258,6 +269,7 @@ class EQSettings:
                 + (", concept names shuffled per attempt" if self.shuffle else "")
                 + (f", masked phase of {self.mask} counterexamples after the first (empty H shown, "
                    f"H's concepts out of scope)" if self.mask else "")
+                + (", 'none' allowed as a counterexample answer" if self.none else "")
                 + (f", counterexamples sampled at temperature {self.temperature}, seed {seed}"
                    if self.temperature > 0 else "")
                 + (f", {self.attempts} attempts per EQ" if self.attempts != 3 else "")
@@ -868,6 +880,15 @@ class LLMOracle(Oracle):
             raise ValueError(f"{line!r}: " + "; ".join(problems))
         return gci
 
+    def _parse_counterexample_or_none(self, response: str) -> Optional[GCI]:
+        """None when a counterexample *response* is the one word "none" (EQSettings.none),
+        else its counterexample, as ``_parse_counterexample``."""
+        lines = [ln.strip().strip("`*'\".") for ln in after_think(response).splitlines()]
+        lines = [ln for ln in lines if ln]
+        if len(lines) == 1 and lines[0].lower() == "none":
+            return None
+        return self._parse_counterexample(response)
+
     def _parse_combined(self, response: str) -> Optional[GCI]:
         """None when a combined EQ *response* says yes (H is complete), else its
         counterexample, as ``_parse_counterexample``."""
@@ -1015,8 +1036,11 @@ class LLMOracle(Oracle):
             build, parse = prompts.eq_combined_prompt, self._parse_combined
             label = "EQ (counterexample or yes)"
         else:
-            build = partial(prompts.eq_counterexample_prompt, generation=settings.generation)
-            parse = self._parse_counterexample
+            # "none" (EQSettings.none): only where the prompt shows all of H.
+            offer_none = settings.none and not masked
+            build = partial(prompts.eq_counterexample_prompt, generation=settings.generation,
+                            allow_none=offer_none)
+            parse = self._parse_counterexample_or_none if offer_none else self._parse_counterexample
             label = "EQ (counterexample)"
         sampling = sampling_params(settings.temperature, self._seed)
         generate = {**ask, **({"max_new_tokens": settings.max_new_tokens} if settings.max_new_tokens else {})}
@@ -1047,6 +1071,11 @@ class LLMOracle(Oracle):
                 self._eq_log(f"attempt {attempt}: unusable, {exc}")
                 continue
             if counterexample is None:
+                if settings.mode == "judge":    # the "none" answer (EQSettings.none)
+                    self._outcome("none")
+                    self._eq_log(f"attempt {attempt}: none, the model names no counterexample: H is complete")
+                    self._failed, self._failed_eqs = (), 0
+                    return None
                 self._eq_log(f"attempt {attempt}: yes, H is complete")
                 self._failed, self._failed_eqs = (), 0
                 return None
@@ -1058,8 +1087,8 @@ class LLMOracle(Oracle):
                 self._eq_log(f"attempt {attempt}: {counterexample} already follows from H")
                 continue
             if self._check_counterexample(counterexample):
-                label = self._label(counterexample, "accepted")
-                self._eq_log(f"attempt {attempt}: counterexample {counterexample}{label}")
+                truth = self._label(counterexample, "accepted")
+                self._eq_log(f"attempt {attempt}: counterexample {counterexample}{truth}")
                 self._failed, self._failed_eqs = (), 0
                 if masked:
                     self._mask_accepted += 1
@@ -1072,8 +1101,9 @@ class LLMOracle(Oracle):
                 carry.append(reasons[-1])
             if settings.memory and render(counterexample) not in self._rejected:
                 self._rejected += (render(counterexample),)
-            label = self._label(counterexample, "rejected")
-            self._eq_log(f"attempt {attempt}: {counterexample} rejected by the model's own MQ{label}")
+            # Not "label": that names this EQ's model calls in the log and the stats.
+            truth = self._label(counterexample, "rejected")
+            self._eq_log(f"attempt {attempt}: {counterexample} rejected by the model's own MQ{truth}")
         self._eq_log(f"no usable counterexample in {settings.attempts} attempts")
         self._failed += tuple(r for r in dict.fromkeys(carry) if r not in self._failed)
         self._failed_eqs += 1

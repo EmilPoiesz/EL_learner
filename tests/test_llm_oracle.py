@@ -29,6 +29,8 @@ is replaced by a stub that returns scripted responses.
 53 EQ: mask: after the first accepted counterexample, N EQs show an empty H with H's left-side concepts out of scope
 54 thinking off: enable_thinking=False reaches the chat template, and keys the cache apart from thinking on
 56 resample: a sampled MQ asked again is generated afresh, not replayed; greedy and resample off still use the cache
+59 EQ none: the prompt offers 'none', a 'none' ends learning, not offered in the masked phase or by default
+60 EQ: after a rejected proposal, later attempts are still counted as 'EQ (counterexample)'
 """
 
 from __future__ import annotations
@@ -1028,3 +1030,54 @@ def test_56_resample_skips_cache_for_sampled_queries(tmp_path):
     assert oracle.MQ(_GCI) is True
     assert oracle.MQ(_GCI) is True
     assert oracle._pipe.calls == 1
+
+
+def test_59_eq_none_answer(tmp_path):
+    from learner.llm_prompts import NONE_LINE
+    # Default: no "none" line, and "none" is an unusable answer.
+    (tmp_path / "off").mkdir()
+    oracle = _oracle(tmp_path / "off", ["no", "none", "A SubClassOf B", "yes"])
+    assert oracle.EQ(set()) == _GCI
+    assert NONE_LINE not in oracle._pipe.prompts[1]
+    assert oracle.eq_outcomes["unusable"] == 1
+
+    # On: the prompt offers it, and a bare "none" (after reasoning, any case) ends learning.
+    (tmp_path / "on").mkdir()
+    oracle = _oracle(tmp_path / "on", ["no", "<think>nothing left</think>\n**None.**"])
+    oracle._eq = EQSettings(none=True)
+    assert oracle.EQ(set()) is None
+    assert NONE_LINE in oracle._pipe.prompts[1]
+    assert oracle.eq_outcomes["none"] == 1 and oracle._failed_eqs == 0
+
+    # A statement that merely mentions "none" is still parsed as a statement.
+    (tmp_path / "stmt").mkdir()
+    oracle = _oracle(tmp_path / "stmt", ["no", "none\nA SubClassOf B", "yes"])
+    oracle._eq = EQSettings(none=True)
+    assert oracle.EQ(set()) == _GCI
+
+    # Masked phase: not offered (the prompt shows only part of H), so "none" is unusable.
+    (tmp_path / "mask").mkdir()
+    oracle = _oracle(tmp_path / "mask", ["no", "A SubClassOf B", "yes",
+                                          "no", "none", "B SubClassOf C", "yes"])
+    oracle._sig = {"A", "B", "C"}
+    oracle._eq = EQSettings(none=True, mask=1)
+    H = {oracle.EQ(set())}
+    assert oracle.EQ(H) == _gci("B SubClassOf C")       # A is masked
+    assert NONE_LINE not in oracle._pipe.prompts[4]
+    assert oracle.eq_outcomes["unusable"] == 1
+
+    assert "'none' allowed" in EQSettings(none=True).describe()
+    with pytest.raises(ValueError, match="none needs mode 'judge'"):
+        EQSettings(none=True, mode="combined")
+
+
+def test_60_attempts_after_a_rejection_keep_their_label(tmp_path):
+    # The truth note of a rejected proposal (" [false in O]") once replaced the label of
+    # every later attempt of the EQ in the log and in the stats.
+    oracle = _oracle(tmp_path, ["no", "B SubClassOf A", "no", "A SubClassOf B", "yes"])
+    oracle._truth = lambda gci: gci == _GCI
+    with step("EQ"):
+        assert oracle.EQ(set()) == _GCI
+    kinds = {kind for _, kind in oracle.query_stats}
+    assert kinds == {"EQ (judge)", "EQ (counterexample)", "MQ"}
+    assert oracle.query_stats[("EQ", "EQ (counterexample)")]["asked"] == 2
