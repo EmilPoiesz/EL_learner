@@ -124,7 +124,7 @@ def _run_reasoner_demo(
 
 
 # The order counterexample attempts are reported in (LLMOracle.eq_outcomes).
-OUTCOMES = ("unusable", "follows from H", "true accepted", "true rejected",
+OUTCOMES = ("none", "unusable", "follows from H", "true accepted", "true rejected",
             "false rejected", "false accepted", "accepted", "rejected")
 
 
@@ -624,6 +624,12 @@ def build_parser() -> argparse.ArgumentParser:
              "show an empty H and leave the concepts H is about out of scope (default 0: off).",
     )
     parser.add_argument(
+        "--eq-none", action=argparse.BooleanOptionalAction, default=False,
+        help="With an LLM's own equivalence queries (mode judge): the counterexample prompt "
+             "allows the one-word answer 'none' when the model knows nothing true that H "
+             "misses; it ends learning like the judge's yes. Not offered in the masked phase.",
+    )
+    parser.add_argument(
         "--eq-shuffle", action=argparse.BooleanOptionalAction, default=False,
         help="With an LLM's own equivalence queries: list the concept names in the "
              "counterexample prompt in a new order for each attempt (from the seed, the EQ "
@@ -850,6 +856,7 @@ if __name__ == "__main__":
                 explain=args.eq_explain,
                 shuffle=args.eq_shuffle,
                 mask=args.eq_mask,
+                none=args.eq_none,
                 temperature=args.eq_temperature,
                 generation=args.eq_generation,
                 attempts=args.eq_attempts,
