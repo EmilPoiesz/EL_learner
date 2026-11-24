@@ -1421,6 +1421,12 @@ def _repair_followed(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], e
         if not H_MQ(alpha):
             continue                      # an earlier repair already weakened what implied it
         event = {"eq": eq, "proposal": str(alpha), "culprits": [], "refuted": [], "weakened": []}
+        if oracle.H_entails_in(set(), alpha, H):
+            # True of anything (e.g. ⊤ on the right): it points at no axiom of H, and
+            # any axiom _justification would name is correct for all it shows.
+            event["outcome"] = "follows from the empty H, skipped"
+            _repair_log(oracle, event)
+            continue
         J = _justification(oracle, H, alpha)
         event["culprits"] = [str(h) for h in J]
         with step("repair"):

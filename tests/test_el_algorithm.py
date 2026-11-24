@@ -76,6 +76,7 @@ Test catalogue
 56  repair                  — a proposal that follows from H: the denied part is refuted, H weakened, later MQs say no
 57  repair                  — a wrong filler is refuted part by part; the proposal is queued as a counterexample
 58  learn_el_terminology    — repair: one wrong belief, learning with repair ends with H ≡ O, without it does not
+59  repair                  — a proposal true of anything (⊤ on the right) is skipped: no axiom is disputed
 """
 
 from __future__ import annotations
@@ -1221,3 +1222,15 @@ def test_58_learning_with_repair_removes_the_wrong_belief(repair):
     assert wrong_kept is (not repair)
     if repair:
         assert GCI(_BIRD, _BACKBONE) in oracle.refuted
+
+
+def test_59_repair_skips_a_proposal_true_of_anything():
+    from learner.el_algorithm import _repair_followed
+    O = {GCI(_BIRD, _ANIMAL)}
+    oracle = _BeliefOracle(O, set(), {"Animal", "Bird"})
+    H = {GCI(_BIRD, _ANIMAL)}
+    oracle.followed_from_H = [GCI(_BIRD, ELConcept())]   # Bird ⊑ ⊤
+    asked = oracle.mq_count
+    assert not _repair_followed(oracle, H, lambda g: _entails(H, g), 1, [])
+    assert oracle.mq_count == asked and H == {GCI(_BIRD, _ANIMAL)}
+    assert oracle.repair_log[0]["outcome"] == "follows from the empty H, skipped"
