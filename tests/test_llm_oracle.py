@@ -33,6 +33,7 @@ is replaced by a stub that returns scripted responses.
 58 repair_temperature: repair questions are sampled afresh (never from the cache) from their own random stream; 0 replays the cache
 59 EQ none: the prompt offers 'none', a 'none' ends learning, not offered in the masked phase or by default
 60 EQ: after a rejected proposal, later attempts are still counted as 'EQ (counterexample)'
+61 EQ: each EQ logs a start line with the clock time, the seconds since the model was loaded and |H|
 """
 
 from __future__ import annotations
@@ -1125,3 +1126,13 @@ def test_60_attempts_after_a_rejection_keep_their_label(tmp_path):
     kinds = {kind for _, kind in oracle.query_stats}
     assert kinds == {"EQ (judge)", "EQ (counterexample)", "MQ"}
     assert oracle.query_stats[("EQ", "EQ (counterexample)")]["asked"] == 2
+
+
+def test_61_eq_start_timestamp(tmp_path, capsys):
+    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "yes"])
+    oracle._verbose = True
+    oracle.eq_count = 1
+    assert oracle._EQ(set()) == _GCI
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("[EQ 1] started"))
+    assert re.fullmatch(r"\[EQ 1\] started \d{4}-\d\d-\d\d \d\d:\d\d:\d\d, \d+ s after the model "
+                        r"was loaded, \|H\| = 0", line)
