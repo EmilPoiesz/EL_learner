@@ -386,6 +386,7 @@ class LLMOracle(Oracle):
     _generate_kwargs: dict = {}   # model_defaults_off(model)
     _template_kwargs: dict = {}   # passed to the chat template ({"enable_thinking": False})
     _resample = False             # sampled oracle queries skip the cache lookup
+    _t0: float | None = None      # time.monotonic() when the oracle was ready (EQ timestamps)
     _failed_eqs = 0               # EQs in a row that gave no usable answer
     _mq_as_check = False          # mq_asked_as == "check"
     _truth: Callable[[GCI], bool] | None = None   # labels proposals for the log only
@@ -469,6 +470,7 @@ class LLMOracle(Oracle):
             db_path=cache_db,
             store_prompts=store_prompts,
         )
+        self._t0 = time.monotonic()
 
         if ontology_path is not None:
             from utils.owl_parser import extract_ontology
@@ -980,6 +982,12 @@ class LLMOracle(Oracle):
         outcome is printed after the exchange, as ``[EQ n] ...``.
         """
         settings = self._eq
+        # A timestamp per EQ: the differences give each round's time (the EQ and the
+        # learning after it), for estimating the time a run needs.
+        if self._t0 is None:
+            self._t0 = time.monotonic()
+        self._eq_log(f"started {time.strftime('%Y-%m-%d %H:%M:%S')}, "
+                     f"{time.monotonic() - self._t0:.0f} s after the model was loaded, |H| = {len(hypothesis)}")
         # After failed EQs every prompt of this one says so, so that it is never the same
         # prompt again (a greedy model would give the same answer, or the cache would).
         again = [prompts.repeated_feedback(self._failed_eqs)] if self._failed_eqs else []
