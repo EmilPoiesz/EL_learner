@@ -1200,8 +1200,14 @@ class LLMOracle(Oracle):
 
     def _check_counterexample(self, gci: GCI) -> bool:
         """The model's own MQ on a counterexample, as the settings' ``check`` and
-        ``check_system`` say; counted as an MQ."""
+        ``check_system`` say; counted as an MQ.  A proposal that implies a statement the
+        repair step refuted is answered no without asking, as ``Oracle.MQ`` does.  (cex53:
+        the check asked the model directly, accepted a refuted statement, the per-EQ check
+        removed it again, and the identical next EQ got the same cached answer, EQs 18-30.)"""
         check, system, question = self._eq.check, self._eq.check_system, self._eq.check_question
+        if any(gci_implies(gci, n) for n in self.__dict__.get("refuted", ())):
+            self.count_mq()
+            return False
         if self._prompt_style in PAPER_SYSTEM_PROMPTS and (
                 check == "nl" or system != "paper" or question != "paper"
                 or self._eq.check_domain != "off"):

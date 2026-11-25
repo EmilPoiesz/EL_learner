@@ -34,6 +34,7 @@ is replaced by a stub that returns scripted responses.
 59 EQ none: the prompt offers 'none', a 'none' ends learning, not offered in the masked phase or by default
 60 EQ: after a rejected proposal, later attempts are still counted as 'EQ (counterexample)'
 61 EQ: each EQ logs a start line with the clock time, the seconds since the model was loaded and |H|
+62 repair: the counterexample check answers no to a proposal that implies a refuted statement, without asking
 """
 
 from __future__ import annotations
@@ -1136,3 +1137,15 @@ def test_61_eq_start_timestamp(tmp_path, capsys):
     line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("[EQ 1] started"))
     assert re.fullmatch(r"\[EQ 1\] started \d{4}-\d\d-\d\d \d\d:\d\d:\d\d, \d+ s after the model "
                         r"was loaded, \|H\| = 0", line)
+
+
+def test_62_check_rejects_a_refuted_proposal(tmp_path):
+    # cex53: the check asked the model directly, so a refuted statement came back as a
+    # counterexample at every EQ. Now it is rejected like any no, and the next attempt counts.
+    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "B SubClassOf A", "True"])
+    oracle._prompt_style = "paper-advanced"
+    oracle._eq = EQSettings(check="nl")
+    oracle.refuted = [_GCI]
+    assert oracle.EQ(set()) == _gci("B SubClassOf A")
+    assert oracle._pipe.calls == 4                    # judge, two proposals, one check
+    assert oracle.eq_outcomes["rejected"] == 1
