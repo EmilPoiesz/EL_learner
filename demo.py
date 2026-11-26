@@ -680,12 +680,10 @@ def build_parser() -> argparse.ArgumentParser:
              "--max-new-tokens.  Unset: --max-new-tokens, but at least 128.",
     )
     parser.add_argument(
-        "--eq-generation", choices=["default", "g1", "g2", "g3", "g2b", "g3b"], default="default",
+        "--eq-generation", choices=["g2b"], default="g2b",
         help="With an LLM's own equivalence queries (judge mode): how the counterexample "
-             "is asked for.  'default': placeholder examples; 'g1': with the EL forms "
-             "allowed listed as rules; 'g2': concrete examples about cars; 'g3': as "
-             "'Subject | relation | Object'; 'g2b', 'g3b': g2 without brackets, g3 with the "
-             "format in prose (learner/llm_prompts.py GENERATIONS).",
+             "is asked for.  Only 'g2b': examples about cars (the variants tried in "
+             "cex13-cex17 were removed; learner/llm_prompts.py GENERATIONS).",
     )
     parser.add_argument(
         "--max-eqs", type=int, default=None, metavar="N",

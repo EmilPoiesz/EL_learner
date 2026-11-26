@@ -25,12 +25,10 @@ from learner.cache.cache import LLMCache
 from learner.el_algorithm import (Oracle, OracleError, ELConcept, GCI, current_step, gci_implies,
                                   subsumed_without_axioms)
 from learner.el_syntax import (IS_A_PATTERN, NAME_PATTERN, gci_names, gci_to_manchester, gci_to_nl,
-                               gci_to_triple, parse_manchester_gci, parse_nl_gci, parse_triple,
-                               without_brackets)
+                               parse_manchester_gci, parse_nl_gci, without_brackets)
 from learner.hypothesis_reasoner import HypothesisReasoner
 from learner import llm_prompts as prompts
-from learner.llm_prompts import (CHECK_DOMAINS, CHECK_QUESTIONS, CHECK_SYSTEM_PROMPTS, GENERATIONS,
-                                 MANCHESTER_ONLY_GENERATIONS, TRIPLE_GENERATIONS)
+from learner.llm_prompts import CHECK_DOMAINS, CHECK_QUESTIONS, CHECK_SYSTEM_PROMPTS, GENERATIONS
 from learner.upstream import (OLLAMA_SAMPLING, PAPER_NL_STYLES, PAPER_SYSTEM_PROMPTS, desaturate,
                               paper_is_true, rhs_conjuncts, upstream_gci_text,
                               upstream_natural_language)
@@ -180,13 +178,10 @@ class EQSettings:
         and the check keep that one: they are yes/no answers, while a reasoning
         model must think and then write a statement (cex20).
     generation : str
-        How the counterexample is asked for (``llm_prompts.GENERATIONS``):
-        ``"default"``, the placeholder examples; ``"g1"``, with the forms allowed
-        listed as rules; ``"g2"``, concrete examples about cars; ``"g3"``, as
-        "Subject | relation | Object" (``el_syntax.parse_triple``), and the
-        feedback lines name statements that way too; ``"g2b"``, ``"g3b"``: G2
-        without brackets, G3 with its format explained in prose.  Only with mode
-        ``"judge"``; G1, G2 and G2b only in Manchester syntax.
+        How the counterexample is asked for (``llm_prompts.GENERATIONS``): only
+        ``"g2b"``, examples about cars, in either language.  The variants before it
+        (cex13-cex17) were removed on 2026-11-26.  Mode ``"combined"`` has its own
+        prompt (``eq_combined_prompt``).
     shuffle : bool
         False (default): the counterexample prompt lists the concept names sorted.
         True: in a new order for each attempt, drawn from the oracle's seed, the EQ
@@ -230,7 +225,7 @@ class EQSettings:
     none: bool = False
     temperature: float = 0.0
     attempts: int = 3
-    generation: str = "default"
+    generation: str = "g2b"
     max_new_tokens: int | None = None
     language: str = "style"
 
@@ -262,8 +257,6 @@ class EQSettings:
             raise ValueError("none needs mode 'judge' (mode combined has its own yes)")
         if self.explain_form and not self.explain:
             raise ValueError("explain_form needs explain")
-        if self.generation != "default" and self.mode != "judge":
-            raise ValueError(f"generation {self.generation} needs mode 'judge'")
 
     def describe(self, seed: int = 0) -> str:
         """The settings that differ from the defaults, for a run's header."""
@@ -282,7 +275,6 @@ class EQSettings:
                 + (f", counterexamples sampled at temperature {self.temperature}, seed {seed}"
                    if self.temperature > 0 else "")
                 + (f", {self.attempts} attempts per EQ" if self.attempts != 3 else "")
-                + (f", counterexample prompt {self.generation}" if self.generation != "default" else "")
                 + (f", {self.max_new_tokens} tokens per counterexample" if self.max_new_tokens else "")
                 + ({"manchester": ", EQs in Manchester syntax", "nl": ", EQs in natural language"}
                    .get(self.language, "")))
@@ -448,9 +440,6 @@ class LLMOracle(Oracle):
         self.eq_outcomes = Counter()
         self._eq_language = (eq_settings.language if eq_settings.language != "style"
                              else "nl" if prompt_style in PAPER_NL_STYLES else "manchester")
-        if eq_settings.generation in MANCHESTER_ONLY_GENERATIONS and self._eq_language != "manchester":
-            raise ValueError(f"generation {eq_settings.generation} is written in Manchester "
-                             f"syntax only, not in natural language")
         self._rejected: tuple[str, ...] = ()   # with memory: the check's rejections so far
         self._failed: tuple[str, ...] = ()     # why the answers of the EQs that just failed could not be used
         self._accepted = 0          # counterexamples accepted so far
@@ -812,9 +801,7 @@ class LLMOracle(Oracle):
         a name, and a role in scope used without "some" ("Bird has_part Wing",
         "Project SubClassOf employed_by University"); each also inside brackets
         around the whole line, and a tuple "(Cat, eats, Meat)" as "Cat eats Meat"
-        (cex14).  For a triple answer, ``_triple_readings``."""
-        if self._eq.generation in TRIPLE_GENERATIONS:
-            return self._triple_readings(line)
+        (cex14)."""
         def add_some(text: str) -> str:
             for role in sorted(self._roles, key=len, reverse=True):
                 text = re.sub(rf"(?<![\w:.\-]){re.escape(role)}\s+(?!some\b)(?=[\w(])",
@@ -911,23 +898,10 @@ class LLMOracle(Oracle):
                        sides[2], maxsplit=1, flags=re.IGNORECASE)[0]
         return sides[0] + sides[1] + cut.strip().rstrip(".,;")
 
-    @staticmethod
-    def _triple_readings(line: str) -> list[str]:
-        """Readings of an unparsable triple *line*: the parts around a colon, each
-        also without enclosing brackets.  The model wrote the format before its
-        answer ("Subject | is-a | Object: Bird | is-a | Vertebrate") or an
-        explanation after it ("Cat | eats | Fish: While …", cex15).  A colon inside
-        a name (ex:hasPart) has no space after it, so it does not split."""
-        parts = [p.strip() for p in re.split(r":(?:\s+|$)", line) if p.strip()]
-        candidates = [r for p in parts for r in (p, without_brackets(p))]
-        return [c for i, c in enumerate(candidates) if c != line and c not in candidates[:i]]
-
     def _parse_gci_in_scope(self, line: str) -> GCI:
         """The GCI written on *line* in the EQ language, or ValueError, saying why
         (not a statement, or names outside the scope)."""
-        if self._eq.generation in TRIPLE_GENERATIONS:
-            parse, form = parse_triple, "'Subject | relation | Object'"
-        elif self._eq_language == "nl":
+        if self._eq_language == "nl":
             parse, form = parse_nl_gci, "'C is a subcategory of D'"
         else:
             parse, form = parse_manchester_gci, "'C SubClassOf D' in Manchester syntax"
@@ -1089,9 +1063,7 @@ class LLMOracle(Oracle):
         settings, language = self._eq, self._eq_language
         ask = dict(system=self._eq_system_msg,
                    max_new_tokens=max(self._max_new_tokens, EQ_MIN_NEW_TOKENS))
-        plain = gci_to_nl if language == "nl" else gci_to_manchester
-        # The feedback names statements as the answer is asked for: as triples with G3.
-        render = (lambda gci: gci_to_triple(gci) or plain(gci)) if settings.generation in TRIPLE_GENERATIONS else plain
+        render = gci_to_nl if language == "nl" else gci_to_manchester
         names_in = re.compile(r"\b(" + "|".join(map(re.escape, sorted(masked))) + r")\b") if masked else None
         visible = (lambda line: True) if names_in is None else (lambda line: not names_in.search(line))
         if settings.mode == "judge":
@@ -1114,8 +1086,7 @@ class LLMOracle(Oracle):
         else:
             # "none" (EQSettings.none): only where the prompt shows all of H.
             offer_none = settings.none and not masked
-            build = partial(prompts.eq_counterexample_prompt, generation=settings.generation,
-                            allow_none=offer_none)
+            build = partial(prompts.eq_counterexample_prompt, allow_none=offer_none)
             parse = self._parse_counterexample_or_none if offer_none else self._parse_counterexample
             label = "EQ (counterexample)"
         sampling = sampling_params(settings.temperature, self._seed)

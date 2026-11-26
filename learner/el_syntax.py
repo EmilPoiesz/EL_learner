@@ -100,47 +100,9 @@ def parse_nl_gci(s: str) -> GCI:
     return parse_manchester_gci(f"{to_manchester(sides[0])} SubClassOf {to_manchester(sides[1])}")
 
 
-# ---------------------------------------------------------------------------
-# Triples: "Subject | relation | Object" (EQ answers with generation G3)
-# ---------------------------------------------------------------------------
-
-IS_A = "is-a"
-# The relation of a triple that means SubClassOf, as the model may write it.
+# The relation of a tuple answer "(Cat, is-a, Mammal)" that means SubClassOf, as the
+# model may write it (cex14).
 IS_A_PATTERN = r"is[\s_\-]?an?|isa|subclassof"
-
-
-def gci_to_triple(gci: GCI) -> str | None:
-    """A ⊑ B as "A | is-a | B", A ⊑ ∃r.B as "A | r | B", for concept names A and B;
-    None for any other GCI."""
-    lhs, rhs = gci.lhs, gci.rhs
-    if len(lhs.atoms) != 1 or lhs.existentials:
-        return None
-    subject = next(iter(lhs.atoms))
-    if len(rhs.atoms) == 1 and not rhs.existentials:
-        return f"{subject} | {IS_A} | {next(iter(rhs.atoms))}"
-    if not rhs.atoms and len(rhs.existentials) == 1:
-        role, filler = next(iter(rhs.existentials))
-        if len(filler.atoms) == 1 and not filler.existentials:
-            return f"{subject} | {role} | {next(iter(filler.atoms))}"
-    return None
-
-
-def parse_triple(s: str) -> GCI:
-    """The GCI of "Subject | relation | Object": Subject ⊑ Object when the relation
-    is is-a (also "is a", "isa", "is_a", "SubClassOf", in any case), else
-    Subject ⊑ ∃relation.Object.  Raises ValueError."""
-    parts = [p.strip().strip("`'\"").strip() for p in s.strip().strip("|").split("|")]
-    if len(parts) != 3:
-        raise ValueError(f"expected 'Subject | relation | Object': {s!r}")
-    subject, relation, obj = parts
-    is_a = re.fullmatch(IS_A_PATTERN, relation, flags=re.IGNORECASE)
-    for name in (subject, obj) if is_a else (subject, relation, obj):
-        if not re.fullmatch(NAME_PATTERN, name):
-            raise ValueError(f"{name!r} is not a name: {s!r}")
-    lhs = ELConcept(frozenset({subject}))
-    if is_a:
-        return GCI(lhs, ELConcept(frozenset({obj})))
-    return GCI(lhs, ELConcept(frozenset(), frozenset({(relation, ELConcept(frozenset({obj})))})))
 
 
 def without_brackets(text: str) -> str:

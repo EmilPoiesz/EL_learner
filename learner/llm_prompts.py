@@ -219,8 +219,8 @@ CHECK_QUESTION_TEXT = {"every": every_question, "atonce": atonce_question}
 # EQ
 # ---------------------------------------------------------------------------
 
-# The statement forms an EQ answer may take, with placeholder names so that the
-# examples do not suggest an axiom of the ontology.
+# The statement forms a combined EQ's answer may take (eq_combined_prompt), with
+# placeholder names so that the examples do not suggest an axiom of the ontology.
 # Not A: the model read "A SubClassOf B" as the article and wrote
 # "A Professor SubClassOf Teacher" (jobs 4380986-87).
 EQ_EXAMPLES = {
@@ -230,27 +230,12 @@ EQ_EXAMPLES = {
 }
 _EQ_FORMAT = {"manchester": "in Manchester syntax", "nl": "in this form"}
 
-# How the counterexample is asked for (EQSettings.generation; experiments cex13-cex17,
-# the generation variants).  In cex12 most answers could not be used: negation, names out
-# of scope, the placeholder copied, explanations.
-#   default  the EQ_EXAMPLES placeholders
-#   g1       the same, with the forms allowed and the slips seen listed as rules
-#   g2       concrete examples about cars instead of placeholders, with role names no
-#            target ontology has (S2 already uses cars for the check)
-#   g3       a structured answer, "Subject | relation | Object" (el_syntax.parse_triple):
-#            EL by construction, but only A ⊑ B and A ⊑ ∃r.B
-#   g2b      G2 without brackets: in cex14 every answer was wrapped in them ("(Cat, eats,
-#            Meat)"), perhaps copied from "(about cars, not about O)" or the third example
-#   g3b      G3 with the format explained in prose: in cex15 the model copied the shape
-#            "Subject | is-a | Object: every Subject is an Object", writing "Subject"
-#            itself, or the format line before its answer
-# G1 and G2 are written in Manchester syntax; G2b, G3 and G3b ask the same in either
-# language (G2b's examples in natural language: gci_to_nl of the Manchester ones, cex23).
-GENERATIONS = ("default", "g1", "g2", "g3", "g2b", "g3b")
-MANCHESTER_ONLY_GENERATIONS = ("g1", "g2")
-TRIPLE_GENERATIONS = ("g3", "g3b")         # the answer is a triple (el_syntax.parse_triple)
-EQ_EXAMPLES_G2 = ("Car SubClassOf Vehicle", "Car SubClassOf has_component some Wheel",
-                  "Vehicle and (powered_by some Engine) SubClassOf MotorVehicle")
+# How the counterexample is asked for (EQSettings.generation): g2b, examples about cars
+# with role names no target ontology has.  The variants tried before it (cex13-cex17:
+# default placeholders, g1 with rules, g2 with brackets, g3/g3b as triples
+# "Subject | relation | Object") were removed on 2026-11-26; every run since cex18 used
+# g2b.  In natural language the examples are gci_to_nl of the Manchester ones (cex23).
+GENERATIONS = ("g2b",)
 EQ_EXAMPLES_G2B = {
     "manchester": ("Car SubClassOf Vehicle", "Car SubClassOf has_component some Wheel",
                    "Vehicle and powered_by some Engine SubClassOf MotorVehicle"),
@@ -258,33 +243,6 @@ EQ_EXAMPLES_G2B = {
            "Car is a subcategory of something that has_component some Wheel",
            "Vehicle that is also something that powered_by some Engine is a subcategory of MotorVehicle"),
 }
-_G1_RULES = (
-    "Rules:\n"
-    "  - C, D, E and r stand for names in scope: replace them, do not write them.\n"
-    "  - Use only the concept names and object properties in scope, spelled as given.\n"
-    "  - An object property is always followed by some and one concept: r some D, never r D.\n"
-    "  - Combine with and only. not, or, only, commas and comments are not allowed.\n"
-    "  - The statement can only add to H: it cannot say that a statement of H is false.\n"
-    "  - Write the statement alone on one line, with no explanation before or after it.\n"
-)
-_G3_FORMAT = (
-    "Output exactly one line of the form Subject | relation | Object, where Subject and "
-    "Object are concept names in scope and relation is is-a or an object property in scope:\n"
-    "  Subject | is-a | Object: every Subject is an Object;\n"
-    "  Subject | r | Object: every Subject is related by r to at least one Object.\n"
-    "For example (about cars, not about O):\n"
-    "  Car | is-a | Vehicle\n"
-    "  Car | has_component | Wheel\n"
-)
-_G3B_FORMAT = (
-    "Write it as one line of three parts separated by |, in this order: a concept name in "
-    "scope, a relation, and a concept name in scope. The relation is is-a when every member of the "
-    "first concept is a member of the second, or an object property in scope when every "
-    "member of the first concept is related by it to at least one member of the second.\n"
-    "For example, about cars:\n"
-    "  Car | is-a | Vehicle\n"
-    "  Car | has_component | Wheel\n"
-)
 
 
 def _eq_context(sig: set[str], roles: set[str], H: set[GCI], language: str,
@@ -314,33 +272,15 @@ def eq_judge_prompt(sig: set[str], roles: set[str], H: set[GCI],
 
 def eq_counterexample_prompt(sig: set[str], roles: set[str], H: set[GCI],
                              feedback: Sequence[str] = (), language: str = "manchester",
-                             generation: str = "default", allow_none: bool = False) -> str:
+                             allow_none: bool = False) -> str:
     """*allow_none* (EQSettings.none): the one-word answer "none" is allowed when there
     is no counterexample."""
-    if generation in MANCHESTER_ONLY_GENERATIONS and language != "manchester":
-        raise ValueError(f"generation {generation} is written in Manchester syntax only")
-    head = _eq_context(sig, roles, H, language, feedback) + (
+    examples = "".join(f"  {e}\n" for e in EQ_EXAMPLES_G2B[language])
+    return _eq_context(sig, roles, H, language, feedback) + (
         "Name one counterexample: a statement that is true in O but does not follow from H.\n"
-        + (NONE_LINE if allow_none else ""))
-    if generation == "g3":
-        return head + _G3_FORMAT + "Output nothing else."
-    if generation == "g3b":
-        return head + _G3B_FORMAT + "Output only that line, with no explanation."
-    if generation == "g2":
-        examples = "".join(f"  {e}\n" for e in EQ_EXAMPLES_G2)
-        return head + (f"Output exactly one line {_EQ_FORMAT[language]}, for example "
-                       f"(about cars, not about O):\n{examples}Output nothing else.")
-    if generation == "g2b":
-        examples = "".join(f"  {e}\n" for e in EQ_EXAMPLES_G2B[language])
-        return head + (f"Output exactly one line {_EQ_FORMAT[language]}, for example, "
-                       f"about cars:\n{examples}Output nothing else.")
-    examples = "".join(f"  {e}\n" for e in EQ_EXAMPLES[language])
-    return head + (
-        f"Output exactly one line {_EQ_FORMAT[language]}, for example:\n"
-        f"{examples}"
-        + (_G1_RULES if generation == "g1" else "")
-        + "Output nothing else."
-    )
+        + (NONE_LINE if allow_none else "")
+        + f"Output exactly one line {_EQ_FORMAT[language]}, for example, about cars:\n"
+        f"{examples}Output nothing else.")
 
 
 # EQSettings.none: the way out when the model knows nothing true that H misses.

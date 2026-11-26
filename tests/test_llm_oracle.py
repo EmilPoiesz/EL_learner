@@ -329,7 +329,9 @@ def test_18_article_kept_when_stripping_does_not_help(tmp_path):
     with pytest.raises(ValueError, match="'A Cat SubClassOf B' is not of the form"):
         oracle._parse_counterexample("A Cat SubClassOf B")
     prompt = prompts.eq_counterexample_prompt({"A", "B"}, set(), set())
-    assert "  C SubClassOf D\n" in prompt and "A SubClassOf B" not in prompt
+    assert "  Car SubClassOf Vehicle\n" in prompt and "A SubClassOf B" not in prompt
+    combined = prompts.eq_combined_prompt({"A", "B"}, set(), set())
+    assert "  C SubClassOf D\n" in combined and "A SubClassOf B" not in combined
 
 
 _A_R_B = GCI(ELConcept({"A"}), ELConcept(existentials={("r", ELConcept({"B"}))}))
@@ -446,10 +448,8 @@ def test_27_eq_settings():
     with pytest.raises(ValueError, match="attempts must be at least 1"):
         EQSettings(attempts=0)
     with pytest.raises(ValueError, match="generation must be one of"):
-        EQSettings(generation="g9")
-    with pytest.raises(ValueError, match="needs mode 'judge'"):
-        EQSettings(mode="combined", generation="g1")
-    assert EQSettings(generation="g3").describe() == "judge, counterexample prompt g3"
+        EQSettings(generation="g3")                      # removed 2026-11-26; g2b only
+    assert EQSettings(mode="combined").describe() == "combined"
     assert EQSettings().describe() == "judge"
     assert EQSettings(check="nl", check_system="s2", memory=True, temperature=1.0).describe(3) == (
         "judge, counterexamples checked by a natural-language MQ, check system prompt s2, "
@@ -464,55 +464,19 @@ def test_28_eq_attempts(tmp_path):
         oracle.EQ(set())
 
 
-@pytest.mark.parametrize("generation, present, absent", [
-    ("default", ["C SubClassOf r some D"], ["Rules:", "Car", "|"]),
-    ("g1", ["C SubClassOf r some D", "Rules:", "never r D", "not, or, only"], ["Car"]),
-    ("g2", ["Car SubClassOf has_component some Wheel", "not about O"], ["C SubClassOf", "Rules:"]),
-    ("g3", ["Subject | relation | Object", "Car | is-a | Vehicle"], ["SubClassOf", "Rules:"]),
-    ("g2b", ["Car SubClassOf has_component some Wheel", "powered_by some Engine SubClassOf"],
-     ["(", "C SubClassOf"]),
-    ("g3b", ["three parts separated by |", "Car | is-a | Vehicle"],
-     ["Subject", "Object:", "(", "SubClassOf"]),
+@pytest.mark.parametrize("language, present", [
+    ("manchester", ["Car SubClassOf has_component some Wheel", "powered_by some Engine SubClassOf"]),
+    ("nl", ["Car is a subcategory of something that has_component some Wheel"]),
 ])
-def test_29_generation_prompts(generation, present, absent):
-    prompt = prompts.eq_counterexample_prompt({"A", "B"}, {"r"}, set(), generation=generation)
+def test_29_counterexample_prompt(language, present):
+    # g2b, the only counterexample prompt since 2026-11-26: examples about cars, no brackets
+    # (cex14: every answer to a bracketed prompt came in brackets), no placeholders.
+    prompt = prompts.eq_counterexample_prompt({"A", "B"}, {"r"}, set(), language=language)
     for text in present:
         assert text in prompt
     question = prompt.split("Name one counterexample")[1]
-    for text in absent:
+    for text in ("(", "C SubClassOf", "C is a subcategory"):
         assert text not in question
-    with pytest.raises(ValueError, match="Manchester syntax only"):
-        prompts.eq_counterexample_prompt({"A"}, set(), set(), language="nl", generation="g1")
-
-
-@pytest.mark.parametrize("text, expected", [
-    ("Bird | is-a | Animal", "Bird SubClassOf Animal"),
-    ("| Bird | is a | Animal |", "Bird SubClassOf Animal"),
-    ("Bird|ISA|Animal", "Bird SubClassOf Animal"),
-    ("`Bird | has_part | Wing`", "Bird SubClassOf has_part some Wing"),
-])
-def test_30_triple_parsing(text, expected):
-    from learner.el_syntax import gci_to_triple, parse_triple
-    gci = parse_triple(text.strip("`"))
-    assert gci == parse_manchester_gci(expected)
-    assert parse_triple(gci_to_triple(gci)) == gci
-    assert gci_to_triple(parse_manchester_gci("A and B SubClassOf C")) is None
-    for bad in ("Bird | is-a", "Bird | has part | Wing", "Bird SubClassOf Animal"):
-        with pytest.raises(ValueError):
-            parse_triple(bad)
-
-
-def test_31_g3_eq(tmp_path):
-    # judge no; a Manchester answer is unusable under G3, said in triple terms; the
-    # triple B | is-a | A is rejected by the check, and the retry line names it as a
-    # triple; then A | r | B is accepted.
-    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "B | is-a | A", "no",
-                                "A | r | B", "True"])
-    oracle._roles = {"r"}
-    oracle._eq = EQSettings(generation="g3")
-    assert oracle.EQ(set()) == parse_manchester_gci("A SubClassOf r some B")
-    assert "is not of the form 'Subject | relation | Object'" in oracle._pipe.prompts[2]
-    assert "asked whether 'B | is-a | A' is true in O" in oracle._pipe.prompts[4]
 
 
 @pytest.mark.parametrize("response, expected", [
@@ -528,21 +492,6 @@ def test_32_brackets_and_tuples(tmp_path, response, expected):
     oracle._sig, oracle._roles = {"Bird", "Cat", "Elephant", "Herbivore", "Mammal", "Meat",
                                   "Water", "Wing"}, {"eats", "has_part", "lives_in"}
     assert oracle._parse_counterexample(response) == parse_manchester_gci(expected)
-
-
-@pytest.mark.parametrize("response, expected", [
-    ("Subject | is-a | Object: Bird | is-a | Vertebrate", "Bird SubClassOf Vertebrate"),
-    ("Cat | eats | Fish: While it's possible for a cat to eat fish", "Cat SubClassOf eats some Fish"),
-    ("(Cat | is-a | Mammal)", "Cat SubClassOf Mammal"),
-])
-def test_33_triple_readings(tmp_path, response, expected):
-    # cex15: the format before the answer, or an explanation after a colon.
-    oracle = _oracle(tmp_path, [])
-    oracle._sig, oracle._roles = {"Bird", "Cat", "Fish", "Mammal", "Vertebrate"}, {"eats"}
-    oracle._eq = EQSettings(generation="g3b")
-    assert oracle._parse_counterexample(response) == parse_manchester_gci(expected)
-    with pytest.raises(ValueError, match=re.escape("'Subject | relation | Object'")):
-        oracle._parse_counterexample("Subject | lays | Egg: Every bird lays eggs")
 
 
 @pytest.mark.parametrize("text, expected", [
@@ -799,7 +748,7 @@ def test_46_eq_language_apart_from_the_mq_style(tmp_path):
     oracle = _oracle(tmp_path, ["no", "A is a subcategory of B", "True"])
     oracle._prompt_style = "paper-advanced"
     oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
-    oracle._eq = EQSettings(language="nl", generation="g2b")
+    oracle._eq = EQSettings(language="nl")
     oracle._eq_language = "nl"
     oracle._sig, oracle._roles = {"A", "B", "C"}, {"r"}
     H = {GCI(ELConcept({"C"}), ELConcept(existentials={("r", ELConcept({"A"}))}))}
@@ -811,9 +760,6 @@ def test_46_eq_language_apart_from_the_mq_style(tmp_path):
     assert oracle._pipe.prompts[2] == "A SubClassOf B"           # the check: the paper's MQ
     with pytest.raises(ValueError, match="language must be one of"):
         EQSettings(language="french")
-    assert prompts.eq_counterexample_prompt({"A"}, set(), set(), language="nl", generation="g2b")
-    with pytest.raises(ValueError, match="Manchester syntax only"):
-        prompts.eq_counterexample_prompt({"A"}, set(), set(), language="nl", generation="g2")
 
 
 _A_BRS_C = GCI(ELConcept({"A"}), ELConcept({"B"}, {("r_s", ELConcept({"C"}))}))

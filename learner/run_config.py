@@ -255,18 +255,12 @@ OPTIONS: tuple[Option, ...] = (
                            "has_part some Wing\", whatever the MQ prompt style.")),
            see=("cex1-cex11", "cex23")),
     Option("oracle.eq.counterexample.prompt", "Prompt", "choice",
-           "How the counterexample is asked for. Only with mode judge; g1 and g2 only in Manchester "
-           "syntax.", flag="--eq-generation", default="default", env="EQ_GENERATION",
-           choices=(("default", "Placeholder examples: C SubClassOf D, C SubClassOf r some D, "
-                                "C and (r some D) SubClassOf E."),
-                    ("g1", "The placeholders, then rules: names in scope only, a property always as "
-                           "'r some D', 'and' only, no negation, the statement alone on its line."),
-                    ("g2", "Examples about cars, '(about cars, not about O)'. Mistral wrapped every answer "
-                           "in brackets."),
-                    ("g3", "A triple, 'Subject | relation | Object', with is-a or a property: EL by "
-                           "construction, but only A ⊑ B and A ⊑ ∃r.B. The model copied the format line."),
-                    ("g2b", "g2 without any brackets in the prompt."),
-                    ("g3b", "g3 with the format explained in prose, without 'Subject' and 'Object'.")),
+           "How the counterexample is asked for. Only with mode judge. The variants tried before g2b "
+           "(cex13-cex17: placeholder examples, the same with rules, examples about cars with brackets, "
+           "triples 'Subject | relation | Object') were removed on 2026-11-26; every run since cex18 "
+           "used g2b.", flag="--eq-generation", default="g2b", env="EQ_GENERATION",
+           choices=(("g2b", "Examples about cars (Car SubClassOf has_component some Wheel, …), without "
+                            "brackets; in natural language with --eq-language nl."),),
            see=("cex13-cex15", "cex16-cex17", "cex18")),
     Option("oracle.eq.counterexample.temperature", "Sampling", "float",
            "0: as the other queries. Above 0: only the counterexample prompts are sampled at this "
