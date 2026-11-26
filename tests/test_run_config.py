@@ -135,7 +135,7 @@ def test_5_demo_config_then_command_line(tmp_path):
     assert args.eq_check_system == "s2"              # the command line wins
     assert (args.ontology, args.seed) == ("ontologies/university.owl", 2)
     plain = demo.parse_args(parser, ["--oracle", "axioms"])
-    assert plain.prompt == "ours" and not plain.no_precompute
+    assert plain.prompt == "paper-advanced" and not plain.no_precompute   # the default, as the standard
 
 
 @pytest.mark.parametrize("argv, message", [

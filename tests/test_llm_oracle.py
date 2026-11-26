@@ -4,8 +4,8 @@ test_llm_oracle.py
 LLMOracle response handling without loading a model: the HuggingFace pipeline
 is replaced by a stub that returns scripted responses.
 
-1  a parseable MQ response is cached and replayed without a second generation
-2  an unparseable MQ response raises OracleError and is not cached
+1  a parseable response is cached and replayed without a second generation
+2  an unparseable response raises OracleError and is not cached
 3  a cached response that does not parse is regenerated and overwritten
 4  EQ: judge 'yes' returns None; judge 'no' parses the counterexample line
 5  EQ: counterexamples the LLM's own MQ keeps rejecting end in OracleError after 3 attempts
@@ -85,9 +85,10 @@ def _oracle(tmp_path, responses: list[str]) -> LLMOracle:
     oracle._max_new_tokens = 16
     oracle._sampling = None
     oracle._pad_token_id = 0
-    oracle._prompt_style = "ours"
+    oracle._prompt_style = "paper-advanced"      # the standard's MQ: True/False per conjunct
+    oracle._mq_as_check = False
     oracle._verbose = False
-    oracle._system_msg = "system"
+    oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
     oracle._sig = {"A", "B"}
     oracle._roles = set()
     oracle._h_reasoner = lambda gci: False
@@ -103,30 +104,41 @@ def _oracle(tmp_path, responses: list[str]) -> LLMOracle:
     return oracle
 
 
+def _ask_yes_no(oracle, prompt: str = "Is it?") -> bool:
+    """A query whose answer can fail to parse (as the EQ judge's): tests 1-3. A paper MQ
+    cannot fail, since anything but "True" reads as False."""
+    return oracle._query(prompt, parse=lambda r: oracle._parse_yes_no(r, "judge"), label="EQ (judge)")
+
+
 def test_1_parseable_response_cached(tmp_path):
     oracle = _oracle(tmp_path, ["Thinking...\nyes"])
+    assert _ask_yes_no(oracle) is True
+    assert _ask_yes_no(oracle) is True       # second call served from the cache
+    assert oracle._pipe.calls == 1
+    (tmp_path / "mq").mkdir()
+    oracle = _oracle(tmp_path / "mq", ["True"])
     assert oracle.MQ(_GCI) is True
-    assert oracle.MQ(_GCI) is True           # second call served from the cache
+    assert oracle.MQ(_GCI) is True           # the same for an MQ
     assert oracle._pipe.calls == 1
 
 
 def test_2_unparseable_response_not_cached(tmp_path):
     oracle = _oracle(tmp_path, ["Let me think about whether", "no"])
-    with pytest.raises(OracleError, match="Unparseable MQ"):
-        oracle.MQ(_GCI)
-    assert oracle.MQ(_GCI) is False          # regenerated, not replayed
+    with pytest.raises(OracleError, match="Unparseable judge"):
+        _ask_yes_no(oracle)
+    assert _ask_yes_no(oracle) is False      # regenerated, not replayed
     assert oracle._pipe.calls == 2
 
 
 def test_3_stale_cached_response_regenerated(tmp_path):
     oracle = _oracle(tmp_path, ["yes"])
     messages = [
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": prompts.mq_prompt({"A", "B"}, set(), _GCI)},
+        {"role": "system", "content": oracle._system_msg},
+        {"role": "user", "content": "Is it?"},
     ]
     params = {"max_new_tokens": 16, "do_sample": False}
     oracle._cache.set("stub", messages, "cut off mid-sentence", params)   # as an older version cached it
-    assert oracle.MQ(_GCI) is True
+    assert _ask_yes_no(oracle) is True
     assert oracle._cache.get("stub", messages, params) == "yes"
 
 
@@ -136,7 +148,7 @@ def test_4_eq_judge_and_counterexample(tmp_path):
 
     (tmp_path / "b").mkdir()
     # judge, counterexample, then the MQ confirming the counterexample
-    oracle = _oracle(tmp_path / "b", ["no", "Reasoning...\nA SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path / "b", ["no", "Reasoning...\nA SubClassOf B", "True"])
     assert oracle.EQ(set()) == _GCI
 
 
@@ -150,7 +162,7 @@ def test_5_inconsistent_counterexample_raises(tmp_path):
 
 
 def test_6_cache_separated_by_budget(tmp_path):
-    oracle = _oracle(tmp_path, ["yes", "no"])
+    oracle = _oracle(tmp_path, ["True", "False"])
     assert oracle.MQ(_GCI) is True
     oracle._max_new_tokens = 1024             # same prompt, larger budget
     assert oracle.MQ(_GCI) is False           # asked again, not replayed
@@ -172,7 +184,7 @@ def test_7_extract_yes_no(response, expected):
 
 
 def test_8_unusable_counterexample_asked_again(tmp_path):
-    oracle = _oracle(tmp_path, ["no", "Cat SubClassOf Animal", "A SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path, ["no", "Cat SubClassOf Animal", "A SubClassOf B", "True"])
     assert oracle.EQ(set()) == _GCI
     first, retry = oracle._pipe.prompts[1], oracle._pipe.prompts[2]
     assert "could not be used" not in first
@@ -228,7 +240,7 @@ def test_11_manchester_parsing(text, expected):
 
 def test_12_sampling_settings_and_cache_by_seed(tmp_path):
     configs = []
-    oracle = _oracle(tmp_path, ["yes", "no"])
+    oracle = _oracle(tmp_path, ["True", "False"])
     pipe = oracle._pipe
     oracle._pipe = lambda messages, generation_config=None: (configs.append(generation_config),
                                                              pipe(messages))[1]
@@ -252,7 +264,7 @@ def test_12_sampling_settings_and_cache_by_seed(tmp_path):
 ])
 def test_13_combined_eq(tmp_path, response, expected):
     # "yes" ends learning; a counterexample is then confirmed by the model's own MQ.
-    oracle = _oracle(tmp_path, [response, "yes"])
+    oracle = _oracle(tmp_path, [response, "True"])
     oracle._eq = EQSettings(mode="combined")
     assert oracle.EQ(set()) == expected
     assert "If H captures everything that is true in O, reply with exactly one word: yes" \
@@ -273,7 +285,7 @@ def test_14_natural_language(tmp_path):
     assert gci_to_nl(GCI(ELConcept(existentials={("r", ELConcept({"B", "C"}))}), ELConcept({"A"}))) \
         == "something that r some (B that is also C) is a subcategory of A"
 
-    oracle = _oracle(tmp_path, ["no", "'A' is a subcategory of 'B'.", "yes"])
+    oracle = _oracle(tmp_path, ["no", "'A' is a subcategory of 'B'.", "True"])
     oracle._eq_language = "nl"
     assert oracle.EQ({GCI(ELConcept({"B"}), ELConcept({"A"}))}) == _GCI
     assert "  B is a subcategory of A\n" in oracle._pipe.prompts[0]
@@ -283,18 +295,18 @@ def test_14_natural_language(tmp_path):
 
 def test_15_h_entailed_counterexample_asked_again(tmp_path):
     other = GCI(ELConcept({"B"}), ELConcept({"A"}))
-    oracle = _oracle(tmp_path, ["no", "B SubClassOf A", "A SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path, ["no", "B SubClassOf A", "A SubClassOf B", "True"])
     oracle._h_reasoner = lambda gci: gci == other
     assert oracle.EQ({other}) == _GCI
     assert "could not be used: 'B SubClassOf A' already follows from H" in oracle._pipe.prompts[2]
 
 
 def test_16_eq_system_message_and_budget(tmp_path):
-    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True"])
     oracle._max_new_tokens = 2               # the paper's MQ budget
     oracle._eq_system_msg = "eq system"
     assert oracle.EQ(set()) == _GCI
-    assert oracle._pipe.systems == ["eq system", "eq system", "system"]   # judge, counterexample, MQ
+    assert oracle._pipe.systems == ["eq system", "eq system", oracle._system_msg]   # judge, counterexample, MQ
     assert oracle._pipe.budgets == [EQ_MIN_NEW_TOKENS, EQ_MIN_NEW_TOKENS, 2]
 
 
@@ -401,7 +413,7 @@ def test_25_rejections_remembered_across_eqs(tmp_path, memory):
     # EQ 1: A ⊑ B rejected, then B ⊑ A accepted.  Without eq_memory EQ 2 asks the
     # same prompts and replays EQ 1 from the cache, A ⊑ B first (as in cex8); with
     # it, EQ 2's first counterexample prompt lists A ⊑ B and is asked anew.
-    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "no", "B SubClassOf A", "yes",
+    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "no", "B SubClassOf A", "True",
                                 "B SubClassOf A"])
     oracle._eq = EQSettings(memory=memory)
     assert oracle.EQ(set()) == GCI(ELConcept({"B"}), ELConcept({"A"}))
@@ -414,7 +426,7 @@ def test_25_rejections_remembered_across_eqs(tmp_path, memory):
 
 def test_26_only_counterexamples_sampled(tmp_path):
     configs = []
-    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True"])
     pipe = oracle._pipe
     oracle._pipe = lambda messages, generation_config=None: (configs.append(generation_config),
                                                              pipe(messages))[1]
@@ -494,7 +506,7 @@ def test_31_g3_eq(tmp_path):
     # triple B | is-a | A is rejected by the check, and the retry line names it as a
     # triple; then A | r | B is accepted.
     oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "B | is-a | A", "no",
-                                "A | r | B", "yes"])
+                                "A | r | B", "True"])
     oracle._roles = {"r"}
     oracle._eq = EQSettings(generation="g3")
     assert oracle.EQ(set()) == parse_manchester_gci("A SubClassOf r some B")
@@ -591,7 +603,7 @@ def test_36_failed_eq_reasons_carried(tmp_path, memory):
     # so it is not the cached EQ 1 prompt; its answer is accepted, which clears the carry.
     # EQ 2's judge is asked again too: after a failed EQ its prompt says so (test 40).
     oracle = _oracle(tmp_path, ["no", "not a statement", "A SubClassOf B", "no",
-                                "no", "B SubClassOf A", "yes"])
+                                "no", "B SubClassOf A", "True"])
     oracle._eq = EQSettings(attempts=2, memory=memory)
     with pytest.raises(OracleError):
         oracle.EQ(set())
@@ -636,7 +648,7 @@ def test_38_model_generation_defaults_off(tmp_path):
     assert model_defaults_off(New()) == {}
     assert model_defaults_off(object()) == {}
 
-    oracle = _oracle(tmp_path, ["yes"])
+    oracle = _oracle(tmp_path, ["True"])
     oracle._generate_kwargs = model_defaults_off(Old())
     assert oracle.MQ(_GCI) is True
     assert oracle._pipe.kwargs == [{"use_model_defaults": False}]
@@ -673,7 +685,7 @@ def test_40_repeated_eq_is_a_new_prompt(tmp_path):
     # then failed the same way again.  Now the prompts say how many EQs failed in a row.
     oracle = _oracle(tmp_path, ["no", "not a statement", "not a statement", "not a statement",
                                 "no", "not a statement", "not a statement", "not a statement",
-                                "maybe", "no", "A SubClassOf B", "yes"])
+                                "maybe", "no", "A SubClassOf B", "True"])
     for _ in range(2):
         with pytest.raises(OracleError, match="no usable counterexample"):
             oracle.EQ(set())
@@ -693,7 +705,7 @@ def test_40_repeated_eq_is_a_new_prompt(tmp_path):
 def test_41_labels_never_change_a_decision(tmp_path, capsys, truth):
     # The model's own check decides; the labeller (ELK over O) only annotates the log
     # and eq_outcomes, whatever it says.
-    responses = ["no", "not a statement", "B SubClassOf A", "no", "A SubClassOf B", "yes"]
+    responses = ["no", "not a statement", "B SubClassOf A", "no", "A SubClassOf B", "True"]
     oracle = _oracle(tmp_path, responses)
     oracle._truth, oracle._verbose = truth, True
     assert oracle.EQ(set()) == _GCI
@@ -752,7 +764,7 @@ def test_43_mqs_asked_as_the_check(tmp_path, as_check):
 def test_44_counterexample_budget(tmp_path):
     # A reasoning model needs room to think and then write a statement (cex20: 29 of
     # 38 attempts cut off); the judge and the check are yes/no answers and keep theirs.
-    oracle = _oracle(tmp_path, ["no", "not a statement", "A SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path, ["no", "not a statement", "A SubClassOf B", "True"])
     oracle._eq = EQSettings(max_new_tokens=4096)
     assert oracle.EQ(set()) == _GCI
     assert oracle._pipe.budgets == [EQ_MIN_NEW_TOKENS, 4096, 4096, 16]   # judge, 2 attempts, check
@@ -764,7 +776,7 @@ def test_44_counterexample_budget(tmp_path):
 def test_45_query_stats(tmp_path):
     # For estimating the cost on other models: model calls by step of the algorithm
     # and kind of query, with cache hits apart; MQs by step on the oracle.
-    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True"])
     with step("EQ"):
         assert oracle.EQ(set()) == _GCI                 # judge, counterexample, check (an MQ)
     with step("saturation"):
@@ -865,7 +877,7 @@ def test_49_failures_explained(reason, expected):
 def test_50_explain_setting_in_retry_lines(tmp_path):
     trivial = GCI(ELConcept({"A", "B"}), ELConcept({"A"}))
     other = GCI(ELConcept({"B"}), ELConcept({"A"}))
-    responses = ["no", "A and B SubClassOf A", "B SubClassOf A", "A and not B SubClassOf A", "A SubClassOf B", "yes"]
+    responses = ["no", "A and B SubClassOf A", "B SubClassOf A", "A and not B SubClassOf A", "A SubClassOf B", "True"]
     for explain in (False, True):
         (tmp_path / str(explain)).mkdir()
         oracle = _oracle(tmp_path / str(explain), responses)
@@ -881,7 +893,7 @@ def test_50_explain_setting_in_retry_lines(tmp_path):
 
 def test_51_repeated_reason_listed_once(tmp_path):
     # judge no; the same unusable answer twice, then a usable one the check accepts.
-    oracle = _oracle(tmp_path, ["no", "not a statement", "not a statement", "A SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path, ["no", "not a statement", "not a statement", "A SubClassOf B", "True"])
     assert oracle.EQ(set()) == _GCI
     second, third = oracle._pipe.prompts[2], oracle._pipe.prompts[3]
     assert "(you gave this answer" not in second
@@ -902,7 +914,7 @@ def test_52_eq_shuffle(tmp_path, shuffle):
     orders = []
     for run in ("one", "two"):
         (tmp_path / run).mkdir()
-        oracle = _oracle(tmp_path / run, ["no", "not a statement", "A SubClassOf B", "yes"])
+        oracle = _oracle(tmp_path / run, ["no", "not a statement", "A SubClassOf B", "True"])
         oracle._sig = set(names)
         oracle._eq = EQSettings(shuffle=shuffle)
         assert oracle.EQ(set()) == _GCI
@@ -927,10 +939,10 @@ def test_53_eq_mask_phase(tmp_path):
     # axioms (A, then A and C) are out of scope, so an answer about A is unusable; a
     # remembered rejection naming A is left out.  EQ 4 is as without the mask again.
     oracle = _oracle(tmp_path, [
-        "no", "A SubClassOf B", "yes",                          # EQ 1
-        "no", "A SubClassOf C", "C SubClassOf D", "yes",        # EQ 2: A masked
-        "no", "D SubClassOf B", "yes",                          # EQ 3: A, C masked
-        "no", "B SubClassOf D", "yes",                          # EQ 4: phase over
+        "no", "A SubClassOf B", "True",                          # EQ 1
+        "no", "A SubClassOf C", "C SubClassOf D", "True",        # EQ 2: A masked
+        "no", "D SubClassOf B", "True",                          # EQ 3: A, C masked
+        "no", "B SubClassOf D", "True",                          # EQ 4: phase over
     ])
     oracle._sig = {"A", "B", "C", "D"}
     oracle._eq = EQSettings(mask=2, memory=True)
@@ -971,12 +983,12 @@ def test_54_thinking_off_reaches_template_and_cache_key(tmp_path):
     # Thinking on (the default) passes nothing to the chat template; off passes
     # enable_thinking=False.  The same MQ asked with thinking off is not served from
     # the answer cached with thinking on.
-    oracle = _oracle(tmp_path, ["yes", "no"])
+    oracle = _oracle(tmp_path, ["True", "False"])
     assert oracle.MQ(_GCI) is True
     assert "tokenizer_encode_kwargs" not in oracle._pipe.kwargs[0]
 
     oracle._template_kwargs = {"enable_thinking": False}
-    assert oracle.MQ(_GCI) is False                      # generated again, not the cached "yes"
+    assert oracle.MQ(_GCI) is False                      # generated again, not the cached "True"
     assert oracle._pipe.calls == 2
     assert oracle._pipe.kwargs[1]["tokenizer_encode_kwargs"] == {"enable_thinking": False}
     assert oracle.MQ(_GCI) is False                      # now cached under its own key
@@ -1013,7 +1025,7 @@ def test_56_resample_skips_cache_for_sampled_queries(tmp_path):
     from learner.llm_oracle import sampling_params
     # Sampled, resample off (default): the second ask is replayed from the cache.
     (tmp_path / "off").mkdir()
-    oracle = _oracle(tmp_path / "off", ["yes", "no"])
+    oracle = _oracle(tmp_path / "off", ["True", "False"])
     oracle._sampling = sampling_params(0.6, 0)
     assert oracle.MQ(_GCI) is True
     assert oracle.MQ(_GCI) is True
@@ -1021,7 +1033,7 @@ def test_56_resample_skips_cache_for_sampled_queries(tmp_path):
 
     # Sampled, resample on: every ask is a fresh generation, so the answer can change.
     (tmp_path / "on").mkdir()
-    oracle = _oracle(tmp_path / "on", ["yes", "no"])
+    oracle = _oracle(tmp_path / "on", ["True", "False"])
     oracle._sampling = sampling_params(0.6, 0)
     oracle._resample = True
     assert oracle.MQ(_GCI) is True
@@ -1030,7 +1042,7 @@ def test_56_resample_skips_cache_for_sampled_queries(tmp_path):
 
     # Greedy: resample changes nothing, the cache still answers the repeat.
     (tmp_path / "greedy").mkdir()
-    oracle = _oracle(tmp_path / "greedy", ["yes", "no"])
+    oracle = _oracle(tmp_path / "greedy", ["True", "False"])
     oracle._resample = True
     assert oracle.MQ(_GCI) is True
     assert oracle.MQ(_GCI) is True
@@ -1083,7 +1095,7 @@ def test_59_eq_none_answer(tmp_path):
     from learner.llm_prompts import NONE_LINE
     # Default: no "none" line, and "none" is an unusable answer.
     (tmp_path / "off").mkdir()
-    oracle = _oracle(tmp_path / "off", ["no", "none", "A SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path / "off", ["no", "none", "A SubClassOf B", "True"])
     assert oracle.EQ(set()) == _GCI
     assert NONE_LINE not in oracle._pipe.prompts[1]
     assert oracle.eq_outcomes["unusable"] == 1
@@ -1098,14 +1110,14 @@ def test_59_eq_none_answer(tmp_path):
 
     # A statement that merely mentions "none" is still parsed as a statement.
     (tmp_path / "stmt").mkdir()
-    oracle = _oracle(tmp_path / "stmt", ["no", "none\nA SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path / "stmt", ["no", "none\nA SubClassOf B", "True"])
     oracle._eq = EQSettings(none=True)
     assert oracle.EQ(set()) == _GCI
 
     # Masked phase: not offered (the prompt shows only part of H), so "none" is unusable.
     (tmp_path / "mask").mkdir()
-    oracle = _oracle(tmp_path / "mask", ["no", "A SubClassOf B", "yes",
-                                          "no", "none", "B SubClassOf C", "yes"])
+    oracle = _oracle(tmp_path / "mask", ["no", "A SubClassOf B", "True",
+                                          "no", "none", "B SubClassOf C", "True"])
     oracle._sig = {"A", "B", "C"}
     oracle._eq = EQSettings(none=True, mask=1)
     H = {oracle.EQ(set())}
@@ -1121,7 +1133,7 @@ def test_59_eq_none_answer(tmp_path):
 def test_60_attempts_after_a_rejection_keep_their_label(tmp_path):
     # The truth note of a rejected proposal (" [false in O]") once replaced the label of
     # every later attempt of the EQ in the log and in the stats.
-    oracle = _oracle(tmp_path, ["no", "B SubClassOf A", "no", "A SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path, ["no", "B SubClassOf A", "no", "A SubClassOf B", "True"])
     oracle._truth = lambda gci: gci == _GCI
     with step("EQ"):
         assert oracle.EQ(set()) == _GCI
@@ -1131,7 +1143,7 @@ def test_60_attempts_after_a_rejection_keep_their_label(tmp_path):
 
 
 def test_61_eq_start_timestamp(tmp_path, capsys):
-    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "yes"])
+    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True"])
     oracle._verbose = True
     oracle.eq_count = 1
     assert oracle._EQ(set()) == _GCI

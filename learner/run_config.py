@@ -207,7 +207,7 @@ OPTIONS: tuple[Option, ...] = (
     Option("oracle.mq.prompt", "Prompt", "choice",
            "How a membership query is asked. With a natural-language style the EQs are asked in natural "
            "language too. A list runs each prompt in turn (one run per prompt and seed).",
-           flag="--prompt", default="ours", env="PROMPTS", multi=True,
+           flag="--prompt", default="paper-advanced", env="PROMPTS", multi=True,
            choices=(("ours", "This project's yes/no question naming the scope; the whole GCI at once."),
                     ("paper-simple", "The paper's simple system prompt, 'Answer with only True or False.', and "
                                      "the axiom as the OWL API writes it. " + _PAPER_MQ),

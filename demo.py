@@ -296,7 +296,7 @@ def _run_grounded_llm_demo(
     output: str | None = None,
     max_new_tokens: int | None = None,
     include_axioms: bool = True,
-    prompt_style: str = "ours",
+    prompt_style: str = "paper-advanced",
     eq: str = "oracle",
     epsilon: float = 0.2,
     delta: float = 0.1,
@@ -761,8 +761,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     llm_grp.add_argument(
         "--prompt", choices=["ours", "paper-simple", "paper-advanced", "paper-nl-simple", "paper-nl-advanced"],
-        default="ours",
-        help="MQ prompts: this project's yes/no prompts, or the original "
+        default="paper-advanced",
+        help="MQ prompts (default paper-advanced, the standard): this project's yes/no prompts, or the original "
              "ExactLearner-LLM's True/False prompts, the axiom in Manchester syntax or, "
              "with paper-nl-*, in its natural-language form (axioms/signature only).",
     )
