@@ -197,7 +197,8 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
     mq_calls = oracle.mq_count
     eq_calls = oracle.eq_count
     # A reasoning model cut off before </think> (LLMOracle.truncated): read as no answer.
-    truncated = getattr(oracle, "truncated", 0)
+    # PAC: the inner LLM oracle's count (the wrapper has none).
+    truncated = getattr(getattr(oracle, "inner", oracle), "truncated", 0)
 
     target_O  = oracle.axioms
 

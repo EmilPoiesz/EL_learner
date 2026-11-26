@@ -4,6 +4,7 @@ Tests for demo.py's run report.
 1  learned H — an axiom of O is unmarked, a GCI O entails is marked *, one O does not entail ✗
 2  the run report's line of counterexample outcomes, in a fixed order, only the kinds that occur
 3  the query report: MQs by step in the algorithm's order, model calls by step, a QUERIES json line
+4  answers cut off while reasoning are reported, also through the PAC wrapper (the inner oracle's count)
 """
 
 from __future__ import annotations
@@ -59,3 +60,15 @@ def test_3_query_report():
     assert record["model_calls"][0] == {"step": "EQ", "query": "EQ (judge)", "asked": 1, "cached": 0,
                                         "generated": 1, "prompt_tokens": 900, "new_tokens": 2, "seconds": 0.5}
     assert demo.query_report(SimpleNamespace(), 0)[0] == "Learning took 0 s.  MQs by step: none"
+
+
+def test_4_cut_off_count_through_pac(monkeypatch, capsys):
+    monkeypatch.setattr(demo, "learn_el_terminology", lambda oracle, **kwargs: set())
+    for wrapped in (False, True):
+        llm = SimpleNamespace(mq_count=0, eq_count=0, axioms=set(), signature={"A"},
+                              make_H_MQ=lambda H: lambda gci: False, truncated=3)
+        # PAC: a wrapper without a count of its own around the LLM oracle.
+        oracle = SimpleNamespace(**{k: v for k, v in vars(llm).items() if k != "truncated"}, inner=llm) \
+            if wrapped else llm
+        demo._run_and_report(oracle, verbose=False, judge=lambda gci: True)
+        assert "cut off while reasoning: 3" in capsys.readouterr().out
