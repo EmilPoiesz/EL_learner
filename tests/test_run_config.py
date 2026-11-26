@@ -14,6 +14,7 @@ Tests for learner/run_config.py and demo.py --config.
 10 a list of MQ prompts: one run per prompt, so demo.py must be given one of them
 11 values that would crash a job after the model loads are config and command-line errors:
    max_new_tokens 0, ε 0, δ 0 or 1 (code review 2026-11-26, finding 14)
+12 --repair needs an LLM's own EQs: with the reasoner or PAC sampling it is an error (finding 23)
 """
 
 from __future__ import annotations
@@ -235,3 +236,16 @@ def test_11_values_that_crash_a_job(tmp_path, capsys, oracle, message):
     ok = {**STANDARD, "oracle": {**STANDARD["oracle"], "max_new_tokens": 1, "eq": {"kind": "pac", "epsilon": 0.5,
                                                                                     "delta": 0.5}}}
     run_config.load(_write(tmp_path, ok, "ok.json"))
+
+
+def test_12_repair_needs_llm_eqs(tmp_path, capsys):
+    parser = demo.build_parser()
+    for argv in (["--repair"], ["--oracle", "signature", "--eq", "pac", "--repair"]):
+        with pytest.raises(SystemExit):
+            demo.parse_args(parser, argv)
+        assert "--repair needs an LLM's own equivalence queries" in capsys.readouterr().err
+    assert demo.parse_args(parser, ["--oracle", "signature", "--repair"]).repair
+    pac = {**STANDARD, "oracle": {**STANDARD["oracle"], "eq": {"kind": "pac"}}, "learner": {"repair": True}}
+    with pytest.raises(SystemExit):                       # also from a config
+        demo.parse_args(parser, ["--config", _write(tmp_path, pac), "--ontology", "ontologies/animals.owl",
+                                 "--seed", "0"])

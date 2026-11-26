@@ -83,7 +83,9 @@ def _run_reasoner_demo(
     delta: float = 0.1,
     reuse_counterexamples: bool = False,
     saturation: str = "paper",
-    repair: bool = False,
+    max_eqs: int | None = None,
+    precomputation: bool = True,
+    max_failed_eqs: int = 0,
 ) -> bool:
     from learner.reasoner_oracle import ReasonerOracle
 
@@ -97,8 +99,6 @@ def _run_reasoner_demo(
         print("  Reuse    : a counterexample H still misses is processed again before the next EQ")
     if saturation != "paper":
         print("  Saturate : names tried general first by H's hierarchy; candidates H rules out are not asked")
-    if repair:
-        print("  Repair   : proposals that follow from H are used to find and weaken wrong GCIs")
 
     try:
         with ReasonerOracle(
@@ -114,9 +114,9 @@ def _run_reasoner_demo(
             },
         ) as oracle:
             _run_and_report(_with_eq(oracle, eq, epsilon, delta, seed, oracle.info), verbose=verbose,
-                            output=output, info=oracle.info,
-                            reuse_counterexamples=reuse_counterexamples,
-                                saturation=saturation, repair=repair)
+                            output=output, info=oracle.info, max_eqs=max_eqs,
+                            precomputation=precomputation, max_failed_eqs=max_failed_eqs,
+                            reuse_counterexamples=reuse_counterexamples, saturation=saturation)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -479,6 +479,12 @@ def _run_llm_demo(
     verbose: bool,
     output: str | None = None,
     max_new_tokens: int | None = None,
+    max_eqs: int | None = None,
+    precomputation: bool = True,
+    max_failed_eqs: int = 0,
+    reuse_counterexamples: bool = False,
+    saturation: str = "paper",
+    repair: bool = False,
 ) -> bool:
     from utils.java_utils import build_classpath
     from learner.hypothesis_reasoner import HypothesisReasoner
@@ -513,7 +519,10 @@ def _run_llm_demo(
             _section("Learning EL terminology from LLM oracle")
             print("  (Each MQ/EQ call queries the LLM — this may take a while)\n")
             oracle.reset_counts()
-            H = learn_el_terminology(oracle, max_iterations=50)
+            H = learn_el_terminology(oracle, max_iterations=50 if max_eqs is None else max_eqs,
+                                     precomputation=precomputation, max_failed_eqs=max_failed_eqs,
+                                     reuse_counterexamples=reuse_counterexamples, saturation=saturation,
+                                     repair=repair)
             mq_calls = oracle.mq_count
             eq_calls = oracle.eq_count
 
@@ -688,7 +697,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-failed-eqs", type=int, default=0, metavar="N",
-        help="With an LLM over an ontology (axioms, signature): tolerate N EQs in a row "
+        help="Tolerate N EQs in a row "
              "without a usable answer before learning stops (default 0: stop at the first); "
              "the next EQ asks again, with the earlier failures in its prompt.  Failed EQs "
              "count towards --max-eqs.",
@@ -697,7 +706,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--repair", action="store_true",
         help="Not in the paper: when a counterexample proposal already follows from H, ask about "
              "the parts of the H axioms it follows from, refute the parts the teacher denies, and "
-             "weaken H; refuted statements are answered no from then on.",
+             "weaken H; refuted statements are answered no from then on.  Needs an LLM's own "
+             "EQs (--oracle axioms/signature, --eq oracle).",
     )
     parser.add_argument(
         "--saturation", choices=["paper", "hierarchy"], default="paper",
@@ -734,7 +744,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--no-precompute", action="store_true",
-        help="With an LLM over an ontology (axioms, signature): skip Phase 1, the MQ for "
+        help="Skip Phase 1, the MQ for "
              "every ordered pair of concept names, so H starts empty and grows only from "
              "counterexamples.",
     )
@@ -823,18 +833,28 @@ def parse_args(parser: argparse.ArgumentParser, argv: list[str] | None = None) -
     """The command line, with --config's settings placed before the flags given."""
     argv = sys.argv[1:] if argv is None else list(argv)
     known, _ = parser.parse_known_args(argv)
-    if not known.config:
-        return parser.parse_args(argv)
+    args = parser.parse_args(argv) if not known.config else _parse_with_config(parser, known.config, argv)
+    # The repair acts on counterexample proposals that already follow from H.  Only an
+    # LLM's own EQs make them: ELK is never wrong and PAC sampling returns statements H
+    # misses, so with either it would run and never do anything (code review 2026-11-26).
+    if args.repair and (args.oracle == "reasoner" or args.eq == "pac"):
+        parser.error("--repair needs an LLM's own equivalence queries (--oracle axioms or signature "
+                     "with --eq oracle): ELK and PAC sampling never propose a statement H already implies")
+    return args
+
+
+def _parse_with_config(parser: argparse.ArgumentParser, path: str, argv: list[str]) -> argparse.Namespace:
+    """The command line after --config's settings (the flags given win)."""
     from learner import run_config
     try:
-        config = run_config.load(known.config)
+        config = run_config.load(path)
         args = parser.parse_args(run_config.to_argv(config) + argv)
         run_config.check_run(config, args.ontology, args.seed, argv)
         prompts = run_config.value(config, "oracle.mq.prompt")
         if isinstance(prompts, list) and args.prompt not in prompts:
             raise run_config.ConfigError(f"oracle.mq.prompt: {args.prompt} is not in the config ({', '.join(prompts)})")
     except run_config.ConfigError as exc:
-        parser.error(f"--config {known.config}: {exc}")
+        parser.error(f"--config {path}: {exc}")
     return args
 
 
@@ -861,7 +881,9 @@ if __name__ == "__main__":
             delta=args.delta,
             reuse_counterexamples=args.reuse_counterexamples,
             saturation=args.saturation,
-            repair=args.repair,
+            max_eqs=args.max_eqs,
+            precomputation=not args.no_precompute,
+            max_failed_eqs=args.max_failed_eqs,
         )
     elif args.oracle in ("axioms", "signature"):
         max_new_tokens = args.max_new_tokens
@@ -925,6 +947,12 @@ if __name__ == "__main__":
                 verbose=args.verbose,
                 output=args.output,
                 max_new_tokens=args.max_new_tokens,
+                max_eqs=args.max_eqs,
+                precomputation=not args.no_precompute,
+                max_failed_eqs=args.max_failed_eqs,
+                reuse_counterexamples=args.reuse_counterexamples,
+                saturation=args.saturation,
+                repair=args.repair,
             )
 
     # Non-zero on failure, so scripts and batch jobs see it.
