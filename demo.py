@@ -618,6 +618,11 @@ def build_parser() -> argparse.ArgumentParser:
              "not a concept, nothing H already implies).",
     )
     parser.add_argument(
+        "--eq-explain-form", action=argparse.BooleanOptionalAction, default=False,
+        help="With --eq-explain: also explain '¬', inverse roles and 'Nothing' (EL has no "
+             "negation, no inverse roles, no disjointness).",
+    )
+    parser.add_argument(
         "--eq-mask", type=int, default=0, metavar="N",
         help="With an LLM's own equivalence queries: after the first accepted "
              "counterexample, a masked phase of N accepted counterexamples, whose prompts "
@@ -854,6 +859,7 @@ if __name__ == "__main__":
                 check_domain=args.eq_check_domain,
                 memory=args.eq_memory,
                 explain=args.eq_explain,
+                explain_form=args.eq_explain_form,
                 shuffle=args.eq_shuffle,
                 mask=args.eq_mask,
                 none=args.eq_none,

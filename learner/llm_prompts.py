@@ -430,12 +430,46 @@ _NOT_EL = ("not", "or", "only", "all", "exactly", "min", "max", "value", "that",
 _FORM = {"manchester": "'C SubClassOf D'", "nl": "'C is a subcategory of D'"}
 
 
-def explain_unusable(reason: str, language: str = "manchester") -> str:
+# EQSettings.explain_form (cex55): three failures Qwen3-32B repeated in cex54 that the
+# explanations above missed.  "¬" got only the generic form line (the negation check
+# reads letters); inverse roles ("inverse(r)", "r^", "r inv") got it 7-9 times in a row,
+# each time in a new notation; "Nothing" was called an out-of-scope name, so the model
+# was never told that EL cannot say two classes share no members.
+_INVERSE = re.compile(r"\binverse\b|\binverseOf\b|\binv\b|\^|⁻", flags=re.I)
+_NOTHING = ("Nothing", "owl:Nothing", "⊥", "Bottom")
+_DISJOINT = ("EL statements cannot say that two classes share no members: there is no "
+             "'Nothing' and no disjointness. Name something that is true of every member instead.")
+
+
+def _explain_form(answer: str, reason: str, language: str) -> str:
+    """The cex55 explanations (EQSettings.explain_form), or "" when none applies."""
+    if "not of the form" in reason:
+        if "¬" in answer:
+            return ("EL statements cannot say what is not the case: there is no 'not' and no '¬'. "
+                    "Name something that is true of every member instead.")
+        if re.search(r"disjoint", answer, flags=re.I) or any(n in answer for n in _NOTHING):
+            return _DISJOINT
+        if _INVERSE.search(answer):
+            forward = ("'C SubClassOf r some D'" if language == "manchester"
+                       else "'C is a subcategory of something that r some D'")
+            return ("There are no inverse roles: a role can only be followed forward, from the left "
+                    f"side. {forward} says that every C has an r to some D; if what you mean is true "
+                    "of every member of the class on the other side, state it about that class.")
+    m = re.search(r": (.*?) (?:is not a concept name|are not concept names) in scope", reason)
+    if m and any(n.strip() in _NOTHING for n in m.group(1).split(",")):
+        return _DISJOINT
+    return ""
+
+
+def explain_unusable(reason: str, language: str = "manchester", form: bool = False) -> str:
     """One sentence on what to do instead, for the *reason* an answer could not be used
-    (the parser's or the scope check's ValueError).  The answer is the quoted line."""
+    (the parser's or the scope check's ValueError).  The answer is the quoted line.
+    *form* (EQSettings.explain_form): also explain '¬', inverse roles and 'Nothing'."""
     quoted = re.match(r"^'(.*?)'(?: is not of the form|: )", reason, flags=re.S)
     answer = quoted.group(1) if quoted else ""
     words = set(re.findall(r"[A-Za-z]+", answer))
+    if form and (extra := _explain_form(answer, reason, language)):
+        return extra
     if "not of the form" in reason:
         if words & {"not", "Not", "NOT", "no", "No", "without"}:
             return ("EL statements cannot say what is not the case: there is no 'not'. "

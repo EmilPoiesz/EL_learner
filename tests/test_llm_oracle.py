@@ -35,6 +35,7 @@ is replaced by a stub that returns scripted responses.
 60 EQ: after a rejected proposal, later attempts are still counted as 'EQ (counterexample)'
 61 EQ: each EQ logs a start line with the clock time, the seconds since the model was loaded and |H|
 62 repair: the counterexample check answers no to a proposal that implies a refuted statement, without asking
+63 EQ explain_form: '¬', inverse roles and 'Nothing' get their own sentence, only with the setting
 """
 
 from __future__ import annotations
@@ -1149,3 +1150,20 @@ def test_62_check_rejects_a_refuted_proposal(tmp_path):
     assert oracle.EQ(set()) == _gci("B SubClassOf A")
     assert oracle._pipe.calls == 4                    # judge, two proposals, one check
     assert oracle.eq_outcomes["rejected"] == 1
+
+
+@pytest.mark.parametrize("reason, expected", [
+    ("'A SubClassOf ¬(r_s some B)' is not of the form 'C SubClassOf D' in Manchester syntax", "no '¬'"),
+    ("'B SubClassOf inverse(r_s) some A' is not of the form 'C SubClassOf D' in Manchester syntax", "no inverse roles"),
+    ("'B SubClassOf (r_s^ some A)' is not of the form 'C SubClassOf D' in Manchester syntax", "no inverse roles"),
+    ("'B SubClassOf r_s inv some A' is not of the form 'C SubClassOf D' in Manchester syntax", "no inverse roles"),
+    ("'A DisjointWith B' is not of the form 'C SubClassOf D' in Manchester syntax", "share no members"),
+    ("'A and B SubClassOf Nothing': Nothing is not a concept name in scope", "share no members"),
+    ("'A SubClassOf Z': Z is not a concept name in scope", "concept names listed"),   # unchanged
+])
+def test_63_explain_form(reason, expected):
+    assert expected in prompts.explain_unusable(reason, form=True)
+    assert expected not in prompts.explain_unusable(reason) or expected == "concept names listed"
+    assert "r_s" not in prompts.explain_unusable(reason, form=True)     # no names of the signature
+    with pytest.raises(ValueError):
+        EQSettings(explain_form=True)                                   # needs explain

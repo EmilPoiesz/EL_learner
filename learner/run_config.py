@@ -317,6 +317,16 @@ OPTIONS: tuple[Option, ...] = (
                     (False, "Only the reason: \"'X' already follows from H\", \"'X' is not of the form "
                             "'C SubClassOf D'\".")),
            see=("cex28",)),
+    Option("oracle.eq.counterexample.explain_form", "Explain more forms", "bool",
+           "With explain: whether three more failures get their own sentence. Added 2026-11-26: in "
+           "cex54 Qwen3-32B wrote '¬', inverse roles ('inverse(r)', 'r^', 'r inv') and 'Nothing', got "
+           "only a generic line or 'not a concept name in scope', and repeated them (one university "
+           "seed stopped on 9 inverse-role answers in one EQ).",
+           flag="--eq-explain-form", default=False, env="EQ_EXPLAIN_FORM", see=("cex54",),
+           choices=((True, "'¬': there is no negation; inverse roles: a role is only followed forward, "
+                           "state it about the class on the other side; 'Nothing' or disjointness: EL "
+                           "cannot say two classes share no members. Nothing of the signature is named."),
+                    (False, "The cex28 explanations only."))),
     Option("oracle.eq.counterexample.attempts", "Attempts per EQ", "int",
            "Attempts at a usable counterexample per EQ; each retry lists why the earlier answers "
            "could not be used (each reason once). With learner.max_failed_eqs 0 (the standard from "

@@ -152,6 +152,10 @@ class EQSettings:
         True: it adds a sentence on what to do instead (``llm_prompts.explain_unusable``,
         ``explain_follows``, ``explain_rejected``): no negation, only the listed
         names, a statement and not a concept, nothing H already implies (cex28).
+    explain_form : bool
+        With explain: also explain '¬', inverse roles and 'Nothing'/disjointness,
+        which got only a generic line before (``llm_prompts._explain_form``; cex55,
+        after Qwen3-32B repeated them in cex54).  False (default) keeps the cex28 lines.
     memory : bool
         False (default): an EQ's retry prompts list only why that EQ's earlier
         answers failed.  True: they also list, from the first attempt on, the
@@ -220,6 +224,7 @@ class EQSettings:
     check_domain: str = "off"
     memory: bool = False
     explain: bool = False
+    explain_form: bool = False
     shuffle: bool = False
     mask: int = 0
     none: bool = False
@@ -255,6 +260,8 @@ class EQSettings:
             raise ValueError(f"generation must be one of {GENERATIONS}, not {self.generation!r}")
         if self.none and self.mode != "judge":
             raise ValueError("none needs mode 'judge' (mode combined has its own yes)")
+        if self.explain_form and not self.explain:
+            raise ValueError("explain_form needs explain")
         if self.generation != "default" and self.mode != "judge":
             raise ValueError(f"generation {self.generation} needs mode 'judge'")
 
@@ -267,6 +274,7 @@ class EQSettings:
                 + (f", check domain {self.check_domain}" if self.check_domain != "off" else "")
                 + (", rejections remembered across EQs" if self.memory else "")
                 + (", failed answers explained" if self.explain else "")
+                + (" (also '¬', inverse roles, 'Nothing')" if self.explain_form else "")
                 + (", concept names shuffled per attempt" if self.shuffle else "")
                 + (f", masked phase of {self.mask} counterexamples after the first (empty H shown, "
                    f"H's concepts out of scope)" if self.mask else "")
@@ -1142,7 +1150,7 @@ class LLMOracle(Oracle):
                                              sampling=sampling, **generate)
             except ValueError as exc:
                 reasons.append(self._explained(str(exc), prompts.explain_unusable(
-                    str(exc), language)))
+                    str(exc), language, form=settings.explain_form)))
                 carry.append(reasons[-1])
                 self._outcome("unusable")
                 self._eq_log(f"attempt {attempt}: unusable, {exc}")
