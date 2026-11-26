@@ -955,7 +955,8 @@ def normalise_counterexample(
 
 def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000, precomputation: bool = True,
                          max_failed_eqs: int = 0, reuse_counterexamples: bool = False,
-                         saturation: str = "paper", repair: bool = False) -> set[GCI]:
+                         saturation: str = "paper", repair: bool = False,
+                         repair_majority: bool = False) -> set[GCI]:
     """
     Algorithm 1: Learn an EL terminology from an equivalence oracle.
 
@@ -1026,11 +1027,16 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000, precomputat
     from H to find and remove wrong GCIs (see "The repair step" above ``_minimise``).
     Needs an oracle with ``on_H_replace``.  Repair events are kept in
     ``oracle.repair_log``, the refuted statements in ``oracle.refuted``.
+    ``repair_majority`` (with repair): a part the teacher denies is asked again
+    before it is refuted: a second "no" refutes it, after a "yes" a third answer
+    decides (``_denied``).  A refutation is permanent, and one sampled "no" can be
+    wrong (simulation 2026-11-26: a model that doubts true statements refuted several
+    per run); this costs about 1.3 more questions per "no".
     """
     H: set[GCI] = set()
     try:
         _learn(oracle, H, max_iterations, precomputation, max_failed_eqs, reuse_counterexamples, saturation,
-               repair)
+               repair, repair_majority)
     except OracleError as exc:
         logger.warning(
             "Stopping: the oracle could not give a usable answer (%s). "
@@ -1042,7 +1048,7 @@ def learn_el_terminology(oracle: Oracle, max_iterations: int = 1000, precomputat
 
 def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: bool = True,
            max_failed_eqs: int = 0, reuse_counterexamples: bool = False, saturation: str = "paper",
-           repair: bool = False) -> None:
+           repair: bool = False, repair_majority: bool = False) -> None:
     """Phase 1 and the refinement loop of ``learn_el_terminology``, adding to *H*
     in place, so that what was learned survives an ``OracleError``."""
 
@@ -1092,7 +1098,7 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
     while True:
 
         if repair:
-            if _check_refuted(oracle, H, H_MQ, iteration):
+            if _check_refuted(oracle, H, H_MQ, iteration, repair_majority):
                 unproductive_counterexample = None     # H changed (code review 2026-11-26)
             if pending is None and repaired:
                 pending = repaired.pop(0)
@@ -1117,7 +1123,7 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
                 with step("EQ"):   # the EQ's own MQs: the check, PAC sampling
                     counterexample = oracle.EQ(H)
             except OracleError as exc:
-                if repair and _repair_followed(oracle, H, H_MQ, iteration + 1, repaired):
+                if repair and _repair_followed(oracle, H, H_MQ, iteration + 1, repaired, repair_majority):
                     # No usable answer, but its proposals repaired H: not a failed EQ, for
                     # the oracle either (it would tell the next EQ that this one failed).
                     oracle.failed_eq_repaired()
@@ -1134,7 +1140,7 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
                 continue
             failed_eqs = 0
 
-            if repair and _repair_followed(oracle, H, H_MQ, iteration + 1, repaired):
+            if repair and _repair_followed(oracle, H, H_MQ, iteration + 1, repaired, repair_majority):
                 unproductive_counterexample = None     # H changed
                 if counterexample is None:
                     # "H is complete" was about the H before the repair: go on.
@@ -1373,9 +1379,27 @@ def _justification(oracle: Oracle, H: set[GCI], gci: GCI) -> list[GCI]:
     return J
 
 
-def _dispute(oracle: Oracle, J: list[GCI], event: dict) -> bool:
+def _denied(oracle: Oracle, q: GCI, majority: bool, event: dict) -> bool:
+    """Whether the teacher denies *q*, asked on its own (``direct_MQ``).  With
+    *majority*: a "no" is asked again; a second "no" settles it (2 of 3), after a
+    "yes" a third answer decides.  Each further answer is a fresh sample
+    (repair_temperature > 0); the event records them as "second opinion"."""
+    if oracle.direct_MQ(q):
+        return False
+    if not majority:
+        return True
+    if not oracle.direct_MQ(q):
+        event.setdefault("second_opinion", []).append(f"{q}: no, no")
+        return True
+    third = oracle.direct_MQ(q)
+    event.setdefault("second_opinion", []).append(f"{q}: no, yes, {'yes' if third else 'no'}")
+    return not third
+
+
+def _dispute(oracle: Oracle, J: list[GCI], event: dict, majority: bool = False) -> bool:
     """Ask about each right-hand conjunct of the axioms in *J* on its own; refute the
-    denied ones (a denied ∃r.F part by part).  Whether anything new was refuted."""
+    denied ones (a denied ∃r.F part by part; with *majority*, denied by 2 of 3
+    answers, ``_denied``).  Whether anything new was refuted."""
     refuted, new = _refuted(oracle), False
 
     def refute(q: GCI) -> None:
@@ -1388,14 +1412,14 @@ def _dispute(oracle: Oracle, J: list[GCI], event: dict) -> bool:
     for h in J:
         for c in _conjuncts(h.rhs):
             q = GCI(h.lhs, c)
-            if any(gci_implies(q, n) for n in refuted) or oracle.direct_MQ(q):
+            if any(gci_implies(q, n) for n in refuted) or not _denied(oracle, q, majority, event):
                 continue
             if c.existentials:
                 (role, filler), = c.existentials
                 parts = _conjuncts(filler)
                 if len(parts) > 1:
                     denied = [GCI(h.lhs, ELConcept(existentials=frozenset({(role, p)}))) for p in parts]
-                    denied = [pq for pq in denied if not oracle.direct_MQ(pq)]
+                    denied = [pq for pq in denied if _denied(oracle, pq, majority, event)]
                     if denied:
                         for pq in denied:
                             refute(pq)
@@ -1426,7 +1450,8 @@ def _weaken(oracle: Oracle, H: set[GCI], event: dict) -> None:
 ENFORCE_ROUNDS = 20
 
 
-def _enforce(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], event: dict) -> None:
+def _enforce(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], event: dict,
+             majority: bool = False) -> None:
     """Weaken H until it entails no refuted statement."""
     _weaken(oracle, H, event)
     for _ in range(ENFORCE_ROUNDS):
@@ -1435,7 +1460,7 @@ def _enforce(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], event: di
             return
         J = _justification(oracle, H, left[0])
         event["culprits"] += [str(h) for h in J if str(h) not in event["culprits"]]
-        if not _dispute(oracle, J, event):
+        if not _dispute(oracle, J, event, majority):
             event["still_entailed"] = [str(n) for n in left]
             logger.warning("Repair: H still entails the refuted %s; nothing in %s was denied.", left[0], J)
             return
@@ -1450,10 +1475,11 @@ def _enforce(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], event: di
 
 
 def _repair_followed(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], eq: int,
-                     queue: list[GCI]) -> bool:
+                     queue: list[GCI], majority: bool = False) -> bool:
     """Repair H from the proposals of the last EQ that already followed from it.  A
     proposal H misses afterwards and the teacher confirms is queued as a
-    counterexample.  Whether H changed."""
+    counterexample (one question: a "no" there refutes nothing).  *majority*: see
+    ``_denied``.  Whether H changed."""
     changed = False
     for alpha in dict.fromkeys(oracle.take_followed_from_H()):
         if not H_MQ(alpha):
@@ -1468,8 +1494,8 @@ def _repair_followed(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], e
         J = _justification(oracle, H, alpha)
         event["culprits"] = [str(h) for h in J]
         with step("repair"):
-            if _dispute(oracle, J, event):
-                _enforce(oracle, H, H_MQ, event)
+            if _dispute(oracle, J, event, majority):
+                _enforce(oracle, H, H_MQ, event, majority)
                 changed = changed or bool(event["weakened"])
                 if not H_MQ(alpha) and alpha not in queue and oracle.direct_MQ(alpha):
                     queue.append(alpha)
@@ -1482,7 +1508,8 @@ def _repair_followed(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], e
     return changed
 
 
-def _check_refuted(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], eq: int) -> bool:
+def _check_refuted(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], eq: int,
+                   majority: bool = False) -> bool:
     """At every EQ: H must entail no refuted statement (a later round can make it
     entail one again, through a wrong axiom with no correct core of its own).  Whether
     H changed."""
@@ -1490,7 +1517,7 @@ def _check_refuted(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], eq:
         return False
     event = {"eq": eq, "proposal": "(check at the EQ)", "culprits": [], "refuted": [], "weakened": []}
     with step("repair"):
-        _enforce(oracle, H, H_MQ, event)
+        _enforce(oracle, H, H_MQ, event, majority)
     event["outcome"] = "H still entails a refuted statement" if event.get("still_entailed") else "repaired"
     logger.info("Repair check at EQ %d: refuted %s; weakened %s", eq, event["refuted"], event["weakened"])
     _repair_log(oracle, event)

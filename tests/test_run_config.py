@@ -16,6 +16,7 @@ Tests for learner/run_config.py and demo.py --config.
    max_new_tokens 0, ε 0, δ 0 or 1 (code review 2026-11-26, finding 14)
 12 --repair needs an LLM's own EQs: with the reasoner or PAC sampling it is an error (finding 23)
 13 every bool a config can set, the command line can undo: --no-repair, --no-resample, --thinking (finding 22)
+14 --repair-majority needs --repair, and with an LLM oracle a repair temperature above 0
 """
 
 from __future__ import annotations
@@ -269,3 +270,15 @@ def test_13_command_line_undoes_config_bools(tmp_path):
             undo = (opt.flag.replace("--no-", "--", 1) if opt.flag.startswith("--no-")
                     else "--no-" + opt.flag[2:])
             assert undo in flags, opt.flag
+
+
+def test_14_repair_majority_needs_repair_and_fresh_samples(capsys):
+    parser = demo.build_parser()
+    for argv, message in ((["--oracle", "signature", "--repair-majority"], "needs --repair"),
+                          (["--oracle", "signature", "--repair", "--repair-majority"], "repair-temperature above 0")):
+        with pytest.raises(SystemExit):
+            demo.parse_args(parser, argv)
+        assert message in capsys.readouterr().err
+    args = demo.parse_args(parser, ["--oracle", "signature", "--repair", "--repair-temperature", "0.6",
+                                    "--repair-majority"])
+    assert args.repair_majority

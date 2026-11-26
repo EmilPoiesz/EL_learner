@@ -150,6 +150,16 @@ OPTIONS: tuple[Option, ...] = (
                            "is weakened until it entails no refuted statement, also at every EQ; a refuted statement "
                            "is answered no by every later MQ. The proposal is then learned if H misses it and the "
                            "model confirms it."))),
+    Option("learner.repair_majority", "Repair: a majority before refuting", "bool",
+           "With repair: whether a part the model denies is asked again before it is refuted. Added "
+           "2026-11-26: a refutation is permanent, and one sampled \"no\" can be wrong; in the "
+           "refutation-policy simulation a model that doubts true statements refuted several per run "
+           "(cex54, Qwen3-32B: at least four). Needs oracle.repair_temperature > 0 (fresh samples).",
+           flag="--repair-majority", default=False, env="REPAIR_MAJORITY", see=("cex54",),
+           choices=((False, "One \"no\" refutes the part."),
+                    (True, "After a \"no\" the part is asked again: a second \"no\" refutes it, after a "
+                           "\"yes\" a third answer decides (a majority of 3). About 1.3 more questions per "
+                           "\"no\": 3-4% of an animals run on Qwen3-14B."))),
     Option("learner.saturation", "Saturation", "choice",
            "How the learner saturates a right side (most of a run's model calls: cex44 animals ~3/4, ~7 in 8 "
            "of its fresh answers a no). Added 2026-11-23; in the simulation (scripts/explore_saturation.py) the "

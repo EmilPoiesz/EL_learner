@@ -82,6 +82,7 @@ Test catalogue
 62  learn_el_terminology    — repair: a queued proposal H already entails is skipped, learning goes on
 63  learn_el_terminology    — repair: the no-progress guard forgets a counterexample once the repair changed H
 64  learn_el_terminology    — repair: a counterexample's part refuted in the same EQ never enters H
+65  repair                  — repair_majority: a denied part is asked again; refuted only when "no" has 2 of 3
 """
 
 from __future__ import annotations
@@ -1370,3 +1371,42 @@ def test_64_refuted_part_of_counterexample_never_enters_h():
     assert not any(gci_implies(g, refuted) for g in added)          # never added, not even for a round
     assert any(ev["outcome"] == "counterexample weakened" for ev in oracle.repair_log)
     assert all(_entails(H, ax) for ax in O)
+
+
+class _Scripted:
+    """The repair questions' answers, in order (direct_MQ), for _dispute alone."""
+
+    def __init__(self, answers):
+        self.answers, self.calls = list(answers), 0
+
+    def direct_MQ(self, gci):
+        self.calls += 1
+        return self.answers.pop(0)
+
+
+@pytest.mark.parametrize("majority, answers, refuted, calls, note", [
+    (False, [False], True, 1, None),                        # today: one "no" refutes
+    (True, [True], False, 1, None),                         # a first "yes": nothing more asked
+    (True, [False, False], True, 2, "no, no"),              # two "no": settled, no third question
+    (True, [False, True, True], False, 3, "no, yes, yes"),
+    (True, [False, True, False], True, 3, "no, yes, no"),
+])
+def test_65_repair_majority(majority, answers, refuted, calls, note):
+    from learner.el_algorithm import _dispute
+    oracle = _Scripted(answers)
+    event = {"refuted": []}
+    assert _dispute(oracle, [GCI(_BIRD, _BACKBONE)], event, majority) is refuted
+    assert (GCI(_BIRD, _BACKBONE) in oracle.refuted) is refuted and oracle.calls == calls
+    assert event.get("second_opinion", [None])[-1] in (None, f"{GCI(_BIRD, _BACKBONE)}: {note}")
+    assert oracle.answers == []
+
+
+def test_65_repair_majority_filler_part_by_part():
+    # Bird ⊑ ∃lays.(Animal ⊓ Egg) denied (no, no); then each filler part: Animal denied
+    # (no, no), Egg confirmed after all (no, yes, yes): only Bird ⊑ ∃lays.Animal is refuted.
+    from learner.el_algorithm import _dispute
+    oracle = _Scripted([False, False, False, False, False, True, True])
+    event = {"refuted": []}
+    assert _dispute(oracle, [GCI(_BIRD, _lays("Animal", "Egg"))], event, majority=True)
+    assert oracle.refuted == [GCI(_BIRD, _lays("Animal"))] and oracle.calls == 7
+    assert len(event["second_opinion"]) == 3

@@ -165,7 +165,7 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
                     info: OntologyInfo | None = None, max_eqs: int | None = None,
                     precomputation: bool = True, max_failed_eqs: int = 0,
                     reuse_counterexamples: bool = False, saturation: str = "paper",
-                    repair: bool = False) -> None:
+                    repair: bool = False, repair_majority: bool = False) -> None:
     """Run the learner and print a comparison report against oracle.axioms.
     ``info``: the ontology as the OWL API reads it, whose classes (with owl:Thing
     when the file mentions it) and roles the paper metric is computed over.
@@ -188,7 +188,7 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
         H = learn_el_terminology(oracle, max_iterations=max_iterations, precomputation=precomputation,
                                  max_failed_eqs=max_failed_eqs,
                                  reuse_counterexamples=reuse_counterexamples, saturation=saturation,
-                                 repair=repair)
+                                 repair=repair, repair_majority=repair_majority)
     finally:
         logging.disable(logging.NOTSET)
     # Before scoring, which may ask the oracle again.
@@ -223,6 +223,8 @@ def _run_and_report(oracle: Oracle, verbose: bool, output: str | None = None, ju
                 print(f"      weakened     {w}")
             for n in ev.get("still_entailed", []):
                 print(f"      still entailed {n}")
+            for o in ev.get("second_opinion", []):
+                print(f"      asked again  {o}")
         refuted = [str(n) for n in getattr(oracle, "refuted", [])]
         print(f"\n  REPAIRS {json.dumps({'repairs': len(repairs), 'refuted': refuted}, ensure_ascii=False)}")
 
@@ -314,6 +316,7 @@ def _run_grounded_llm_demo(
     thinking: bool = True,
     resample: bool = False,
     repair_temperature: float = 0.0,
+    repair_majority: bool = False,
 ) -> bool:
     """
     LLM oracle over an ontology file, scored against it.  ``include_axioms``:
@@ -352,7 +355,8 @@ def _run_grounded_llm_demo(
     if repair:
         print("  Repair   : proposals that follow from H are used to find and weaken wrong GCIs"
               + (f"; its questions sampled afresh at temperature {repair_temperature} (never from the cache)"
-                 if repair_temperature > 0 else ""))
+                 if repair_temperature > 0 else "")
+              + ("; a denied part is asked again, refuted by a majority of 3" if repair_majority else ""))
     if not thinking:
         print("  Thinking : off (enable_thinking=False in the chat template)")
     if resample:
@@ -401,7 +405,7 @@ def _run_grounded_llm_demo(
                                 max_eqs=max_eqs, precomputation=precomputation,
                                 max_failed_eqs=max_failed_eqs,
                                 reuse_counterexamples=reuse_counterexamples,
-                                saturation=saturation, repair=repair)
+                                saturation=saturation, repair=repair, repair_majority=repair_majority)
     except Exception as exc:
         print(f"\n  ✗  Failed: {exc}")
         return False
@@ -485,6 +489,7 @@ def _run_llm_demo(
     reuse_counterexamples: bool = False,
     saturation: str = "paper",
     repair: bool = False,
+    repair_majority: bool = False,
 ) -> bool:
     from utils.java_utils import build_classpath
     from learner.hypothesis_reasoner import HypothesisReasoner
@@ -522,7 +527,7 @@ def _run_llm_demo(
             H = learn_el_terminology(oracle, max_iterations=50 if max_eqs is None else max_eqs,
                                      precomputation=precomputation, max_failed_eqs=max_failed_eqs,
                                      reuse_counterexamples=reuse_counterexamples, saturation=saturation,
-                                     repair=repair)
+                                     repair=repair, repair_majority=repair_majority)
             mq_calls = oracle.mq_count
             eq_calls = oracle.eq_count
 
@@ -729,6 +734,12 @@ def build_parser() -> argparse.ArgumentParser:
              "Counterexample prompts are not affected.",
     )
     parser.add_argument(
+        "--repair-majority", action=argparse.BooleanOptionalAction, default=False,
+        help="With --repair: a part the model denies is asked again before it is refuted; a "
+             "second no refutes it, after a yes a third answer decides. Needs --repair-temperature "
+             "above 0 (fresh samples).",
+    )
+    parser.add_argument(
         "--repair-temperature", type=float, default=0.0,
         help="With --repair: 0 (default) asks the repair step's questions like every other MQ "
              "(a question asked before is answered from the cache). Above 0: they are sampled "
@@ -842,6 +853,11 @@ def parse_args(parser: argparse.ArgumentParser, argv: list[str] | None = None) -
     if args.repair and (args.oracle == "reasoner" or args.eq == "pac"):
         parser.error("--repair needs an LLM's own equivalence queries (--oracle axioms or signature "
                      "with --eq oracle): ELK and PAC sampling never propose a statement H already implies")
+    if args.repair_majority and not args.repair:
+        parser.error("--repair-majority needs --repair")
+    if args.repair_majority and args.oracle in ("axioms", "signature") and not args.repair_temperature > 0:
+        parser.error("--repair-majority needs --repair-temperature above 0: at 0 the second question "
+                     "replays the first answer from the cache")
     return args
 
 
@@ -937,6 +953,7 @@ if __name__ == "__main__":
             thinking=not args.no_thinking,
             resample=args.resample,
             repair_temperature=args.repair_temperature,
+            repair_majority=args.repair_majority,
             mq_asked_as=args.mq_asked_as,
         )
     else:
@@ -955,6 +972,7 @@ if __name__ == "__main__":
                 reuse_counterexamples=args.reuse_counterexamples,
                 saturation=args.saturation,
                 repair=args.repair,
+                repair_majority=args.repair_majority,
             )
 
     # Non-zero on failure, so scripts and batch jobs see it.
