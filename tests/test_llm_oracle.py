@@ -36,6 +36,7 @@ is replaced by a stub that returns scripted responses.
 61 EQ: each EQ logs a start line with the clock time, the seconds since the model was loaded and |H|
 62 repair: the counterexample check answers no to a proposal that implies a refuted statement, without asking
 63 EQ explain_form: '¬', inverse roles and 'Nothing' get their own sentence, only with the setting
+64 token counts: the prompt's length whether the chat template returns the ids (4.x) or a mapping (5.x)
 """
 
 from __future__ import annotations
@@ -1179,3 +1180,22 @@ def test_63_explain_form(reason, expected):
     assert "r_s" not in prompts.explain_unusable(reason, form=True)     # no names of the signature
     with pytest.raises(ValueError):
         EQSettings(explain_form=True)                                   # needs explain
+
+
+@pytest.mark.parametrize("returns", ["ids", "mapping", "batch"])
+def test_64_prompt_tokens_counted_on_any_transformers(tmp_path, returns):
+    ids = list(range(36))
+
+    class Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return {"ids": ids,
+                    "mapping": {"input_ids": ids, "attention_mask": [1] * 36},   # transformers 5
+                    "batch": {"input_ids": [ids], "attention_mask": [[1] * 36]}}[returns]
+
+        def __call__(self, text, add_special_tokens=True):
+            return {"input_ids": text.split()}
+
+    oracle = _oracle(tmp_path, [])
+    oracle._pipe.tokenizer = Tokenizer()
+    oracle._template_kwargs = {}
+    assert oracle._tokens([], "two words") == {"prompt_tokens": 36, "new_tokens": 2}

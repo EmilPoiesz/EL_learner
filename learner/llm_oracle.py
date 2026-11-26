@@ -684,6 +684,12 @@ class LLMOracle(Oracle):
         try:
             prompt = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
                                                    **self._template_kwargs)
+            # transformers 5 returns a BatchEncoding (input_ids, attention_mask), 4.x the ids;
+            # len() of the mapping counted its keys: prompt_tokens was 2 for every call.
+            if hasattr(prompt, "keys"):
+                prompt = prompt["input_ids"]
+                if prompt and isinstance(prompt[0], list):    # a batch of one
+                    prompt = prompt[0]
             return {"prompt_tokens": len(prompt),
                     "new_tokens": len(tokenizer(response, add_special_tokens=False)["input_ids"])}
         except Exception:   # a count is not worth a failed run
