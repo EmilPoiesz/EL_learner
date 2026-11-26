@@ -100,15 +100,6 @@ CHECK_QUESTIONS = ("paper",)
 # EQ
 # ---------------------------------------------------------------------------
 
-# The statement forms a combined EQ's answer may take (eq_combined_prompt), with
-# placeholder names so that the examples do not suggest an axiom of the ontology.
-# Not A: the model read "A SubClassOf B" as the article and wrote
-# "A Professor SubClassOf Teacher" (jobs 4380986-87).
-EQ_EXAMPLES = {
-    "manchester": ("C SubClassOf D", "C SubClassOf r some D", "C and (r some D) SubClassOf E"),
-    "nl": ("C is a subcategory of D", "C is a subcategory of something that r some D",
-           "C that is also something that r some D is a subcategory of E"),
-}
 _EQ_FORMAT = {"manchester": "in Manchester syntax", "nl": "in this form"}
 
 # How the counterexample is asked for (EQSettings.generation): g2b, examples about cars
@@ -167,20 +158,6 @@ def eq_counterexample_prompt(sig: set[str], roles: set[str], H: set[GCI],
 # EQSettings.none: the way out when the model knows nothing true that H misses.
 NONE_LINE = ("If every statement you know to be true in O already follows from H, reply with "
              "exactly one word instead: none.\n")
-
-
-def eq_combined_prompt(sig: set[str], roles: set[str], H: set[GCI],
-                       feedback: Sequence[str] = (), language: str = "manchester") -> str:
-    examples = "".join(f"  {e}\n" for e in EQ_EXAMPLES[language])
-    return _eq_context(sig, roles, H, language, feedback) + (
-        "If H captures everything that is true in O, reply with exactly one word: yes.\n"
-        "Otherwise name one counterexample: a statement that is true in O but does not "
-        "follow from H.\n"
-        f"Output exactly one line: yes, or the counterexample {_EQ_FORMAT[language]}, "
-        "for example:\n"
-        f"{examples}"
-        "Output nothing else."
-    )
 
 
 def repeated_feedback(failed: int) -> str:

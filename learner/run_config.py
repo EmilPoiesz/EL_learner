@@ -238,11 +238,11 @@ OPTIONS: tuple[Option, ...] = (
     Option("oracle.eq.delta", "PAC confidence δ", "float",
            "With pac: see ε.", flag="--delta", default=0.1, open_range=True, below=1.0),
     Option("oracle.eq.mode", "Mode", "choice",
-           "How an EQ is asked.", flag="--eq-mode", default="judge", env="EQ_MODES",
+           "How an EQ is asked. One prompt for a counterexample or 'yes' ('combined') was removed on "
+           "2026-11-26: Mistral said 'yes' at once, even to an empty H, and every run since cex21 used the "
+           "judge.", flag="--eq-mode", default="judge", env="EQ_MODES",
            choices=(("judge", "A yes/no question whether H is complete; if not, a second prompt for a "
-                              "counterexample."),
-                    ("combined", "One prompt: a counterexample, or 'yes' if H is complete. Mistral said 'yes' "
-                                 "at once, even to an empty H.")),
+                              "counterexample."),),
            see=("cex1", "cex4")),
     Option("oracle.eq.language", "Language", "choice",
            "The language of both EQ prompts (H, the counterexample asked for, the feedback) and of the "
@@ -426,6 +426,7 @@ RETIRED_VALUES = {
     ("oracle.eq.check.system", "literal"): f"{_REMOVED} (MQ-wording bench only)",
     ("oracle.eq.check.question", "every"): f"{_REMOVED} (benchmark only)",
     ("oracle.eq.check.question", "atonce"): f"{_REMOVED} (benchmark only)",
+    ("oracle.eq.mode", "combined"): f"{_REMOVED} (the judge since cex21)",
 }
 RETIRED = {
     "oracle.resample": "removed on 2026-11-26 (used in cex47 only: sampling each repeat afresh hurt)",

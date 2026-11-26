@@ -39,8 +39,9 @@ T = TypeVar("T")
 PROMPT_STYLES = tuple(PAPER_SYSTEM_PROMPTS)
 
 # How an EQ is asked: "judge" asks yes/no whether H is complete, then for a
-# counterexample; "combined" asks once for a counterexample or "yes".
-EQ_MODES = ("judge", "combined")
+# counterexample.  "combined" (one prompt: a counterexample, or "yes") was removed on
+# 2026-11-26: Mistral said yes too readily, and every run since cex21 used the judge.
+EQ_MODES = ("judge",)
 # How the learner's own MQs are asked (Phase 1 and refinement): "paper", the paper's MQ in the
 # run's prompt style; "check", exactly as the counterexample check is asked (EQSettings check,
 # check_system, check_question), so that one statement gets one answer within a run.
@@ -108,9 +109,8 @@ class EQSettings:
     How LLMOracle asks its equivalence queries.
 
     mode : str
-        ``"judge"`` (default): an EQ asks whether H is complete (yes/no), then
-        for a counterexample.  ``"combined"``: one prompt asks for a
-        counterexample, or "yes" if H is complete.  Either way, EQs have their
+        ``"judge"``: an EQ asks whether H is complete (yes/no), then for a
+        counterexample (``"combined"`` was removed on 2026-11-26).  EQs have their
         own system message (``llm_prompts.eq_system_message``) and a budget of
         at least ``EQ_MIN_NEW_TOKENS``.
     check : str
@@ -167,8 +167,7 @@ class EQSettings:
     generation : str
         How the counterexample is asked for (``llm_prompts.GENERATIONS``): only
         ``"g2b"``, examples about cars, in either language.  The variants before it
-        (cex13-cex17) were removed on 2026-11-26.  Mode ``"combined"`` has its own
-        prompt (``eq_combined_prompt``).
+        (cex13-cex17) were removed on 2026-11-26.
     mask : int
         0 (default): off.  N > 0: a masked phase of N accepted counterexamples,
         starting after the run's first accepted one.  In it the prompts (judge
@@ -231,10 +230,6 @@ class EQSettings:
             raise ValueError(f"max_new_tokens must be at least 1, not {self.max_new_tokens}")
         if self.generation not in GENERATIONS:
             raise ValueError(f"generation must be one of {GENERATIONS}, not {self.generation!r}")
-        if self.none and self.mode != "judge":
-            raise ValueError("none needs mode 'judge' (mode combined has its own yes)")
-        if self.mask and self.mode != "judge":
-            raise ValueError("mask needs mode 'judge' (a combined prompt's yes would be about the empty H shown)")
         if self.explain_form and not self.explain:
             raise ValueError("explain_form needs explain")
 
@@ -908,16 +903,6 @@ class LLMOracle(Oracle):
                 return None
         return self._parse_counterexample(response)
 
-    def _parse_combined(self, response: str) -> Optional[GCI]:
-        """None when a combined EQ *response* says yes (H is complete), else its
-        counterexample, as ``_parse_counterexample``."""
-        text = after_think(response)
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip().strip("`")]
-        statement = re.search(r"subclassof|subcategory", text, flags=re.IGNORECASE)
-        if lines and re.match(r"^\W*yes\b", lines[0], flags=re.IGNORECASE) and not statement:
-            return None
-        return self._parse_counterexample(response)
-
     # ------------------------------------------------------------------
     # Oracle interface — O-entailment via LLM
     # ------------------------------------------------------------------
@@ -974,9 +959,8 @@ class LLMOracle(Oracle):
         """
         Equivalence query: is H equivalent to O?
 
-        With mode ``"judge"``: ask yes/no whether H captures all of O, and if
-        not, ask for one counterexample.  With ``"combined"``: ask once for a
-        counterexample, or "yes" if H captures all of O.  H is shown, and the
+        Ask yes/no whether H captures all of O (the judge; not in the masked phase),
+        and if not, ask for one counterexample.  H is shown, and the
         counterexample asked for, in natural language with a ``paper-nl-*`` prompt
         style, else in Manchester syntax.
 
@@ -1038,7 +1022,7 @@ class LLMOracle(Oracle):
         # Not in the masked phase: it would ask whether the empty H shown is complete, and
         # a yes would end learning with the real H (code review 2026-11-26; 'none' is not
         # offered there for the same reason).
-        if settings.mode == "judge" and not masked:
+        if not masked:
             try:
                 equivalent = self._query(
                     prompts.eq_judge_prompt(sig, self._roles, shown, language, again),
@@ -1052,15 +1036,11 @@ class LLMOracle(Oracle):
             if equivalent:
                 self._failed_eqs = 0
                 return None
-        if settings.mode == "combined":
-            build, parse = prompts.eq_combined_prompt, self._parse_combined
-            label = "EQ (counterexample or yes)"
-        else:
-            # "none" (EQSettings.none): only where the prompt shows all of H.
-            offer_none = settings.none and not masked
-            build = partial(prompts.eq_counterexample_prompt, allow_none=offer_none)
-            parse = self._parse_counterexample_or_none if offer_none else self._parse_counterexample
-            label = "EQ (counterexample)"
+        # "none" (EQSettings.none): only where the prompt shows all of H.
+        offer_none = settings.none and not masked
+        build = partial(prompts.eq_counterexample_prompt, allow_none=offer_none)
+        parse = self._parse_counterexample_or_none if offer_none else self._parse_counterexample
+        label = "EQ (counterexample)"
         sampling = sampling_params(settings.temperature, self._seed)
         generate = {**ask, **({"max_new_tokens": settings.max_new_tokens} if settings.max_new_tokens else {})}
         reasons: list[str] = []   # why each earlier answer could not be used
@@ -1087,13 +1067,9 @@ class LLMOracle(Oracle):
                 self._outcome("unusable")
                 self._eq_log(f"attempt {attempt}: unusable, {exc}")
                 continue
-            if counterexample is None:
-                if settings.mode == "judge":    # the "none" answer (EQSettings.none)
-                    self._outcome("none")
-                    self._eq_log(f"attempt {attempt}: none, the model names no counterexample: H is complete")
-                    self._failed, self._failed_eqs = (), 0
-                    return None
-                self._eq_log(f"attempt {attempt}: yes, H is complete")
+            if counterexample is None:          # the "none" answer (EQSettings.none)
+                self._outcome("none")
+                self._eq_log(f"attempt {attempt}: none, the model names no counterexample: H is complete")
                 self._failed, self._failed_eqs = (), 0
                 return None
             if self._h_reasoner(counterexample):

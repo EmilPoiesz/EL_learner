@@ -480,12 +480,12 @@ With `--eq oracle` and an LLM oracle (`axioms` or `signature`), the model answer
 
 | Flag | Effect |
 |---|---|
-| `--eq-mode judge\|combined` | `judge` (default): a yes/no question whether H is complete, then one for a counterexample. `combined`: one prompt asks for a counterexample, or "yes" |
+| `--eq-mode judge` | A yes/no question whether H is complete, then one for a counterexample (`combined`, one prompt for either, was removed on 2026-11-26) |
 | `--eq-language style\|manchester\|nl` | The language of the EQ prompts and answers: as the MQ prompt style (default), Manchester syntax, or the paper's "C is a subcategory of D" |
 | `--eq-generation g2b` | How the counterexample is asked for: examples about cars, without brackets (the only prompt; the variants of cex13–cex17, placeholder examples, rules, triples, were removed on 2026-11-26) |
-| `--eq-check mq\|nl` | With a paper prompt: check a counterexample by an MQ in the run's own style, or by the paper's natural-language MQ |
-| `--eq-check-system paper\|s1\|s2\|s3\|s4` | With a paper prompt: the check's system prompt (`CHECK_SYSTEM_PROMPTS`): the MQs' own, the paper's simple one, or variants of the advanced one |
-| `--eq-check-question paper\|every` | With a paper prompt: ask the check as the paper's MQ, or as "Is it true that every C …?" |
+| `--eq-check nl` | A counterexample is checked by the paper's MQ in natural language |
+| `--eq-check-system s1` | The check's system prompt, the paper's simple one (`CHECK_SYSTEM_PROMPTS`; the variants tried before it were removed on 2026-11-26) |
+| `--eq-check-question paper` | The check's question, the paper's MQ |
 | `--eq-memory` | List the counterexamples the check rejected at earlier EQs in later EQs' prompts |
 | `--eq-temperature T` | Sample only the counterexample prompts at T; the MQs, the check and the judge keep `--temperature` |
 | `--eq-attempts N` | Attempts at a usable counterexample per EQ (default 3) |
@@ -504,7 +504,7 @@ A reasoning model whose chat template opens `<think>` is read after `</think>`; 
 
 ```bash
 python demo.py --oracle signature --ontology ontologies/animals.owl --prompt paper-advanced \
-               --eq oracle --eq-generation g2b --eq-check-system s4 --eq-memory --eq-temperature 1.0 \
+               --eq oracle --eq-generation g2b --eq-check-system s1 --eq-memory --eq-temperature 1.0 \
                --no-precompute --max-eqs 50 --max-failed-eqs 5 --model <hf-path> --device cuda
 ```
 

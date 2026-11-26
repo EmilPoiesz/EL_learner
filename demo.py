@@ -456,11 +456,10 @@ def build_parser() -> argparse.ArgumentParser:
              "or PAC sampling as in the paper ('pac'; reasoner, axioms, signature).",
     )
     parser.add_argument(
-        "--eq-mode", choices=["judge", "combined"], default="judge",
+        "--eq-mode", choices=["judge"], default="judge",
         help="With an LLM's own equivalence queries (--eq oracle; axioms, signature): "
-             "'judge' asks yes/no whether H is complete, then for a counterexample; "
-             "'combined' asks once for a counterexample, or yes if H is complete.  "
-             "In the language --eq-language says.",
+             "'judge' asks yes/no whether H is complete, then for a counterexample "
+             "('combined' was removed on 2026-11-26).  In the language --eq-language says.",
     )
     parser.add_argument(
         "--eq-language", choices=["style", "manchester", "nl"], default="style",
@@ -766,7 +765,7 @@ if __name__ == "__main__":
                 attempts=args.eq_attempts,
                 max_new_tokens=args.eq_max_new_tokens,
             )
-        except ValueError as exc:   # a combination the settings refuse, e.g. combined + g2
+        except ValueError as exc:   # a combination the settings refuse
             parser.error(str(exc))
         ok = _run_grounded_llm_demo(
             ontology=args.ontology,

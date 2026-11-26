@@ -16,7 +16,6 @@ is replaced by a stub that returns scripted responses.
 10 names outside the signature or the roles in scope are rejected, saying which
 11 Manchester parsing: keywords in any case, prefixed and hyphenated names
 12 sampling: Ollama's settings reach generate(); each seed has its own cache entries
-13 combined EQ: "yes" returns None; a counterexample (even after "Yes,") is parsed
 14 natural language: rendering and parsing round-trip; an EQ in natural language
 15 EQ: a counterexample H already entails is asked for again, saying so
 16 EQ: its own system message and a budget of at least EQ_MIN_NEW_TOKENS
@@ -259,21 +258,6 @@ def test_12_sampling_settings_and_cache_by_seed(tmp_path):
 
 
 
-@pytest.mark.parametrize("response, expected", [
-    ("yes", None),
-    ("Yes.", None),
-    ("A SubClassOf B", _GCI),
-    ("Yes, for example:\nA SubClassOf B", _GCI),
-])
-def test_13_combined_eq(tmp_path, response, expected):
-    # "yes" ends learning; a counterexample is then confirmed by the model's own MQ.
-    oracle = _oracle(tmp_path, [response, "True"])
-    oracle._eq = EQSettings(mode="combined")
-    assert oracle.EQ(set()) == expected
-    assert "If H captures everything that is true in O, reply with exactly one word: yes" \
-        in oracle._pipe.prompts[0]
-
-
 def test_14_natural_language(tmp_path):
     B, C = ELConcept({"B"}), ELConcept({"C"})
     for gci in [
@@ -332,8 +316,6 @@ def test_18_article_kept_when_stripping_does_not_help(tmp_path):
         oracle._parse_counterexample("A Cat SubClassOf B")
     prompt = prompts.eq_counterexample_prompt({"A", "B"}, set(), set())
     assert "  Car SubClassOf Vehicle\n" in prompt and "A SubClassOf B" not in prompt
-    combined = prompts.eq_combined_prompt({"A", "B"}, set(), set())
-    assert "  C SubClassOf D\n" in combined and "A SubClassOf B" not in combined
 
 
 _A_R_B = GCI(ELConcept({"A"}), ELConcept(existentials={("r", ELConcept({"B"}))}))
@@ -440,7 +422,8 @@ def test_27_eq_settings():
         EQSettings(attempts=0)
     with pytest.raises(ValueError, match="generation must be one of"):
         EQSettings(generation="g3")                      # removed 2026-11-26; g2b only
-    assert EQSettings(mode="combined").describe() == "combined"
+    with pytest.raises(ValueError, match="mode must be one of"):
+        EQSettings(mode="combined")                      # removed 2026-11-26
     assert EQSettings().describe() == "judge"
     with pytest.raises(ValueError, match="check must be one of"):
         EQSettings(check="mq")                           # removed 2026-11-26
@@ -869,8 +852,6 @@ def test_53_eq_mask_phase(tmp_path):
     assert "A SubClassOf D" in last                             # the rejection is back
     assert "Does H capture" in oracle._pipe.prompts[start]      # the judge is back
     assert "masked phase of 2" in EQSettings(mask=2).describe()
-    with pytest.raises(ValueError, match="mask needs mode 'judge'"):
-        EQSettings(mask=1, mode="combined")
     assert "masked" not in EQSettings().describe()
 
 
@@ -1009,8 +990,6 @@ def test_59_eq_none_answer(tmp_path):
     assert oracle.eq_outcomes["unusable"] == 1
 
     assert "'none' allowed" in EQSettings(none=True).describe()
-    with pytest.raises(ValueError, match="none needs mode 'judge'"):
-        EQSettings(none=True, mode="combined")
 
 
 def test_60_attempts_after_a_rejection_keep_their_label(tmp_path):
