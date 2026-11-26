@@ -819,6 +819,11 @@ def test_49_failures_explained(reason, expected):
     explanation = prompts.explain_unusable(reason)
     assert expected in explanation
     assert "employed_by" not in explanation and "r_s" not in explanation   # no names of the signature
+    # repr() puts an answer with an apostrophe in double quotes; it is explained as well.
+    line = "Bird's wing SubClassOf not Fish"
+    assert "no 'not'" in prompts.explain_unusable(f"{line!r} is not of the form 'C SubClassOf D' in Manchester syntax")
+    line = "It's B and not A SubClassOf A, isn't \"it\""                 # both quotes: escaped
+    assert "no 'not'" in prompts.explain_unusable(f"{line!r} is not of the form 'C SubClassOf D' in Manchester syntax")
 
 
 def test_50_explain_setting_in_retry_lines(tmp_path):

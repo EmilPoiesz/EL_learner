@@ -7,6 +7,7 @@ prompt variants of the EQ experiments (cex1-cex20) are made here.
 
 from __future__ import annotations
 
+import ast
 import re
 from typing import Sequence
 
@@ -374,8 +375,10 @@ def explain_unusable(reason: str, language: str = "manchester", form: bool = Fal
     """One sentence on what to do instead, for the *reason* an answer could not be used
     (the parser's or the scope check's ValueError).  The answer is the quoted line.
     *form* (EQSettings.explain_form): also explain '¬', inverse roles and 'Nothing'."""
-    quoted = re.match(r"^'(.*?)'(?: is not of the form|: )", reason, flags=re.S)
-    answer = quoted.group(1) if quoted else ""
+    # The answer as repr() quoted it: in double quotes when it holds an apostrophe
+    # (code review 2026-11-26, finding 16: such answers got no explanation).
+    quoted = re.match(r"""^('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")(?: is not of the form|: )""", reason, flags=re.S)
+    answer = ast.literal_eval(quoted.group(1)) if quoted else ""
     words = set(re.findall(r"[A-Za-z]+", answer))
     if form and (extra := _explain_form(answer, reason, language)):
         return extra
