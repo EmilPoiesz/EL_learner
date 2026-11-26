@@ -397,7 +397,15 @@ _FORM = {"manchester": "'C SubClassOf D'", "nl": "'C is a subcategory of D'"}
 # each time in a new notation; "Nothing" was called an out-of-scope name, so the model
 # was never told that EL cannot say two classes share no members.
 _INVERSE = re.compile(r"\binverse\b|\binverseOf\b|\binv\b|\^|⁻", flags=re.I)
-_NOTHING = ("Nothing", "owl:Nothing", "⊥", "Bottom")
+_NOTHING = {"Nothing", "owl:Nothing", "⊥"}
+# Whole names only (code review 2026-11-26, finding 17): a substring test fired on
+# names such as BottomFeeder.
+_DISJOINT_WORD = re.compile(r"(?<![\w:])disjoint(?:with|union(?:of)?)?(?![\w:])", flags=re.I)
+
+
+def _names(text: str) -> set[str]:
+    """The names and the symbol ⊥ in *text*, each whole."""
+    return set(re.findall(r"⊥|[\w:]+", text))
 _DISJOINT = ("EL statements cannot say that two classes share no members: there is no "
              "'Nothing' and no disjointness. Name something that is true of every member instead.")
 
@@ -408,7 +416,7 @@ def _explain_form(answer: str, reason: str, language: str) -> str:
         if "¬" in answer:
             return ("EL statements cannot say what is not the case: there is no 'not' and no '¬'. "
                     "Name something that is true of every member instead.")
-        if re.search(r"disjoint", answer, flags=re.I) or any(n in answer for n in _NOTHING):
+        if _DISJOINT_WORD.search(answer) or _names(answer) & _NOTHING:
             return _DISJOINT
         if _INVERSE.search(answer):
             forward = ("'C SubClassOf r some D'" if language == "manchester"

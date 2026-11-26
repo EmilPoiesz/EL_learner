@@ -1173,10 +1173,16 @@ def test_62_check_rejects_a_refuted_proposal(tmp_path):
     ("'A DisjointWith B' is not of the form 'C SubClassOf D' in Manchester syntax", "share no members"),
     ("'A and B SubClassOf Nothing': Nothing is not a concept name in scope", "share no members"),
     ("'A SubClassOf Z': Z is not a concept name in scope", "concept names listed"),   # unchanged
+    # Whole names only: a name that merely contains Nothing/Bottom/Disjoint is no disjointness.
+    ("'BottomFeeder SubClassOf r_s some A' is not of the form 'C SubClassOf D' in Manchester syntax",
+     "has the form"),
+    ("'NothingBurger SubClassOf A': NothingBurger is not a concept name in scope", "concept names listed"),
+    ("'A SubClassOf Disjointed' is not of the form 'C SubClassOf D' in Manchester syntax", "has the form"),
+    ("'A SubClassOf ⊥' is not of the form 'C SubClassOf D' in Manchester syntax", "share no members"),
 ])
 def test_63_explain_form(reason, expected):
     assert expected in prompts.explain_unusable(reason, form=True)
-    assert expected not in prompts.explain_unusable(reason) or expected == "concept names listed"
+    assert expected not in prompts.explain_unusable(reason) or expected in ("concept names listed", "has the form")
     assert "r_s" not in prompts.explain_unusable(reason, form=True)     # no names of the signature
     with pytest.raises(ValueError):
         EQSettings(explain_form=True)                                   # needs explain
