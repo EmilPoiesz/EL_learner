@@ -13,7 +13,7 @@ A configuration nests like the setup it describes:
         "mq": {"prompt": "paper-advanced"},
         "eq": {"kind": "oracle", "mode": "judge",
                "counterexample": {"prompt": "g2b", "temperature": 1.0, "memory": true},
-               "check": {"asked_as": "nl", "system": "s4"}}
+               "check": {"asked_as": "nl", "system": "s1"}}
       }
     }
 
@@ -386,6 +386,9 @@ def _check_value(opt: Option, value: Any) -> None:
         if not values:
             raise ConfigError(where + "expected at least one choice")
         for v in values:
+            if (opt.key, v) in RETIRED_VALUES:
+                raise ConfigError(where + f"{v!r} {RETIRED_VALUES[opt.key, v]}; this config can no longer "
+                                  "be run as it was")
             if v not in allowed:
                 raise ConfigError(where + f"{v!r} is not one of {', '.join(map(str, allowed))}")
     elif opt.kind == "bool":
@@ -412,6 +415,18 @@ def _check_value(opt: Option, value: Any) -> None:
 
 
 # Options removed from the code; a config that still sets one is a record of an old run.
+# Choices removed from the code; a config that still uses one is a record of an old run.
+_REMOVED = "was removed on 2026-11-26"
+RETIRED_VALUES = {
+    ("oracle.eq.check.asked_as", "mq"): f"{_REMOVED} (natural language since cex21)",
+    ("oracle.eq.check.system", "paper"): f"{_REMOVED} (S1 since cex28)",
+    ("oracle.eq.check.system", "s2"): f"{_REMOVED} (last used in cex27; S1 since cex28)",
+    ("oracle.eq.check.system", "s3"): f"{_REMOVED} (never used in a run)",
+    ("oracle.eq.check.system", "s4"): f"{_REMOVED} (last used in cex25; S1 since cex28)",
+    ("oracle.eq.check.system", "literal"): f"{_REMOVED} (MQ-wording bench only)",
+    ("oracle.eq.check.question", "every"): f"{_REMOVED} (benchmark only)",
+    ("oracle.eq.check.question", "atonce"): f"{_REMOVED} (benchmark only)",
+}
 RETIRED = {
     "oracle.resample": "removed on 2026-11-26 (used in cex47 only: sampling each repeat afresh hurt)",
     "oracle.eq.counterexample.shuffle": "removed on 2026-11-26 (never used in a run; the fixation probe "
