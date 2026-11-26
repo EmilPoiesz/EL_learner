@@ -37,6 +37,7 @@ is replaced by a stub that returns scripted responses.
 62 repair: the counterexample check answers no to a proposal that implies a refuted statement, without asking
 63 EQ explain_form: '¬', inverse roles and 'Nothing' get their own sentence, only with the setting
 64 token counts: the prompt's length whether the chat template returns the ids (4.x) or a mapping (5.x)
+65 natural-language answers: roles written with spaces are rejoined in a fixed order, whatever the hash seed
 """
 
 from __future__ import annotations
@@ -1160,3 +1161,23 @@ def test_64_prompt_tokens_counted_on_any_transformers(tmp_path, returns):
     oracle._pipe.tokenizer = Tokenizer()
     oracle._template_kwargs = {}
     assert oracle._tokens([], "two words") == {"prompt_tokens": 36, "new_tokens": 2}
+
+
+def test_65_role_rejoining_independent_of_hash_seed(tmp_path):
+    # A set of roles iterates in an order that changes with Python's hash seed; with
+    # overlapping roles the rewrite used to follow it.  Both orders now give one result.
+    class Ordered(set):
+        def __init__(self, order):
+            super().__init__(order)
+            self.order = order
+
+        def __iter__(self):
+            return iter(self.order)
+
+    oracle = _oracle(tmp_path, [])
+    oracle._eq_language, oracle._sig = "nl", {"Bird", "Wing"}
+    results = set()
+    for order in (["has_part", "part_of", "eats"], ["part_of", "eats", "has_part"]):
+        oracle._roles = Ordered(order)
+        results.add(oracle._nl_relative_clauses("Bird is a subcategory of something that has part of some Wing"))
+    assert results == {"Bird is a subcategory of something that has_part of some Wing"}

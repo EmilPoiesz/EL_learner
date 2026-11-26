@@ -865,7 +865,10 @@ class LLMOracle(Oracle):
         Course" the clause belongs to the filler, which this reading would not keep."""
         if not self._roles:
             return text
-        for role in self._roles:        # "is managed by some" → "is managed_by some"
+        # "is managed by some" → "is managed_by some".  In a fixed order, longest first (then
+        # by name): over the set itself, the order changed with Python's hash seed, and with
+        # overlapping roles (has_part, part_of) so did the rewrite (code review 2026-11-26).
+        for role in sorted(self._roles, key=lambda r: (-len(r), r)):
             if "_" in role:
                 text = re.sub(rf"(?<![\w:.\-]){'[ _]'.join(map(re.escape, role.split('_')))}(?![\w:.\-])",
                               role, text, flags=re.IGNORECASE)
