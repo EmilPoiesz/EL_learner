@@ -38,6 +38,7 @@ is replaced by a stub that returns scripted responses.
 63 EQ explain_form: '¬', inverse roles and 'Nothing' get their own sentence, only with the setting
 64 token counts: the prompt's length whether the chat template returns the ids (4.x) or a mapping (5.x)
 65 natural-language answers: roles written with spaces are rejoined in a fixed order, whatever the hash seed
+66 a failed EQ the repair turned into progress: the next EQ does not say an EQ failed, nor repeat its reasons
 """
 
 from __future__ import annotations
@@ -1181,3 +1182,21 @@ def test_65_role_rejoining_independent_of_hash_seed(tmp_path):
         oracle._roles = Ordered(order)
         results.add(oracle._nl_relative_clauses("Bird is a subcategory of something that has part of some Wing"))
     assert results == {"Bird is a subcategory of something that has_part of some Wing"}
+
+
+def test_66_failed_eq_repaired_starts_the_next_eq_clean(tmp_path):
+    other = GCI(ELConcept({"B"}), ELConcept({"A"}))
+    for repaired in (False, True):
+        (tmp_path / str(repaired)).mkdir()
+        oracle = _oracle(tmp_path / str(repaired), ["no", "B SubClassOf A", "no", "A SubClassOf B", "True"])
+        oracle._eq = EQSettings(attempts=1)
+        oracle._h_reasoner = lambda gci: gci == other
+        with pytest.raises(OracleError):
+            oracle.EQ({other})                       # its one proposal follows from H
+        if repaired:
+            oracle.failed_eq_repaired()
+        oracle._h_reasoner = lambda gci: False       # the repair weakened H
+        assert oracle.EQ(set()) == _GCI
+        judge, counterexample = oracle._pipe.prompts[2:4]
+        assert ("in a row gave no usable answer" in judge) is not repaired
+        assert ("'B SubClassOf A' already follows from H" in counterexample) is not repaired

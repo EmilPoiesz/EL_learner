@@ -77,6 +77,7 @@ Test catalogue
 57  repair                  — a wrong filler is refuted part by part; the proposal is queued as a counterexample
 58  learn_el_terminology    — repair: one wrong belief, learning with repair ends with H ≡ O, without it does not
 59  repair                  — a proposal true of anything (⊤ on the right) is skipped: no axiom is disputed
+60  learn_el_terminology    — repair: a failed EQ whose proposals repair H is no failed EQ, for the oracle too
 """
 
 from __future__ import annotations
@@ -1234,3 +1235,29 @@ def test_59_repair_skips_a_proposal_true_of_anything():
     assert not _repair_followed(oracle, H, lambda g: _entails(H, g), 1, [])
     assert oracle.mq_count == asked and H == {GCI(_BIRD, _ANIMAL)}
     assert oracle.repair_log[0]["outcome"] == "follows from the empty H, skipped"
+
+
+def test_60_failed_eq_repaired_is_no_failed_eq():
+    # EQ 1 teaches Bird ⊑ Animal, saturated with the wrong belief to Bird ⊑ Animal ⊓ Backbone.
+    # EQ 2 gives no usable counterexample, only a proposal that follows from H; the repair
+    # refutes the wrong part.  With max_failed_eqs 0 the run goes on, and the oracle is told.
+    from learner.el_algorithm import OracleError
+
+    class FailsOnce(_BeliefOracle):
+        rescued = 0
+
+        def _EQ(self, H):
+            if self.eq_count == 2:
+                self.__dict__.setdefault("followed_from_H", []).append(GCI(_BIRD, _ANIMAL))
+                raise OracleError("no usable counterexample in 10 attempts")
+            return super()._EQ(H)
+
+        def failed_eq_repaired(self):
+            self.rescued += 1
+
+    O = {GCI(_BIRD, _ANIMAL), GCI(_BIRD, _EGG)}
+    oracle = FailsOnce(O, {GCI(_BIRD, _BACKBONE)}, {"Animal", "Backbone", "Bird", "Egg"})
+    H = learn_el_terminology(oracle, max_iterations=10, precomputation=False, repair=True)
+    assert oracle.rescued == 1
+    assert GCI(_BIRD, _BACKBONE) in oracle.refuted
+    assert all(_entails(H, ax) for ax in O) and not _entails(H, GCI(_BIRD, _BACKBONE))

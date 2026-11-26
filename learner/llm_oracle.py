@@ -533,6 +533,13 @@ class LLMOracle(Oracle):
         """The repair step changed H (learner.repair): the H-reasoner holds *H* again."""
         self._h_reasoner.reset(H)
 
+    def failed_eq_repaired(self) -> None:
+        """The repair step changed H with the proposals of the EQ that just failed: the
+        next EQ starts as after an accepted counterexample, without the line that the
+        previous EQ failed and without its reasons (one of them would call the proposal
+        that found the wrong axiom unusable; cex54 animals seeds 0 and 2)."""
+        self._failed, self._failed_eqs = (), 0
+
     def direct_MQ(self, gci: GCI) -> bool:
         """The repair step's question: *gci* asked as an MQ, in the same words and under
         the same system prompt, but without the H layer (H entails the culprit's parts,

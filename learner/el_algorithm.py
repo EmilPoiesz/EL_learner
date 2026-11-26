@@ -232,6 +232,11 @@ class Oracle(ABC):
         finally:
             self.on_H_replace(H)
 
+    def failed_eq_repaired(self) -> None:
+        """Called when an EQ gave no usable counterexample but the repair step changed H
+        with its proposals, so the learner counts it as progress, not as a failed EQ.  An
+        oracle that tells its next EQ about failed ones (the LLM oracle) forgets this one."""
+
     def take_followed_from_H(self) -> list[GCI]:
         """The counterexample proposals since the last call that already followed from
         H (an oracle that can make them records them in ``followed_from_H``)."""
@@ -1109,7 +1114,9 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
                     counterexample = oracle.EQ(H)
             except OracleError as exc:
                 if repair and _repair_followed(oracle, H, H_MQ, iteration + 1, repaired):
-                    # No usable answer, but its proposals repaired H: not a failed EQ.
+                    # No usable answer, but its proposals repaired H: not a failed EQ, for
+                    # the oracle either (it would tell the next EQ that this one failed).
+                    oracle.failed_eq_repaired()
                     iteration += 1
                     failed_eqs = 0
                     continue
