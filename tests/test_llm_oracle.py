@@ -1109,6 +1109,10 @@ def test_59_eq_none_answer(tmp_path):
     assert NONE_LINE in oracle._pipe.prompts[1]
     assert oracle.eq_outcomes["none"] == 1 and oracle._failed_eqs == 0
 
+    # With a label or Markdown, as a counterexample line may have, it is still "none".
+    for reply in ("Answer: none", "**Answer:** None.", "Final answer: `none`", "Counterexample: none"):
+        assert oracle._parse_counterexample_or_none(reply) is None, reply
+
     # A statement that merely mentions "none" is still parsed as a statement.
     (tmp_path / "stmt").mkdir()
     oracle = _oracle(tmp_path / "stmt", ["no", "none\nA SubClassOf B", "True"])

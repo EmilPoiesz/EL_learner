@@ -951,10 +951,14 @@ class LLMOracle(Oracle):
     def _parse_counterexample_or_none(self, response: str) -> Optional[GCI]:
         """None when a counterexample *response* is the one word "none" (EQSettings.none),
         else its counterexample, as ``_parse_counterexample``."""
-        lines = [ln.strip().strip("`*'\".") for ln in after_think(response).splitlines()]
-        lines = [ln for ln in lines if ln]
-        if len(lines) == 1 and lines[0].lower() == "none":
-            return None
+        lines = [ln for ln in after_think(response).splitlines() if ln.strip()]
+        if len(lines) == 1:
+            # Markdown and a label as the counterexample line may have ("**Answer:** none";
+            # code review 2026-11-26, finding 19: "Answer: none" was an unusable answer).
+            line = re.sub(r"[*`]", "", lines[0]).strip()
+            line = re.sub(r"^(?:final\s+answer|answer|counterexample)\s*:\s*", "", line, flags=re.IGNORECASE)
+            if line.strip("'\". ").lower() == "none":
+                return None
         return self._parse_counterexample(response)
 
     def _parse_combined(self, response: str) -> Optional[GCI]:
