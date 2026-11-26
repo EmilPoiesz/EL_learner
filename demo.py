@@ -470,24 +470,20 @@ def build_parser() -> argparse.ArgumentParser:
              "MQ prompt.",
     )
     parser.add_argument(
-        "--eq-check", choices=["mq", "nl"], default="mq",
-        help="With an LLM's own equivalence queries and a paper prompt: check each "
-             "counterexample with an MQ in the run's own prompt style ('mq'), or in "
-             "the paper's natural-language form ('nl'), whatever the style.",
+        "--eq-check", choices=["nl"], default="nl",
+        help="With an LLM's own equivalence queries: each counterexample is checked with the "
+             "paper's MQ in natural language ('nl', the only form since 2026-11-26).",
     )
     parser.add_argument(
-        "--eq-check-system", choices=["paper", "s1", "s2", "s3", "s4", "literal"], default="paper",
-        help="With an LLM's own equivalence queries and a paper prompt: the system prompt "
-             "of the counterexample check.  'paper': the MQs' own; 's1': the paper's simple "
-             "one; 's2': the advanced one with its has-part rule restated; 's3': s2 and how "
-             "EL statements read; 's4': s2 and 'every member, in the direction written' "
-             "and 'literal': s1 and 'read literally, do not repair' (learner/llm_prompts.py CHECK_SYSTEM_PROMPTS).",
+        "--eq-check-system", choices=["s1"], default="s1",
+        help="With an LLM's own equivalence queries: the system prompt of the counterexample "
+             "check, 's1', the paper's simple one (the variants before it were removed on "
+             "2026-11-26; learner/llm_prompts.py CHECK_SYSTEM_PROMPTS).",
     )
     parser.add_argument(
-        "--eq-check-question", choices=["paper", "every", "atonce"], default="paper",
-        help="With an LLM's own equivalence queries and a paper prompt: the question of the "
-             "counterexample check.  'paper': the MQ as --eq-check says; 'every': \"Is it "
-             "true that every C ...?\"; 'atonce': the same with each conjunction spelled out.",
+        "--eq-check-question", choices=["paper"], default="paper",
+        help="With an LLM's own equivalence queries: the question of the counterexample "
+             "check, the paper's MQ ('every' and 'atonce' were removed on 2026-11-26).",
     )
     parser.add_argument(
         "--eq-check-domain", choices=["off", "names"], default="off",

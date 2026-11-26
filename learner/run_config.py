@@ -327,36 +327,27 @@ OPTIONS: tuple[Option, ...] = (
            "A budget is a ceiling: an answer that ends sooner costs no more.",
            flag="--eq-max-new-tokens", nullable=True, env="EQ_MAX_NEW_TOKENS", minimum=1, see=("cex20",)),
     Option("oracle.eq.check.asked_as", "Asked as", "choice",
-           "The form of the check's membership query. With a paper prompt only.",
-           flag="--eq-check", default="mq", env="EQ_CHECK",
-           choices=(("mq", "An MQ in the run's own prompt style."),
-                    ("nl", "The paper's natural-language MQ, \"Can Bird be considered a subcategory of "
-                           "'something that has_part some Wing'?\", whatever the style.")),
+           "The form of the check's membership query. Since cex21 every run asked it in natural language; "
+           "the MQ in the run's own prompt style ('mq') was removed on 2026-11-26.",
+           flag="--eq-check", default="nl", env="EQ_CHECK",
+           choices=(("nl", "The paper's natural-language MQ, \"Can Bird be considered a subcategory of "
+                           "'something that has_part some Wing'?\", whatever the style."),),
            see=("cex4",)),
     Option("oracle.eq.check.system", "System prompt", "choice",
-           "The check's system prompt. With a paper prompt only; the MQs of learning keep the paper's.",
-           flag="--eq-check-system", default="paper", env="EQ_CHECK_SYSTEM",
-           choices=(("paper", "The MQs' own. Under paper-advanced its rule 2 made Mistral reject every "
-                              "has_part statement."),
-                    ("s1", "The paper's simple one: 'Answer with only True or False.'"),
-                    ("s2", "The advanced one with rule 2 restated: a part is not a subcategory of its whole, "
-                           "but having a part can hold for every member (examples about cars)."),
-                    ("s3", "s2, and how EL statements read."),
-                    ("s4", "s2, and: True only if it holds for every member, by definition, in the direction "
-                           "written. Fewest false accepts in the check benchmark; Olmo took it literally and "
-                           "rejected true statements."),
-                    ("literal", "s1, and: read every name literally, do not repair a statement that looks "
-                                "malformed, True only for every member, several categories at once means all "
-                                "of them. Against Qwen3's charitable readings (2026-11-16).")),
+           "The check's system prompt; the MQs of learning keep the paper's (unless asked as the check). "
+           "S1 since cex28. Removed on 2026-11-26: the MQs' own prompt (under paper-advanced its rule 2 made "
+           "Mistral reject every has_part statement, cex6), S2-S4 (that prompt with its rules restated, "
+           "cex8-cex27; S4 had the fewest false accepts in the check benchmark, but Olmo took it literally) "
+           "and 'literal' (MQ-wording bench only).",
+           flag="--eq-check-system", default="s1", env="EQ_CHECK_SYSTEM",
+           choices=(("s1", "The paper's simple one: 'Answer with only True or False.'"),),
            see=("cex6", "cex8", "check-benchmark-the-check-on-its-own", "cex18", "cex20")),
     Option("oracle.eq.check.question", "Question", "choice",
-           "The check's question. With a paper prompt only.",
+           "The check's question: the paper's MQ. 'every' (\"Is it true that every C …?\", which rejected "
+           "more of everything, true existentials included) and 'atonce' (the same with conjunctions spelled "
+           "out) were only benchmarked and were removed on 2026-11-26.",
            flag="--eq-check-question", default="paper", env="EQ_CHECK_QUESTION",
-           choices=(("paper", "The MQ as 'asked as' says."),
-                    ("every", "\"Is it true that every C …?\" It rejects more of everything, true "
-                              "existentials included."),
-                    ("atonce", "As every, with each conjunction spelled out: \"Is it true that every Cat is "
-                               "related by eats to something that is at once an Animal and a Meat?\"")),
+           choices=(("paper", "The paper's MQ, in the form 'asked as' says."),),
            see=("check-benchmark-the-check-on-its-own",)),
     Option("oracle.eq.check.domain", "Domain", "choice",
            "What the check's system prompt says about the domain. With a paper prompt only; with "

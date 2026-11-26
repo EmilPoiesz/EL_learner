@@ -45,7 +45,7 @@ EQ_MODES = ("judge", "combined")
 # run's prompt style; "check", exactly as the counterexample check is asked (EQSettings check,
 # check_system, check_question), so that one statement gets one answer within a run.
 MQ_ASKED_AS = ("paper", "check")
-EQ_CHECKS = ("mq", "nl")
+EQ_CHECKS = ("nl",)            # how the counterexample check is asked (EQSettings.check)
 # The language of the EQ prompts and answers (EQSettings.language): "style", as the MQ
 # prompt style (natural language with paper-nl-*, else Manchester syntax), or either.
 EQ_LANGUAGES = ("style", "manchester", "nl")
@@ -114,19 +114,16 @@ class EQSettings:
         own system message (``llm_prompts.eq_system_message``) and a budget of
         at least ``EQ_MIN_NEW_TOKENS``.
     check : str
-        How a counterexample is checked before it is used (it must be
-        O-entailed): ``"mq"`` (default), by an MQ in the run's own prompt style;
-        ``"nl"``, with a paper prompt style, by the paper's MQ in natural language
-        (same system message), whatever the style.
+        How a counterexample is checked before it is used (it must be O-entailed):
+        ``"nl"``, by the paper's MQ in natural language, whatever the prompt style.
+        Checking with an MQ in the run's own style (``"mq"``) was removed on
+        2026-11-26; every run since cex21 used ``"nl"``.
     check_system : str
-        With a paper prompt style, the system prompt of that check: ``"paper"``
-        (default: the MQs' own), or a variant from ``CHECK_SYSTEM_PROMPTS``
-        (``"s1"`` … ``"s4"``, ``"literal"``).  The MQs of learning keep the paper's.
+        The system prompt of that check (``CHECK_SYSTEM_PROMPTS``): ``"s1"``, the
+        paper's simple one.  The MQs of learning keep the paper's (unless asked as the
+        check).  The variants before S1 were removed on 2026-11-26.
     check_question : str
-        With a paper prompt style, the question of that check (``CHECK_QUESTIONS``):
-        ``"paper"`` (default), the MQ as ``check`` says; ``"every"``, "Is it
-        true that every C …?" (``llm_prompts.every_question``); ``"atonce"``, the same
-        with each conjunction spelled out (``llm_prompts.atonce_question``).
+        The question of that check (``CHECK_QUESTIONS``): ``"paper"``, the paper's MQ.
     check_domain : str
         With a paper prompt style, what the check's system prompt says about the
         domain (``CHECK_DOMAINS``): ``"off"`` (default), nothing; ``"names"``, a note
@@ -195,8 +192,8 @@ class EQSettings:
     """
 
     mode: str = "judge"
-    check: str = "mq"
-    check_system: str = "paper"
+    check: str = "nl"
+    check_system: str = "s1"
     check_question: str = "paper"
     check_domain: str = "off"
     memory: bool = False
@@ -244,9 +241,6 @@ class EQSettings:
     def describe(self, seed: int = 0) -> str:
         """The settings that differ from the defaults, for a run's header."""
         return (self.mode
-                + (", counterexamples checked by a natural-language MQ" if self.check == "nl" else "")
-                + (f", check system prompt {self.check_system}" if self.check_system != "paper" else "")
-                + (f", check question {self.check_question}" if self.check_question != "paper" else "")
                 + (f", check domain {self.check_domain}" if self.check_domain != "off" else "")
                 + (", rejections remembered across EQs" if self.memory else "")
                 + (", failed answers explained" if self.explain else "")
@@ -940,8 +934,7 @@ class LLMOracle(Oracle):
         return self._paper_MQ(gci)
 
     def _paper_MQ(self, gci: GCI, nl: bool | None = None, system: str | None = None,
-                  label: str = "MQ", question: Callable[[GCI], str] | None = None,
-                  use_H: bool = True, sampling: dict | None = None, fresh: bool = False) -> bool:
+                  label: str = "MQ", use_H: bool = True, sampling: dict | None = None, fresh: bool = False) -> bool:
         """
         MQ as the original ExactLearner-LLM's LLMEngine with its AxiomSimplifier:
         True without asking if H entails the GCI; otherwise the right-hand
@@ -950,8 +943,7 @@ class LLMOracle(Oracle):
         right-hand conjunct is asked on its own (the axiom alone as the user
         message), stopping at the first that is not True.  *nl*: ask in natural
         language (default: as the prompt style does).  *system*: instead of the
-        style's system prompt.  *question*: writes each conjunct's question
-        instead (then *nl* does not apply).  *sampling*, *fresh*: passed to ``_query``
+        style's system prompt.  *sampling*, *fresh*: passed to ``_query``
         (the repair step's sampled questions).
         """
         if nl is None:
@@ -970,9 +962,7 @@ class LLMOracle(Oracle):
         for conjunct in rhs_conjuncts(rhs):
             part = GCI(lhs, conjunct)
             text = upstream_gci_text(part)
-            if question is not None:
-                text = question(part)
-            elif nl:
+            if nl:
                 text = upstream_natural_language(text)
             # The axiom in this project's syntax, for scripts/score_mqs.py.
             if not self._query(text, parse=paper_is_true, label=label, axiom=gci_to_manchester(part),
@@ -1154,35 +1144,20 @@ class LLMOracle(Oracle):
         repair step refuted is answered no without asking, as ``Oracle.MQ`` does.  (cex53:
         the check asked the model directly, accepted a refuted statement, the per-EQ check
         removed it again, and the identical next EQ got the same cached answer, EQs 18-30.)"""
-        check, system, question = self._eq.check, self._eq.check_system, self._eq.check_question
+        self.count_mq()
         if any(gci_implies(gci, n) for n in self.__dict__.get("refuted", ())):
-            self.count_mq()
             return False
-        if (check == "nl" or system != "paper" or question != "paper"
-                or self._eq.check_domain != "off"):
-            self.count_mq()
-            return self._check_style_MQ(gci, "MQ (check")
-        return self.MQ(gci)
+        return self._check_style_MQ(gci, "MQ (check")
 
     def _check_style_MQ(self, gci: GCI, label: str, use_H: bool = True,
                         sampling: dict | None = None, fresh: bool = False) -> bool:
-        """The paper's MQ as the counterexample check asks it: in natural language with
-        ``check == "nl"``, under the check's system prompt (with ``check_domain``, the
-        domain note after it), with the check's question."""
-        check, system, question = self._eq.check, self._eq.check_system, self._eq.check_question
-        domain = self._eq.check_domain
-        base = CHECK_SYSTEM_PROMPTS[system]
-        if domain != "off":
-            base = prompts.check_system(self._system_msg if base is None else base,
-                                        domain, self._sig, self._roles)
+        """The paper's MQ as the counterexample check asks it: in natural language, under
+        the check's system prompt (with ``check_domain``, the domain note after it)."""
+        system, domain = self._eq.check_system, self._eq.check_domain
+        base = prompts.check_system(CHECK_SYSTEM_PROMPTS[system], domain, self._sig, self._roles)
         return self._paper_MQ(
-            gci, nl=True if check == "nl" else None,
-            system=base,
-            question=prompts.CHECK_QUESTION_TEXT.get(question),
-            use_H=use_H, sampling=sampling, fresh=fresh,
-            label=f"{label}, {system} system prompt"
-                  + (f", {domain} domain" if domain != "off" else "")
-                  + (f", {question} question)" if question != "paper" else ")"))
+            gci, nl=True, system=base, use_H=use_H, sampling=sampling, fresh=fresh,
+            label=f"{label}, {system} system prompt" + (f", {domain} domain" if domain != "off" else "") + ")")
 
     def _outcome(self, kind: str) -> None:
         if self.eq_outcomes is None:

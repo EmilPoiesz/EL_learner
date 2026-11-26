@@ -39,7 +39,7 @@ STANDARD = {
         "mq": {"prompt": "paper-advanced"},
         "eq": {"kind": "oracle", "mode": "judge",
                "counterexample": {"prompt": "g2b", "temperature": 1.0, "memory": True, "attempts": 3},
-               "check": {"asked_as": "nl", "system": "s4", "question": "paper"}},
+               "check": {"asked_as": "nl", "system": "s1", "question": "paper"}},
     },
 }
 
@@ -118,7 +118,7 @@ def test_4_to_argv():
     expected = {"--max-eqs": "50", "--max-failed-eqs": "5", "--oracle": "signature",
                 "--prompt": "paper-advanced", "--eq": "oracle", "--eq-mode": "judge",
                 "--eq-generation": "g2b", "--eq-temperature": "1.0", "--eq-attempts": "3",
-                "--eq-check": "nl", "--eq-check-system": "s4", "--eq-check-question": "paper"}
+                "--eq-check": "nl", "--eq-check-system": "s1", "--eq-check-question": "paper"}
     flags = [a for a in argv if a.startswith("--")]
     assert set(flags) == set(expected) | {"--no-precompute", "--eq-memory"}
     rest = [a for a in argv if a not in ("--no-precompute", "--eq-memory")]
@@ -133,11 +133,11 @@ def test_5_demo_config_then_command_line(tmp_path):
     path = _write(tmp_path, STANDARD)
     parser = demo.build_parser()
     args = demo.parse_args(parser, ["--config", path, "--ontology", "ontologies/university.owl",
-                                    "--seed", "2", "--eq-check-system", "s2"])
+                                    "--seed", "2", "--eq-attempts", "7"])
     assert (args.oracle, args.prompt, args.eq_generation, args.eq_temperature) == \
         ("signature", "paper-advanced", "g2b", 1.0)
     assert args.no_precompute and args.eq_memory and args.max_failed_eqs == 5
-    assert args.eq_check_system == "s2"              # the command line wins
+    assert args.eq_attempts == 7                     # the command line wins
     assert (args.ontology, args.seed) == ("ontologies/university.owl", 2)
     plain = demo.parse_args(parser, ["--oracle", "axioms"])
     assert plain.prompt == "paper-advanced" and not plain.no_precompute   # the default, as the standard

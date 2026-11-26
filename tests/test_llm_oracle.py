@@ -309,7 +309,7 @@ def test_16_eq_system_message_and_budget(tmp_path):
     oracle._max_new_tokens = 2               # the paper's MQ budget
     oracle._eq_system_msg = "eq system"
     assert oracle.EQ(set()) == _GCI
-    assert oracle._pipe.systems == ["eq system", "eq system", oracle._system_msg]   # judge, counterexample, MQ
+    assert oracle._pipe.systems == ["eq system", "eq system", CHECK_SYSTEM_PROMPTS["s1"]]   # judge, counterexample, check
     assert oracle._pipe.budgets == [EQ_MIN_NEW_TOKENS, EQ_MIN_NEW_TOKENS, 2]
 
 
@@ -365,17 +365,12 @@ def test_20_role_repair_needs_a_role_in_scope(tmp_path):
         oracle._parse_counterexample("A r B but does not follow from H, as H says nothing")
 
 
-@pytest.mark.parametrize("check, expected_prompt", [
-    ("mq", "A SubClassOf B"),
-    ("nl", upstream_natural_language("A SubClassOf B")),
-])
-def test_21_counterexample_check_language(tmp_path, check, expected_prompt):
-    # paper-advanced: the counterexample in Manchester syntax, its check as eq_check says.
+def test_21_counterexample_check_in_natural_language(tmp_path):
+    # paper-advanced: the counterexample in Manchester syntax, its check in the paper's
+    # natural language (the MQ in the run's own form was removed on 2026-11-26).
     oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True"])
-    oracle._prompt_style, oracle._system_msg = "paper-advanced", PAPER_SYSTEM_PROMPTS["paper-advanced"]
-    oracle._eq = EQSettings(check=check)
     assert oracle.EQ(set()) == _GCI
-    assert oracle._pipe.prompts[2] == expected_prompt
+    assert oracle._pipe.prompts[2] == upstream_natural_language("A SubClassOf B")
     assert oracle.mq_count == 1
 
 
@@ -398,19 +393,13 @@ def test_23_no_line_parses_reports_the_last(tmp_path):
         oracle._parse_counterexample("Cat has wings\nBecause H says nothing.")
 
 
-@pytest.mark.parametrize("variant", ["s2", "s3", "s4"])
-def test_24_check_system_prompt(tmp_path, variant):
-    # The check asks under the variant; an ordinary MQ keeps the paper's system prompt.
+def test_24_check_system_prompt(tmp_path):
+    # The check asks under S1; an ordinary MQ keeps the paper's system prompt.
     oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True", "True"])
-    oracle._prompt_style, oracle._system_msg = "paper-advanced", PAPER_SYSTEM_PROMPTS["paper-advanced"]
-    oracle._eq = EQSettings(check="nl", check_system=variant)
     assert oracle.EQ(set()) == _GCI
-    assert oracle._pipe.prompts[2] == upstream_natural_language("A SubClassOf B")
-    assert oracle._pipe.systems[2] == CHECK_SYSTEM_PROMPTS[variant]
+    assert oracle._pipe.systems[2] == CHECK_SYSTEM_PROMPTS["s1"] == "Answer with only True or False."
     assert oracle.MQ(GCI(ELConcept({"B"}), ELConcept({"A"}))) is True
     assert oracle._pipe.systems[3] == PAPER_SYSTEM_PROMPTS["paper-advanced"]
-    assert "has_part some Wheel" in CHECK_SYSTEM_PROMPTS[variant]
-    assert ("How to read the statements" in CHECK_SYSTEM_PROMPTS[variant]) == (variant == "s3")
 
 
 @pytest.mark.parametrize("memory", [False, True])
@@ -453,9 +442,10 @@ def test_27_eq_settings():
         EQSettings(generation="g3")                      # removed 2026-11-26; g2b only
     assert EQSettings(mode="combined").describe() == "combined"
     assert EQSettings().describe() == "judge"
-    assert EQSettings(check="nl", check_system="s2", memory=True, temperature=1.0).describe(3) == (
-        "judge, counterexamples checked by a natural-language MQ, check system prompt s2, "
-        "rejections remembered across EQs, counterexamples sampled at temperature 1.0, seed 3")
+    with pytest.raises(ValueError, match="check must be one of"):
+        EQSettings(check="mq")                           # removed 2026-11-26
+    assert EQSettings(memory=True, temperature=1.0).describe(3) == (
+        "judge, rejections remembered across EQs, counterexamples sampled at temperature 1.0, seed 3")
 
 
 def test_28_eq_attempts(tmp_path):
@@ -496,55 +486,14 @@ def test_32_brackets_and_tuples(tmp_path, response, expected):
     assert oracle._parse_counterexample(response) == parse_manchester_gci(expected)
 
 
-@pytest.mark.parametrize("text, expected", [
-    ("Teacher SubClassOf Professor", "Is it true that every Teacher is a Professor?"),
-    ("Elephant SubClassOf Animal", "Is it true that every Elephant is an Animal?"),
-    ("Bird SubClassOf has_part some Wing",
-     "Is it true that every Bird is related by has_part to some Wing?"),
-    ("Animal and (eats some Meat) SubClassOf Carnivore",
-     "Is it true that every Animal that is related by eats to some Meat is a Carnivore?"),
-])
-def test_34_every_question(text, expected):
-    assert prompts.every_question(parse_manchester_gci(text)) == expected
-
-
-@pytest.mark.parametrize("text, expected", [
-    ("Teacher SubClassOf Professor", "Is it true that every Teacher is a Professor?"),
-    ("Elephant SubClassOf Animal", "Is it true that every Elephant is an Animal?"),
-    ("Bird SubClassOf has_part some Wing",
-     "Is it true that every Bird is related by has_part to a Wing?"),
-    ("Cat SubClassOf eats some (Animal and Meat and Water)",
-     "Is it true that every Cat is related by eats to something that is at once an Animal, "
-     "a Meat and a Water?"),
-    ("Cat SubClassOf eats some (Meat and (lives_in some Water))",
-     "Is it true that every Cat is related by eats to something that is at once a Meat and "
-     "related by lives_in to a Water?"),
-    ("Animal and (eats some Meat) SubClassOf Carnivore",
-     "Is it true that everything that is at once an Animal and related by eats to a Meat "
-     "is a Carnivore?"),
-])
-def test_34b_atonce_question(text, expected):
-    # 2026-11-16: a conjunction spelled out, against "Animal that is also Meat that is also Water".
-    assert prompts.atonce_question(parse_manchester_gci(text)) == expected
-
-
-@pytest.mark.parametrize("system, question, expected_prompt", [
-    ("s1", "paper", "Can A be considered a subcategory of 'B'?"),
-    ("s4", "every", "Is it true that every A is a B?"),
-    ("paper", "every", "Is it true that every A is a B?"),
-    ("literal", "atonce", "Is it true that every A is a B?"),
-])
-def test_35_check_question_and_system(tmp_path, system, question, expected_prompt):
-    # judge, counterexample, then the check as the settings say.
+def test_35_check_question(tmp_path):
+    # judge, counterexample, then the check: the paper's question ('every' and 'atonce'
+    # were removed on 2026-11-26).
     oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True"])
-    oracle._prompt_style = "paper-advanced"
-    oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
-    oracle._eq = EQSettings(check="nl", check_system=system, check_question=question)
     assert oracle.EQ(set()) == _GCI
-    assert oracle._pipe.prompts[2] == expected_prompt
-    assert oracle._pipe.systems[2] == (CHECK_SYSTEM_PROMPTS[system] or PAPER_SYSTEM_PROMPTS["paper-advanced"])
+    assert oracle._pipe.prompts[2] == "Can A be considered a subcategory of 'B'?"
     with pytest.raises(ValueError, match="check_question must be one of"):
-        EQSettings(check_question="why")
+        EQSettings(check_question="every")
 
 
 
@@ -694,20 +643,19 @@ def test_42_learners_notation_read_back():
 
 @pytest.mark.parametrize("as_check", [False, True])
 def test_43_mqs_asked_as_the_check(tmp_path, as_check):
-    # mq_asked_as="check": the learner's MQs take the check's form (natural language, S4),
+    # mq_asked_as="check": the learner's MQs take the check's form (natural language, S1),
     # so one statement is not asked in two ways within a run (cex19).
     gci = GCI(ELConcept({"A"}), ELConcept(existentials={("r", ELConcept({"B"}))}))
     oracle = _oracle(tmp_path, ["True"])
     oracle._prompt_style = "paper-advanced"
     oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
     oracle._roles = {"r"}
-    oracle._eq = EQSettings(check="nl", check_system="s4")
     oracle._mq_as_check = as_check
     assert oracle.MQ(gci) is True
     assert oracle.mq_count == 1
     if as_check:
         assert oracle._pipe.prompts == ["Can A be considered a subcategory of 'something that r some B'?"]
-        assert oracle._pipe.systems == [CHECK_SYSTEM_PROMPTS["s4"]]
+        assert oracle._pipe.systems == [CHECK_SYSTEM_PROMPTS["s1"]]
     else:
         assert oracle._pipe.prompts == ["A SubClassOf r some B"]
         assert oracle._pipe.systems == [PAPER_SYSTEM_PROMPTS["paper-advanced"]]
@@ -728,19 +676,20 @@ def test_44_counterexample_budget(tmp_path):
 def test_45_query_stats(tmp_path):
     # For estimating the cost on other models: model calls by step of the algorithm
     # and kind of query, with cache hits apart; MQs by step on the oracle.
-    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True"])
+    oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True", "True"])
     with step("EQ"):
         assert oracle.EQ(set()) == _GCI                 # judge, counterexample, check (an MQ)
     with step("saturation"):
-        assert oracle.MQ(_GCI) is True                  # the check's answer, from the cache
+        assert oracle.MQ(_GCI) is True                  # a paper MQ: its own prompt
+        assert oracle.MQ(_GCI) is True                  # asked again: from the cache
     stats = oracle.query_stats
-    assert set(stats) == {("EQ", "EQ (judge)"), ("EQ", "EQ (counterexample)"), ("EQ", "MQ"),
+    assert set(stats) == {("EQ", "EQ (judge)"), ("EQ", "EQ (counterexample)"), ("EQ", "MQ (check)"),
                           ("saturation", "MQ")}
-    assert stats[("EQ", "MQ")]["generated"] == 1 and stats[("EQ", "MQ")]["seconds"] >= 0
+    assert stats[("EQ", "MQ (check)")]["generated"] == 1 and stats[("EQ", "MQ (check)")]["seconds"] >= 0
     assert (stats[("saturation", "MQ")]["asked"], stats[("saturation", "MQ")]["cached"],
-            stats[("saturation", "MQ")]["generated"]) == (1, 1, 0)
-    assert oracle.mq_by_step == {"EQ": 1, "saturation": 1}
-    assert query_kind("MQ (check, s4 system prompt, every question)") == "MQ (check)"
+            stats[("saturation", "MQ")]["generated"]) == (2, 1, 1)
+    assert oracle.mq_by_step == {"EQ": 1, "saturation": 2}
+    assert query_kind("MQ (check, s1 system prompt, names domain)") == "MQ (check)"
     assert query_kind("EQ (counterexample or yes)") == "EQ (counterexample or yes)"
 
 
@@ -759,7 +708,7 @@ def test_46_eq_language_apart_from_the_mq_style(tmp_path):
     assert "C is a subcategory of something that r some A" in judge
     assert "Car is a subcategory of something that has_component some Wheel" in counterexample
     assert "SubClassOf" not in judge + counterexample
-    assert oracle._pipe.prompts[2] == "A SubClassOf B"           # the check: the paper's MQ
+    assert oracle._pipe.prompts[2] == "Can A be considered a subcategory of 'B'?"   # the check
     with pytest.raises(ValueError, match="language must be one of"):
         EQSettings(language="french")
 
@@ -941,18 +890,17 @@ def test_54_thinking_off_reaches_template_and_cache_key(tmp_path):
     assert oracle._pipe.calls == 2
 
 
-@pytest.mark.parametrize("system", ["s1", "paper"])
-def test_55_check_domain_names(tmp_path, system):
-    # 2026-11-17: the domain note follows the check's system prompt (or the MQs' own),
+def test_55_check_domain_names(tmp_path):
+    # 2026-11-17: the domain note follows the check's system prompt,
     # and lists the run's own signature, not any ontology's words.
     oracle = _oracle(tmp_path, ["no", "A SubClassOf B", "True", "True"])
     oracle._prompt_style = "paper-advanced"
     oracle._system_msg = PAPER_SYSTEM_PROMPTS["paper-advanced"]
     oracle._sig, oracle._roles = {"A", "B", "owl:Thing"}, {"r"}
     oracle._mq_as_check = True
-    oracle._eq = EQSettings(check="nl", check_system=system, check_domain="names")
+    oracle._eq = EQSettings(check_domain="names")
     assert oracle.EQ(set()) == _GCI
-    base = CHECK_SYSTEM_PROMPTS[system] or PAPER_SYSTEM_PROMPTS["paper-advanced"]
+    base = CHECK_SYSTEM_PROMPTS["s1"]
     note = ("The statements use these category names: A, B; and these relations: r. They all "
             "come from one domain. Read each name in the sense it has in that domain, together "
             "with the other names, and answer from your own knowledge of that domain.")
@@ -1073,7 +1021,7 @@ def test_60_attempts_after_a_rejection_keep_their_label(tmp_path):
     with step("EQ"):
         assert oracle.EQ(set()) == _GCI
     kinds = {kind for _, kind in oracle.query_stats}
-    assert kinds == {"EQ (judge)", "EQ (counterexample)", "MQ"}
+    assert kinds == {"EQ (judge)", "EQ (counterexample)", "MQ (check)"}
     assert oracle.query_stats[("EQ", "EQ (counterexample)")]["asked"] == 2
 
 
