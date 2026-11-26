@@ -35,7 +35,7 @@ import sys
 import time
 from typing import TYPE_CHECKING, Callable
 
-from learner.el_algorithm import STEPS, ELConcept, GCI, Oracle, learn_el_terminology
+from learner.el_algorithm import STEPS, GCI, Oracle, learn_el_terminology
 
 if TYPE_CHECKING:
     from learner.llm_oracle import EQSettings
@@ -413,142 +413,6 @@ def _run_grounded_llm_demo(
 
 
 # ---------------------------------------------------------------------------
-# LLMOracle demo
-# ---------------------------------------------------------------------------
-
-_LLM_MODEL     = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
-_LLM_SIGNATURE: set[str] = {"Person", "Male", "Female", "Parent", "Father", "Mother"}
-_LLM_ROLES: set[str] = set()
-
-# A few representative GCIs used in the dry-run preview and MQ sanity check.
-_PREVIEW_GCIS: list[GCI] = [
-    GCI(ELConcept({"Father"}),           ELConcept({"Parent"})),
-    GCI(ELConcept({"Father"}),           ELConcept({"Female"})),
-    GCI(ELConcept({"Male", "Parent"}),   ELConcept({"Father"})),
-    GCI(ELConcept({"Female", "Parent"}), ELConcept({"Mother"})),
-]
-
-# Partial hypothesis used in the EQ dry-run preview.
-_PREVIEW_HYPOTHESIS: set[GCI] = {
-    GCI(ELConcept({"Father"}), ELConcept({"Parent"})),
-    GCI(ELConcept({"Father"}), ELConcept({"Male"})),
-    GCI(ELConcept({"Mother"}), ELConcept({"Parent"})),
-    GCI(ELConcept({"Mother"}), ELConcept({"Female"})),
-    GCI(ELConcept({"Father"}), ELConcept({"Person"})),
-    GCI(ELConcept({"Mother"}), ELConcept({"Person"})),
-    GCI(ELConcept({"Parent"}), ELConcept({"Person"})),
-}
-
-
-def _llm_dry_run() -> None:
-    from learner import llm_prompts as prompts
-    from learner.el_syntax import gci_to_manchester, hypothesis_to_manchester
-
-    _section("Dry-run — prompt preview (no model loaded)")
-
-    print("\n--- MQ prompts ---\n")
-    for gci in _PREVIEW_GCIS:
-        print(f"GCI: {gci_to_manchester(gci)}")
-        print("-" * 40)
-        print(prompts.mq_prompt(_LLM_SIGNATURE, _LLM_ROLES, gci))
-        print()
-
-    print("\n--- EQ prompts ---\n")
-    print(f"H ({len(_PREVIEW_HYPOTHESIS)} GCI(s)):")
-    print(hypothesis_to_manchester(_PREVIEW_HYPOTHESIS))
-    print("\n[Step 1 — judge equivalence]")
-    print("-" * 40)
-    print(prompts.eq_judge_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
-    print("\n[Step 2 — request counterexample]")
-    print("-" * 40)
-    print(prompts.eq_counterexample_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
-
-    # --oracle axioms/signature: EQs have their own system message, and can be
-    # asked in one prompt (--eq-mode combined) or in natural language (paper-nl-*).
-    print("\n[EQ system message, --oracle signature]")
-    print("-" * 40)
-    print(prompts.EQ_SYSTEM_SIGNATURE)
-    print("\n[--eq-mode combined — counterexample or yes]")
-    print("-" * 40)
-    print(prompts.eq_combined_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS))
-    print("\n[--eq-mode combined, natural language (--prompt paper-nl-*)]")
-    print("-" * 40)
-    print(prompts.eq_combined_prompt(_LLM_SIGNATURE, _LLM_ROLES, _PREVIEW_HYPOTHESIS,
-                                              language="nl"))
-
-
-def _run_llm_demo(
-    model: str,
-    device: str,
-    verbose: bool,
-    output: str | None = None,
-    max_new_tokens: int | None = None,
-    max_eqs: int | None = None,
-    precomputation: bool = True,
-    max_failed_eqs: int = 0,
-    reuse_counterexamples: bool = False,
-    saturation: str = "paper",
-    repair: bool = False,
-    repair_majority: bool = False,
-) -> bool:
-    from utils.java_utils import build_classpath
-    from learner.hypothesis_reasoner import HypothesisReasoner
-    from learner.el_syntax import gci_to_manchester
-    from learner.llm_oracle import LLMOracle
-
-    _section(f"EL Learner — LLMOracle  ({model})")
-    print(f"\n  Signature Σ_O : {sorted(_LLM_SIGNATURE)}")
-    print(f"  Device        : {device}")
-
-    gateway_jar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "java")
-    print("\n  Starting ELK H-reasoner …")
-    h_reasoner = HypothesisReasoner(build_classpath(gateway_jar_dir), "elk")
-    print("  H-reasoner ready.")
-
-    print(f"\n  Loading model '{model}' …")
-    try:
-        with LLMOracle(
-            model_name_or_path=model,
-            signature=_LLM_SIGNATURE,
-            h_reasoner=h_reasoner,
-            max_new_tokens=128 if max_new_tokens is None else max_new_tokens,
-            device=device,
-            verbose=verbose,
-        ) as oracle:
-            print("  Model loaded.")
-
-            _section("MQ sanity check")
-            for gci in _PREVIEW_GCIS:
-                print(f"  MQ({gci_to_manchester(gci)}) = {oracle.MQ(gci)}")
-
-            _section("Learning EL terminology from LLM oracle")
-            print("  (Each MQ/EQ call queries the LLM — this may take a while)\n")
-            oracle.reset_counts()
-            H = learn_el_terminology(oracle, max_iterations=50 if max_eqs is None else max_eqs,
-                                     precomputation=precomputation, max_failed_eqs=max_failed_eqs,
-                                     reuse_counterexamples=reuse_counterexamples, saturation=saturation,
-                                     repair=repair, repair_majority=repair_majority)
-            mq_calls = oracle.mq_count
-            eq_calls = oracle.eq_count
-
-            _section("Result")
-            print(f"\n  |H| = {len(H)}\n")
-            print("  Learned GCIs (Manchester syntax):")
-            for gci in sorted(H, key=str):
-                print(f"    {gci_to_manchester(gci)}")
-            print(f"\n  MQ calls: {mq_calls}  |  EQ calls: {eq_calls}")
-
-            if output:
-                from utils.owl_parser import save_ontology
-                save_ontology(H, output)
-                print(f"\n  Saved learned ontology to: {output}")
-    except Exception as exc:
-        print(f"\n  ✗  Failed: {exc}")
-        return False
-    return True
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -584,9 +448,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--oracle", type=_oracle_kind, choices=["reasoner", "llm", "axioms", "signature"], default="reasoner",
-        help="Oracle backend: 'reasoner' (Java/ELK); 'llm' (LLM on a fixed kinship "
-             "signature); 'axioms' (LLM with the ontology's axioms in its prompt); "
+        "--oracle", type=_oracle_kind, choices=["reasoner", "axioms", "signature"], default="reasoner",
+        help="Oracle backend: 'reasoner' (Java/ELK); 'axioms' (LLM with the ontology's axioms in its prompt); "
              "'signature' (LLM given only the ontology's concept and role names, answering "
              "from its own knowledge, as in the paper).  'axioms' and 'signature' are scored "
              "against --ontology.  The old names 'taught' and 'parametric' still work.",
@@ -788,8 +651,8 @@ def build_parser() -> argparse.ArgumentParser:
     # --- LLMOracle options ---
     llm_grp = parser.add_argument_group("LLMOracle options")
     llm_grp.add_argument(
-        "--model", default=_LLM_MODEL,
-        help="HuggingFace model name or local path.",
+        "--model", default=None,
+        help="HuggingFace model name or local path (needed with an LLM oracle).",
     )
     llm_grp.add_argument(
         "--device", default="cpu",
@@ -797,9 +660,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     llm_grp.add_argument(
         "--max-new-tokens", type=_count, default=None, metavar="N",
-        help="Generation budget per LLM query.  Unset: 2 with a paper prompt "
-             "(as upstream), else 1024 for axioms/signature and 128 for --oracle llm.  "
-             "Reasoning models need room to finish thinking before their answer.",
+        help="Generation budget per LLM query.  Unset: 2, upstream's maxTokens for its "
+             "True/False prompts.  Reasoning models need room to finish thinking before their answer.",
     )
     llm_grp.add_argument(
         "--prompt", choices=["paper-simple", "paper-advanced", "paper-nl-simple", "paper-nl-advanced"],
@@ -821,10 +683,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="0 (default): greedy decoding.  Above 0: sample at T with Ollama's other "
              "defaults, as the paper's runs were answered (axioms/signature only); "
              "--seed then also seeds the sampling.",
-    )
-    llm_grp.add_argument(
-        "--dry-run", action="store_true",
-        help="Print prompts without loading the model (LLM oracle only).",
     )
 
     # --- Shared ---
@@ -904,6 +762,8 @@ if __name__ == "__main__":
             max_failed_eqs=args.max_failed_eqs,
         )
     elif args.oracle in ("axioms", "signature"):
+        if not args.model:
+            parser.error("--model is needed with an LLM oracle (axioms, signature)")
         max_new_tokens = args.max_new_tokens
         if max_new_tokens is None:
             max_new_tokens = 2   # upstream's maxTokens for its True/False prompts
@@ -956,24 +816,6 @@ if __name__ == "__main__":
             repair_majority=args.repair_majority,
             mq_asked_as=args.mq_asked_as,
         )
-    else:
-        if args.dry_run:
-            _llm_dry_run()
-        else:
-            ok = _run_llm_demo(
-                model=args.model,
-                device=args.device,
-                verbose=args.verbose,
-                output=args.output,
-                max_new_tokens=args.max_new_tokens,
-                max_eqs=args.max_eqs,
-                precomputation=not args.no_precompute,
-                max_failed_eqs=args.max_failed_eqs,
-                reuse_counterexamples=args.reuse_counterexamples,
-                saturation=args.saturation,
-                repair=args.repair,
-                repair_majority=args.repair_majority,
-            )
 
     # Non-zero on failure, so scripts and batch jobs see it.
     sys.exit(0 if ok else 1)

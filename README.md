@@ -201,13 +201,13 @@ The cache is controlled by three environment variables:
 Example — run with a custom DB path and prompt logging:
 
 ```bash
-LLM_CACHE_DB=/tmp/my_cache.db LLM_CACHE_STORE_PROMPTS=1 python demo.py --oracle llm
+LLM_CACHE_DB=/tmp/my_cache.db LLM_CACHE_STORE_PROMPTS=1 python demo.py --oracle signature --model <hf-path>
 ```
 
 Example — disable caching entirely:
 
 ```bash
-LLM_CACHE_ENABLED=0 python demo.py --oracle llm
+LLM_CACHE_ENABLED=0 python demo.py --oracle signature --model <hf-path>
 ```
 
 ### ReasonerOracle — in-memory MQ cache
@@ -348,7 +348,7 @@ The counterexample is read from the last non-empty line after any `<think>` bloc
 
 #### Verbose mode
 
-Pass `verbose=True` to `LLMOracle` (or `-v` with `demo.py --oracle llm`) to print every prompt and response, labelled by query type:
+Pass `verbose=True` to `LLMOracle` (or `-v` with `demo.py`) to print every prompt and response, labelled by query type:
 
 ```
 --- MQ ---
@@ -378,18 +378,10 @@ python demo.py --seed 1                            # another seed for the oracle
 python demo.py --ontology ontologies/medical.ttl   # explicit ontology path
 python demo.py -v                                  # verbose logging
 
-# LLMOracle
-python demo.py --oracle llm                        # run learning loop (CPU)
-python demo.py --oracle llm --device mps           # Apple Silicon GPU
-python demo.py --oracle llm --device cuda          # NVIDIA GPU
-python demo.py --oracle llm -v                     # print all prompts and responses
-python demo.py --oracle llm --dry-run              # preview prompts without loading the model
-python demo.py --oracle llm --model <hf-path>      # use a different HuggingFace model
-
-# LLMOracle with the ontology's axioms in the system prompt (--oracle axioms)
-python demo.py --oracle axioms --ontology ontologies/medical.ttl
+# LLMOracle with the ontology's axioms in the system prompt (--oracle axioms), or only its names
+# (--oracle signature, as in the paper); --model is needed with either
 python demo.py --oracle axioms --ontology ontologies/animals.owl --model <hf-path> --device mps
-python demo.py --oracle axioms --max-new-tokens 4096  # more room for a reasoning model (default 1024; 128 for --oracle llm)
+python demo.py --oracle signature --model <hf-path> --max-new-tokens 4096  # room for a reasoning model (default 2)
 
 # Save the learned ontology (.ttl → Turtle, .owl/.xml → RDF/XML)
 python demo.py --output learned.ttl                # bare filename → ontologies/learned/learned.ttl
