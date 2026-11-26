@@ -295,7 +295,7 @@ with LLMOracle(
 
 `learn_el_terminology` returns a `set[GCI]` representing what the language model knows about the domain.
 
-In this mode (no `ontology_path`) the prompts list no object properties, so the model is effectively limited to atomic subsumptions. Pass `ontology_path` for grounded mode, where the signature, roles and axioms are taken from the ontology file and placed in the system prompt.
+In this mode (no `ontology_path`) there are no object properties in scope, so the model is effectively limited to atomic subsumptions. Pass `ontology_path` to take the signature and roles from the ontology file (and, with `include_axioms`, its axioms into the system prompt).
 
 #### Manchester syntax
 
@@ -450,15 +450,16 @@ Concepts are encoded as strings when passed to the Java gateway:
 This project runs two experiments with an LLM as the oracle:
 
 1. **Reproducing the paper.** The original [ExactLearner-LLM](https://github.com/MatteoMagnini/ExactLearner-LLM) setup: the model answers MQs with the paper's prompts (Manchester or natural language), and equivalence queries are PAC sampling, which draws random statements and returns the first that H misses and the model accepts as a counterexample (`--oracle signature --prompt paper-* --eq pac`).
-2. **Asking for counterexamples.** The model itself is the equivalence oracle: asked whether H is complete, it writes a counterexample (`--prompt ours --eq oracle`).
+2. **Asking for counterexamples.** The model itself is the equivalence oracle: asked whether H is complete, it writes a counterexample (`--prompt paper-advanced --eq oracle`, the MQs still the paper's).
 
-The original setup differs from this project's default LLM oracle in three ways. Each one is available here as an option:
+The original setup differs from this project's default LLM oracle in two ways. Each one is available here as an option. The MQ prompt is the paper's in both (`--prompt`, default `paper-advanced`); this project's own yes/no prompt (`ours`) was removed on 2026-11-26, unused since the reproduction:
 
 | | Default here | Original (option) |
 |---|---|---|
 | What the model is given | `--oracle axioms`: the ontology's axioms in the system prompt | `--oracle signature`: only the signature; the model answers from what it knows. The ontology file is still the reference the result is scored against |
-| MQ prompt | `--prompt ours`: a yes/no question naming the signature | `--prompt paper-simple` / `paper-advanced` (Manchester) or `paper-nl-simple` / `paper-nl-advanced` (upstream's natural-language rewrite): upstream's system prompts (verbatim); the axiom alone as the user message; an answer counts as True only if it reads exactly "true" (`paper_is_true`); 2 new tokens unless `--max-new-tokens` says otherwise. As upstream's `AxiomSimplifier`, an MQ that H already entails is answered True without the model; otherwise the conjuncts on the right that H entails are dropped, both sides are desaturated (each concept name that H makes redundant in a node is removed, `desaturate`), and the remaining conjuncts are asked one at a time. With `--prompt ours` the model gets the whole GCI, without any of these steps |
 | Equivalence query | `--eq oracle`: ELK for `ReasonerOracle`; for an LLM, a yes/no judge and a model-written counterexample | `--eq pac`: PAC sampling (`learner/pac.py`, `PACOracle`) |
+
+The MQ prompt (`--prompt paper-simple` / `paper-advanced` in Manchester syntax, or `paper-nl-simple` / `paper-nl-advanced`, upstream's natural-language rewrite): upstream's system prompts (verbatim); the axiom alone as the user message; an answer counts as True only if it reads exactly "true" (`paper_is_true`); 2 new tokens unless `--max-new-tokens` says otherwise. As upstream's `AxiomSimplifier`, an MQ that H already entails is answered True without the model; otherwise the conjuncts on the right that H entails are dropped, both sides are desaturated (each concept name that H makes redundant in a node is removed, `desaturate`), and the remaining conjuncts are asked one at a time.
 
 The two LLM oracles over an ontology file are `--oracle axioms` (the axioms in the prompt) and `--oracle signature` (only the concept and role names). Before 2026-11-11 they were called `taught` and `parametric`; the old names still work.
 

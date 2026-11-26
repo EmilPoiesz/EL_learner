@@ -760,11 +760,11 @@ def build_parser() -> argparse.ArgumentParser:
              "Reasoning models need room to finish thinking before their answer.",
     )
     llm_grp.add_argument(
-        "--prompt", choices=["ours", "paper-simple", "paper-advanced", "paper-nl-simple", "paper-nl-advanced"],
+        "--prompt", choices=["paper-simple", "paper-advanced", "paper-nl-simple", "paper-nl-advanced"],
         default="paper-advanced",
-        help="MQ prompts (default paper-advanced, the standard): this project's yes/no prompts, or the original "
-             "ExactLearner-LLM's True/False prompts, the axiom in Manchester syntax or, "
-             "with paper-nl-*, in its natural-language form (axioms/signature only).",
+        help="MQ prompts: the original ExactLearner-LLM's True/False prompts (default "
+             "paper-advanced, the standard), the axiom in Manchester syntax or, with "
+             "paper-nl-*, in its natural-language form (axioms/signature only).",
     )
     llm_grp.add_argument(
         "--mq-asked-as", choices=["paper", "check"], default="paper",
@@ -846,7 +846,7 @@ if __name__ == "__main__":
         )
     elif args.oracle in ("axioms", "signature"):
         max_new_tokens = args.max_new_tokens
-        if max_new_tokens is None and args.prompt != "ours":
+        if max_new_tokens is None:
             max_new_tokens = 2   # upstream's maxTokens for its True/False prompts
         from learner.llm_oracle import EQSettings   # loads transformers
         try:
@@ -870,8 +870,6 @@ if __name__ == "__main__":
             )
         except ValueError as exc:   # a combination the settings refuse, e.g. combined + g2
             parser.error(str(exc))
-        if args.mq_asked_as == "check" and args.prompt == "ours":
-            parser.error("--mq-asked-as check needs a paper prompt (--prompt paper-*)")
         ok = _run_grounded_llm_demo(
             ontology=args.ontology,
             model=args.model,

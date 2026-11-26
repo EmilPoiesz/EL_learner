@@ -208,8 +208,7 @@ OPTIONS: tuple[Option, ...] = (
            "How a membership query is asked. With a natural-language style the EQs are asked in natural "
            "language too. A list runs each prompt in turn (one run per prompt and seed).",
            flag="--prompt", default="paper-advanced", env="PROMPTS", multi=True,
-           choices=(("ours", "This project's yes/no question naming the scope; the whole GCI at once."),
-                    ("paper-simple", "The paper's simple system prompt, 'Answer with only True or False.', and "
+           choices=(("paper-simple", "The paper's simple system prompt, 'Answer with only True or False.', and "
                                      "the axiom as the OWL API writes it. " + _PAPER_MQ),
                     ("paper-advanced", "The paper's advanced system prompt, four rules including 'entities with "
                                        "has part relation are not in a subclass relation'. " + _PAPER_MQ),

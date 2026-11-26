@@ -22,32 +22,8 @@ def _scope(sig: set[str] | Sequence[str], roles: set[str]) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# System messages
+# System messages (the MQ's are the paper's, upstream.PAPER_SYSTEM_PROMPTS)
 # ---------------------------------------------------------------------------
-
-PARAMETRIC_SYSTEM_MSG = (
-    "You are a precise ontology reasoning assistant. "
-    "Follow the output format exactly as specified. "
-    "Do not add any explanation, preamble, or punctuation beyond what is asked."
-)
-
-
-def grounded_system_message(sig: set[str], roles: set[str], gcis: set[GCI]) -> str:
-    """The MQ system message that teaches the model O (``include_axioms``)."""
-    sig_str, roles_str = _scope(sig, roles)
-    gcis_str = "\n".join(f"  {gci_to_manchester(g)}" for g in sorted(gcis, key=str))
-    return (
-        "You are a precise ontology reasoning assistant.\n"
-        "You have been given the following ontology O in Manchester syntax.\n\n"
-        f"Concept names: {sig_str}\n"
-        f"Object properties: {roles_str}\n\n"
-        "Axioms:\n"
-        f"{gcis_str}\n\n"
-        "Answer questions about what O entails. "
-        "Follow the output format exactly as specified. "
-        "Do not add explanation, preamble, or punctuation beyond what is asked."
-    )
-
 
 _EQ_SYSTEM_INTRO = (
     "You are an expert in ontology engineering. You are helping to learn a target "
@@ -237,21 +213,6 @@ def atonce_question(gci: GCI) -> str:
 
 # The check's question by name; "paper" has none (the MQ as "asked as" says).
 CHECK_QUESTION_TEXT = {"every": every_question, "atonce": atonce_question}
-
-
-# ---------------------------------------------------------------------------
-# MQ (prompt style "ours")
-# ---------------------------------------------------------------------------
-
-def mq_prompt(sig: set[str], roles: set[str], gci: GCI) -> str:
-    sig_str, roles_str = _scope(sig, roles)
-    return (
-        f"Concept names in scope: {sig_str}.\n"
-        f"Object properties in scope: {roles_str}.\n"
-        "Does the target ontology O entail the following GCI?\n"
-        f"  {gci_to_manchester(gci)}\n"
-        "Reply with exactly one word: yes or no."
-    )
 
 
 # ---------------------------------------------------------------------------

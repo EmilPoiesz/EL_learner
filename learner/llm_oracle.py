@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-PROMPT_STYLES = ("ours", *PAPER_SYSTEM_PROMPTS)
+PROMPT_STYLES = tuple(PAPER_SYSTEM_PROMPTS)
 
 # How an EQ is asked: "judge" asks yes/no whether H is complete, then for a
 # counterexample; "combined" asks once for a counterexample or "yes".
@@ -331,8 +331,7 @@ class LLMOracle(Oracle):
         ``--oracle axioms``) or only take the signature and roles from the file (False,
         ``--oracle signature``: the model answers from what it knows, as in the paper).
     prompt_style : str
-        ``"ours"`` (default): this project's yes/no prompts.
-        ``"paper-simple"`` / ``"paper-advanced"``, and their natural-language
+        ``"paper-advanced"`` (default) / ``"paper-simple"``, and their natural-language
         forms ``"paper-nl-simple"`` / ``"paper-nl-advanced"``: the original ExactLearner-LLM's
         MQ setup — its system prompt, the axiom alone as the user message,
         True/False read with ``paper_is_true``, and its AxiomSimplifier: an MQ
@@ -423,7 +422,7 @@ class LLMOracle(Oracle):
         verbose: bool = False,
         ontology_path: str | None = None,
         include_axioms: bool = True,
-        prompt_style: str = "ours",
+        prompt_style: str = "paper-advanced",
         roles: set[str] | None = None,
         temperature: float = 0.0,
         seed: int = 0,
@@ -443,8 +442,6 @@ class LLMOracle(Oracle):
         self._prompt_style = prompt_style
         if mq_asked_as not in MQ_ASKED_AS:
             raise ValueError(f"mq_asked_as must be one of {MQ_ASKED_AS}, not {mq_asked_as!r}")
-        if mq_asked_as == "check" and prompt_style not in PAPER_SYSTEM_PROMPTS:
-            raise ValueError("mq_asked_as 'check' needs a paper prompt style")
         self._mq_as_check = mq_asked_as == "check"
         self._eq = eq_settings
         self._truth = truth
@@ -502,24 +499,17 @@ class LLMOracle(Oracle):
             self._sig = set(signature) if signature is not None else parsed_sig
             self._roles: set[str] = (set(roles) if roles is not None
                                      else set().union(*(gci_names(g)[1] for g in self._O)))
-            if include_axioms:
-                self._system_msg = prompts.grounded_system_message(self._sig, self._roles, self._O)
-            else:
-                self._system_msg = prompts.PARAMETRIC_SYSTEM_MSG
         else:
             if signature is None:
                 raise ValueError("Either 'signature' or 'ontology_path' must be provided.")
             self._sig = signature
             self._O: set[GCI] | None = None
             self._roles = set(roles or ())
-            self._system_msg = prompts.PARAMETRIC_SYSTEM_MSG
 
-        if prompt_style in PAPER_SYSTEM_PROMPTS:
-            system = PAPER_SYSTEM_PROMPTS[prompt_style]
-            if ontology_path is not None and include_axioms:
-                axioms = "\n".join(f"  {gci_to_manchester(g)}" for g in sorted(self._O, key=str))
-                system += f"\n\nOntology axioms:\n{axioms}"
-            self._system_msg = system
+        self._system_msg = PAPER_SYSTEM_PROMPTS[prompt_style]
+        if ontology_path is not None and include_axioms:
+            axioms = "\n".join(f"  {gci_to_manchester(g)}" for g in sorted(self._O, key=str))
+            self._system_msg += f"\n\nOntology axioms:\n{axioms}"
 
         with_axioms = ontology_path is not None and include_axioms
         self._eq_system_msg = prompts.eq_system_message(self._O if with_axioms else None,
@@ -562,8 +552,6 @@ class LLMOracle(Oracle):
         self.count_mq()
         if any(gci_implies(gci, n) for n in self.__dict__.get("refuted", ())):
             return False
-        if self._prompt_style not in PAPER_SYSTEM_PROMPTS:
-            return self._MQ(gci)
         sampling = self._repair_sampling
         with self._repair_stream():
             if self._mq_as_check:
@@ -981,19 +969,12 @@ class LLMOracle(Oracle):
         """
         Membership query: does O entail lhs ⊑ rhs?
 
-        The LLM is prompted for a yes/no answer in Manchester syntax.
-        Raises ValueError if the response cannot be parsed as yes or no.
-        With a paper prompt style, see ``_paper_MQ``.
+        Asked as the paper's MQ (``_paper_MQ``), or as the counterexample check asks
+        it (``mq_asked_as`` "check").
         """
-        if self._prompt_style in PAPER_SYSTEM_PROMPTS:
-            if self._mq_as_check:
-                return self._check_style_MQ(gci, "MQ (as check")
-            return self._paper_MQ(gci)
-        return self._query(
-            prompts.mq_prompt(self._sig, self._roles, gci),
-            parse=lambda r: self._parse_yes_no(r, f"MQ for '{gci_to_manchester(gci)}'"),
-            label="MQ",
-        )
+        if self._mq_as_check:
+            return self._check_style_MQ(gci, "MQ (as check")
+        return self._paper_MQ(gci)
 
     def _paper_MQ(self, gci: GCI, nl: bool | None = None, system: str | None = None,
                   label: str = "MQ", question: Callable[[GCI], str] | None = None,
@@ -1216,8 +1197,7 @@ class LLMOracle(Oracle):
         if any(gci_implies(gci, n) for n in self.__dict__.get("refuted", ())):
             self.count_mq()
             return False
-        if self._prompt_style in PAPER_SYSTEM_PROMPTS and (
-                check == "nl" or system != "paper" or question != "paper"
+        if (check == "nl" or system != "paper" or question != "paper"
                 or self._eq.check_domain != "off"):
             self.count_mq()
             return self._check_style_MQ(gci, "MQ (check")
