@@ -79,6 +79,9 @@ Test catalogue
 59  repair                  — a proposal true of anything (⊤ on the right) is skipped: no axiom is disputed
 60  learn_el_terminology    — repair: a failed EQ whose proposals repair H is no failed EQ, for the oracle too
 61  repair                  — when the round cap is reached with a refuted statement still entailed, the log says so
+62  learn_el_terminology    — repair: a queued proposal H already entails is skipped, learning goes on
+63  learn_el_terminology    — repair: the no-progress guard forgets a counterexample once the repair changed H
+64  learn_el_terminology    — repair: a counterexample's part refuted in the same EQ never enters H
 """
 
 from __future__ import annotations
@@ -1280,3 +1283,90 @@ def test_61_round_cap_reported(monkeypatch):
     monkeypatch.setattr(el_algorithm, "ENFORCE_ROUNDS", 20)    # with rounds: B ⊑ C is denied and dropped
     el_algorithm._check_refuted(oracle, H, lambda g: _entails(H, g), 2)
     assert oracle.repair_log[-1]["outcome"] == "repaired" and not _entails(H, GCI(A, C_))
+
+
+def _lays(*names):
+    return ELConcept(existentials=frozenset({("lays", ELConcept(frozenset(names)))}))
+
+
+class _ProposesOnce(_BeliefOracle):
+    """EQ 1 proposes Bird ⊑ ∃lays.Egg (it follows from H's wrong filler) and returns
+    *first*; later EQs return the first axiom of O that H misses."""
+
+    def __init__(self, first, *args):
+        super().__init__(*args)
+        self.first = first
+
+    def _EQ(self, H):
+        if self.eq_count == 1:
+            self.__dict__.setdefault("followed_from_H", []).append(GCI(_BIRD, _lays("Egg")))
+            return self.first
+        for gci in sorted(self.O, key=str):
+            if not _entails(H, gci):
+                return gci
+        return None
+
+
+def test_62_queued_proposal_already_entailed_is_skipped():
+    # The repair queues Bird ⊑ ∃lays.Egg; EQ 1's counterexample then covers it, so it
+    # follows from H when its turn comes.  It used to stop learning before Fish ⊑ Swims.
+    flies_egg = ELConcept(frozenset({"Flies"}), frozenset({("lays", _EGG)}))
+    O = {GCI(_BIRD, flies_egg), GCI(ELConcept(frozenset({"Fish"})), ELConcept(frozenset({"Swims"})))}
+    oracle = _ProposesOnce(GCI(_BIRD, flies_egg), O, {GCI(_BIRD, _lays("Animal", "Egg"))},
+                           {"Animal", "Bird", "Egg", "Fish", "Flies", "Swims"})
+    H = {GCI(_BIRD, _lays("Animal", "Egg"))}
+    from learner.el_algorithm import _learn
+    _learn(oracle, H, 20, precomputation=False, repair=True)
+    assert all(_entails(H, ax) for ax in O)
+
+
+def test_63_progress_guard_forgets_after_a_repair(monkeypatch):
+    # A ⊑ B comes back at EQs 3 and 4 (an inconsistent oracle); between them the repair
+    # removes the wrong A ⊑ D.  The guard used to stop at EQ 4 as if H were unchanged.
+    from learner import el_algorithm
+    A, B_, C_, D_, E_ = (ELConcept(frozenset({n})) for n in "ABCDE")
+
+    class Fake(_BeliefOracle):
+        def _EQ(self, H):
+            n = self.eq_count
+            if n == 1:
+                return GCI(A, D_)
+            if n == 2:
+                return GCI(A, C_)
+            if n == 4:
+                self.__dict__.setdefault("followed_from_H", []).append(GCI(A, D_))
+            if n in (3, 4):
+                return GCI(A, B_)
+            return GCI(A, E_) if not _entails(H, GCI(A, E_)) else None
+
+    # An unproductive round for A ⊑ B: its essential is A ⊑ C, which H already has.
+    monkeypatch.setattr(el_algorithm, "compute_right_essential",
+                        lambda **kw: GCI(A, kw["rhs"]) if kw["rhs"] != B_ else GCI(A, C_))
+    oracle = Fake({GCI(A, B_), GCI(A, C_), GCI(A, E_)}, {GCI(A, D_)}, {"A", "B", "C", "D", "E"})
+    H = learn_el_terminology(oracle, max_iterations=10, precomputation=False, repair=True)
+    assert oracle.eq_count >= 5 and _entails(H, GCI(A, E_))
+    assert GCI(A, D_) in oracle.refuted
+
+
+def test_64_refuted_part_of_counterexample_never_enters_h():
+    # EQ 1: the proposal Bird ⊑ ∃lays.Egg makes the repair refute Bird ⊑ ∃lays.Animal; the
+    # same EQ's counterexample, checked before that, holds ∃lays.(Animal ⊓ Egg).
+    added = []
+
+    class Watched(_ProposesOnce):
+        def on_H_add(self, gci):
+            added.append(gci)
+
+    flies_bad = ELConcept(frozenset({"Flies"}), frozenset({("lays", ELConcept(frozenset({"Animal", "Egg"})))}))
+    O = {GCI(_BIRD, ELConcept(frozenset({"Flies"}), frozenset({("lays", _EGG)})))}
+    oracle = Watched(GCI(_BIRD, flies_bad), O, {GCI(_BIRD, _lays("Animal", "Egg"))},
+                     {"Animal", "Bird", "Egg", "Flies"})
+    H = {GCI(_BIRD, _lays("Animal", "Egg"))}
+    from learner.el_algorithm import _learn
+    _learn(oracle, H, 20, precomputation=False, repair=True)
+    from learner.el_algorithm import gci_implies
+    refuted = GCI(_BIRD, _lays("Animal"))
+    assert refuted in oracle.refuted
+    assert not any(gci_implies(g, refuted) for g in added)          # never added, not even for a round
+    assert any(ev["outcome"] == "counterexample weakened" for ev in oracle.repair_log)
+    assert all(_entails(H, ax) for ax in O)

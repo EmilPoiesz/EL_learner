@@ -1092,10 +1092,14 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
     while True:
 
         if repair:
-            _check_refuted(oracle, H, H_MQ, iteration)
+            if _check_refuted(oracle, H, H_MQ, iteration):
+                unproductive_counterexample = None     # H changed (code review 2026-11-26)
             if pending is None and repaired:
                 pending = repaired.pop(0)
 
+        # A queued or reused statement may already follow from H when its turn comes
+        # (the round before covered it): it is skipped, not a reason to stop.
+        skip_if_entailed = pending is not None
         if pending is not None:
             counterexample, pending = pending, None
             logger.info("Iteration %d, reused | Counterexample: %s (H still misses it)",
@@ -1117,6 +1121,7 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
                     # No usable answer, but its proposals repaired H: not a failed EQ, for
                     # the oracle either (it would tell the next EQ that this one failed).
                     oracle.failed_eq_repaired()
+                    unproductive_counterexample = None
                     iteration += 1
                     failed_eqs = 0
                     continue
@@ -1129,10 +1134,12 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
                 continue
             failed_eqs = 0
 
-            if repair and _repair_followed(oracle, H, H_MQ, iteration + 1, repaired) and counterexample is None:
-                # "H is complete" was about the H before the repair: go on.
-                iteration += 1
-                continue
+            if repair and _repair_followed(oracle, H, H_MQ, iteration + 1, repaired):
+                unproductive_counterexample = None     # H changed
+                if counterexample is None:
+                    # "H is complete" was about the H before the repair: go on.
+                    iteration += 1
+                    continue
 
             if counterexample is None:
                 # oracle says H ≡ O  →  we are done
@@ -1142,6 +1149,18 @@ def _learn(oracle: Oracle, H: set[GCI], max_iterations: int, precomputation: boo
 
             logger.info("Iteration %d | Counterexample: %s", iteration, counterexample)
 
+        # The counterexample passed the oracle's check before this round's repair; the
+        # parts that imply a statement refuted since are dropped (code review 2026-11-26).
+        if repair:
+            weaker = _without_refuted(oracle, counterexample, iteration)
+            if weaker is None:
+                continue
+            if weaker != counterexample:
+                counterexample, skip_if_entailed = weaker, True
+
+        if skip_if_entailed and H_MQ(counterexample):
+            logger.info("Counterexample %s already follows from H; skipped.", counterexample)
+            continue
         # A positive counterexample must not follow from H.  An oracle that is
         # not a reasoner (e.g. an LLM) can return one that does; the rest of the
         # iteration would then add nothing, and a deterministic oracle would
@@ -1463,17 +1482,36 @@ def _repair_followed(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], e
     return changed
 
 
-def _check_refuted(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], eq: int) -> None:
+def _check_refuted(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], eq: int) -> bool:
     """At every EQ: H must entail no refuted statement (a later round can make it
-    entail one again, through a wrong axiom with no correct core of its own)."""
+    entail one again, through a wrong axiom with no correct core of its own).  Whether
+    H changed."""
     if not any(H_MQ(n) for n in _refuted(oracle)):
-        return
+        return False
     event = {"eq": eq, "proposal": "(check at the EQ)", "culprits": [], "refuted": [], "weakened": []}
     with step("repair"):
         _enforce(oracle, H, H_MQ, event)
     event["outcome"] = "H still entails a refuted statement" if event.get("still_entailed") else "repaired"
     logger.info("Repair check at EQ %d: refuted %s; weakened %s", eq, event["refuted"], event["weakened"])
     _repair_log(oracle, event)
+    return bool(event["weakened"])
+
+
+def _without_refuted(oracle: Oracle, gci: GCI, eq: int) -> Optional[GCI]:
+    """*gci* without the right-hand conjuncts that imply a refuted statement, as
+    ``_weaken`` treats an axiom of H; None when nothing is left.  A counterexample the
+    oracle's check accepted before this round's repair can hold a part it refuted."""
+    refuted = _refuted(oracle)
+    parts = _conjuncts(gci.rhs)
+    keep = [c for c in parts if not any(gci_implies(GCI(gci.lhs, c), n) for n in refuted)]
+    if len(keep) == len(parts):
+        return gci
+    weaker = GCI(gci.lhs, _conj(keep)) if keep else None
+    _repair_log(oracle, {"eq": eq, "proposal": f"(counterexample) {gci}", "culprits": [], "refuted": [],
+                         "weakened": [f"{gci}  →  {weaker if weaker is not None else 'removed'}"],
+                         "outcome": "counterexample weakened"})
+    logger.info("Counterexample %s implies a refuted statement; processed as %s.", gci, weaker)
+    return weaker
 
 
 def _minimise(H: set[GCI]) -> set[GCI]:
