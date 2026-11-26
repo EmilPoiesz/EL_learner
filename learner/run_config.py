@@ -193,17 +193,6 @@ OPTIONS: tuple[Option, ...] = (
            "0: greedy. Above 0: sampled at this temperature with Ollama's other defaults (top-k 40, top-p "
            "0.9, repeat penalty 1.1), seeded by the seed. Applies to the MQs, the judge and the check; the "
            "counterexample prompts have their own.", flag="--temperature", default=0.0, env="TEMPERATURE"),
-    Option("oracle.resample", "Repeated questions", "bool",
-           "What a question asked again gets, when oracle.temperature is above 0. Added 2026-11-23: a greedy "
-           "answer, or a sampled one replayed from the cache, is the same every time saturation asks the "
-           "question again, so a wrong yes (\"Bird ⊑ Backbone?\") keeps coming back.",
-           flag="--resample", default=False, env="RESAMPLE",
-           choices=((False, "The answer is generated once and replayed from the cache: the answers behave "
-                            "like one ontology."),
-                    (True, "The oracle's sampled queries (MQs, the check, the judge) skip the cache and are "
-                           "sampled afresh each time; a repeated wrong yes can come out no, but the same "
-                           "question can get different answers within a run. Counterexample prompts are not "
-                           "affected."))),
     Option("oracle.repair_temperature", "Repair questions", "float",
            "How the repair step (learner.repair) asks the parts of the H axiom it disputes. Added 2026-11-23: "
            "in cex49 every repair question had already been asked by saturation in the same words, so the "
@@ -440,6 +429,12 @@ def _check_value(opt: Option, value: Any) -> None:
             raise ConfigError(where + f"expected a non-empty list of whole numbers, not {value!r}")
 
 
+# Options removed from the code; a config that still sets one is a record of an old run.
+RETIRED = {
+    "oracle.resample": "removed on 2026-11-26 (used in cex47 only: sampling each repeat afresh hurt)",
+}
+
+
 def flatten(config: dict, prefix: str = "") -> dict[str, Any]:
     """{dotted key: value} for every option set in *config*; ConfigError on an unknown key."""
     out: dict[str, Any] = {}
@@ -456,6 +451,8 @@ def flatten(config: dict, prefix: str = "") -> dict[str, Any]:
             if not isinstance(value, dict):
                 raise ConfigError(f"{key}: expected an object of settings")
             out.update(flatten(value, key + "."))
+        elif key in RETIRED:
+            raise ConfigError(f"{key}: {RETIRED[key]}; this config can no longer be run as it was")
         else:
             here = sorted({k[len(prefix):].split(".")[0] for k in [*BY_KEY, *groups]
                            if k.startswith(prefix) and k != prefix.rstrip(".")})

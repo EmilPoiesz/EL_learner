@@ -314,7 +314,6 @@ def _run_grounded_llm_demo(
     saturation: str = "paper",
     repair: bool = False,
     thinking: bool = True,
-    resample: bool = False,
     repair_temperature: float = 0.0,
     repair_majority: bool = False,
 ) -> bool:
@@ -359,8 +358,6 @@ def _run_grounded_llm_demo(
               + ("; a denied part is asked again, refuted by a majority of 3" if repair_majority else ""))
     if not thinking:
         print("  Thinking : off (enable_thinking=False in the chat template)")
-    if resample:
-        print("  Resample : sampled MQs, checks and judge answers are generated afresh, never replayed from the cache")
     if mq_asked_as != "paper":
         print("  MQs      : asked as the counterexample check is (Phase 1 and refinement)")
 
@@ -390,7 +387,6 @@ def _run_grounded_llm_demo(
                 eq_settings=eq_settings,
                 truth=judge,   # labels proposals in the log; never used for learning
                 thinking=thinking,
-                resample=resample,
                 repair_temperature=repair_temperature,
                 mq_asked_as=mq_asked_as,
                 # None keeps LLMOracle's default budget.
@@ -589,12 +585,6 @@ def build_parser() -> argparse.ArgumentParser:
              "confirmed by O), and after a round that extended H the same counterexample is "
              "processed again, without an EQ, as long as H does not entail it.  Reused rounds "
              "don't count towards --max-eqs.",
-    )
-    parser.add_argument(
-        "--resample", action=argparse.BooleanOptionalAction, default=False,
-        help="With --temperature above 0: the oracle's sampled queries (MQs, the check, the judge) "
-             "are never answered from the cache, so a repeated question is sampled afresh. "
-             "Counterexample prompts are not affected.",
     )
     parser.add_argument(
         "--repair-majority", action=argparse.BooleanOptionalAction, default=False,
@@ -811,7 +801,6 @@ if __name__ == "__main__":
             saturation=args.saturation,
             repair=args.repair,
             thinking=not args.no_thinking,
-            resample=args.resample,
             repair_temperature=args.repair_temperature,
             repair_majority=args.repair_majority,
             mq_asked_as=args.mq_asked_as,

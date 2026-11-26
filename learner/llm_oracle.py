@@ -361,15 +361,6 @@ class LLMOracle(Oracle):
         the model answers at once); templates without the switch ignore it.  Part
         of the cache key.  Added 2026-11-16: with thinking on, an MQ took minutes
         and the hybrids' runs (cex35-37) ran into the time limit.
-    resample : bool
-        False (default): a query asked again is answered from the cache.  True: the
-        oracle's own sampled queries (MQs, the check, the judge, with ``temperature``
-        above 0) skip the cache lookup, so a repeated question is sampled afresh
-        (still stored, for the per-job cache's record of progress).  Counterexample
-        prompts are not affected.  Added 2026-11-23: a greedy model, or a sampled
-        answer replayed from the cache, gives the same wrong yes every time
-        saturation asks the question again ("Bird ⊑ Backbone?"); a fresh sample can
-        come out the other way.  The answers then no longer behave like one ontology.
     repair_temperature : float
         0 (default): the repair step's questions (``direct_MQ``) are asked like every
         other MQ, so a question the run already asked is answered from the cache.
@@ -396,7 +387,6 @@ class LLMOracle(Oracle):
     truncated = 0
     _generate_kwargs: dict = {}   # model_defaults_off(model)
     _template_kwargs: dict = {}   # passed to the chat template ({"enable_thinking": False})
-    _resample = False             # sampled oracle queries skip the cache lookup
     _repair_sampling: dict | None = None   # repair_temperature > 0: how direct_MQ samples
     _repair_rng: tuple | None = None       # its own torch RNG state between repair questions
     _t0: float | None = None      # time.monotonic() when the oracle was ready (EQ timestamps)
@@ -424,11 +414,9 @@ class LLMOracle(Oracle):
         truth: Callable[[GCI], bool] | None = None,
         mq_asked_as: str = "paper",
         thinking: bool = True,
-        resample: bool = False,
         repair_temperature: float = 0.0,
     ):
         super().__init__()
-        self._resample = resample
         self._repair_sampling = sampling_params(repair_temperature, seed)
         self._template_kwargs = {} if thinking else {"enable_thinking": False}
         if prompt_style not in PROMPT_STYLES:
@@ -617,8 +605,7 @@ class LLMOracle(Oracle):
                   **self._template_kwargs}
 
         kind = (current_step(), query_kind(label))
-        # Cache lookup; with resample, the oracle's own sampled queries are generated afresh.
-        fresh = fresh or (self._resample and sampling is None and self._sampling is not None)
+        # Cache lookup; the repair step's sampled questions (fresh) are generated afresh.
         cached = None if fresh else self._cache.get(self._model_name, messages, params)
         if cached is not None and self._cut_off(cached):
             logger.warning("Cached %s response was cut off while reasoning; regenerating.", label)

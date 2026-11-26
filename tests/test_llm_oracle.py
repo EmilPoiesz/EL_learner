@@ -28,7 +28,7 @@ is replaced by a stub that returns scripted responses.
 52 EQ: shuffle lists the concept names in a new, reproducible order per attempt; off, sorted
 53 EQ: mask: after the first accepted counterexample, N EQs show an empty H with H's left-side concepts out of scope, without the judge
 54 thinking off: enable_thinking=False reaches the chat template, and keys the cache apart from thinking on
-56 resample: a sampled MQ asked again is generated afresh, not replayed; greedy and resample off still use the cache
+56 a sampled MQ asked again is replayed from the cache (one draw per question and seed), as a greedy one
 57 repair: direct_MQ asks the model even where H entails the GCI (an MQ is answered from H); a refuted GCI is no without asking
 58 repair_temperature: repair questions are sampled afresh (never from the cache) from their own random stream; 0 replays the cache
 59 EQ none: the prompt offers 'none', a 'none' ends learning, not offered in the masked phase or by default
@@ -980,29 +980,14 @@ def test_55_check_domain_names(tmp_path, system):
         EQSettings(check_domain="university")
 
 
-def test_56_resample_skips_cache_for_sampled_queries(tmp_path):
+def test_56_sampled_mq_replayed_from_cache(tmp_path):
     from learner.llm_oracle import sampling_params
-    # Sampled, resample off (default): the second ask is replayed from the cache.
-    (tmp_path / "off").mkdir()
-    oracle = _oracle(tmp_path / "off", ["True", "False"])
+    # Sampled: the second ask is replayed from the cache, so the answers behave like one
+    # ontology within a run (oracle.resample, which sampled each repeat afresh, was
+    # removed on 2026-11-26 after cex47).
+    (tmp_path / "sampled").mkdir()
+    oracle = _oracle(tmp_path / "sampled", ["True", "False"])
     oracle._sampling = sampling_params(0.6, 0)
-    assert oracle.MQ(_GCI) is True
-    assert oracle.MQ(_GCI) is True
-    assert oracle._pipe.calls == 1
-
-    # Sampled, resample on: every ask is a fresh generation, so the answer can change.
-    (tmp_path / "on").mkdir()
-    oracle = _oracle(tmp_path / "on", ["True", "False"])
-    oracle._sampling = sampling_params(0.6, 0)
-    oracle._resample = True
-    assert oracle.MQ(_GCI) is True
-    assert oracle.MQ(_GCI) is False
-    assert oracle._pipe.calls == 2
-
-    # Greedy: resample changes nothing, the cache still answers the repeat.
-    (tmp_path / "greedy").mkdir()
-    oracle = _oracle(tmp_path / "greedy", ["True", "False"])
-    oracle._resample = True
     assert oracle.MQ(_GCI) is True
     assert oracle.MQ(_GCI) is True
     assert oracle._pipe.calls == 1
