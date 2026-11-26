@@ -12,6 +12,8 @@ Tests for learner/run_config.py and demo.py --config.
 9  review fixes: a missing file and attempts 0 are config errors; --seed=N counts as picking
    a seed; --no-eq-memory and --precompute undo the config's memory and skipped Phase 1
 10 a list of MQ prompts: one run per prompt, so demo.py must be given one of them
+11 values that would crash a job after the model loads are config and command-line errors:
+   max_new_tokens 0, ε 0, δ 0 or 1 (code review 2026-11-26, finding 14)
 """
 
 from __future__ import annotations
@@ -214,3 +216,22 @@ def test_10_prompt_list(tmp_path, capsys):
     with pytest.raises(ConfigError, match="'paper-s' is not one of"):
         run_config.load(_write(tmp_path, {**many, "oracle": {**many["oracle"], "mq": {"prompt": ["paper-s"]}}}, "bad.json"))
 
+
+@pytest.mark.parametrize("oracle, message", [
+    ({"max_new_tokens": 0}, "max_new_tokens: expected a whole number ≥ 1"),
+    ({"eq": {"kind": "pac", "epsilon": 0}}, "epsilon: expected a number > 0"),
+    ({"eq": {"kind": "pac", "delta": 0}}, "delta: expected a number > 0 and < 1"),
+    ({"eq": {"kind": "pac", "delta": 1}}, "delta: expected a number > 0 and < 1"),
+])
+def test_11_values_that_crash_a_job(tmp_path, capsys, oracle, message):
+    bad = {**STANDARD, "oracle": {**STANDARD["oracle"], **oracle}}
+    with pytest.raises(ConfigError, match=message):
+        run_config.load(_write(tmp_path, bad))
+    flag, value = {"max_new_tokens": ("--max-new-tokens", "0"), "epsilon": ("--epsilon", "0"),
+                   "delta": ("--delta", str(oracle.get("eq", {}).get("delta")))}[message.split(":")[0]]
+    with pytest.raises(SystemExit):
+        demo.parse_args(demo.build_parser(), [flag, value])
+    assert "expected a" in capsys.readouterr().err
+    ok = {**STANDARD, "oracle": {**STANDARD["oracle"], "max_new_tokens": 1, "eq": {"kind": "pac", "epsilon": 0.5,
+                                                                                    "delta": 0.5}}}
+    run_config.load(_write(tmp_path, ok, "ok.json"))

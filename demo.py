@@ -545,6 +545,23 @@ def _oracle_kind(name: str) -> str:
     return ORACLE_ALIASES.get(name, name)
 
 
+def _count(text: str) -> int:
+    """A whole number ≥ 1 (a token budget): 0 would only fail at the first query, after the model loaded."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"expected a whole number ≥ 1, not {text}")
+    return value
+
+
+def _fraction(text: str, below: float | None = None) -> float:
+    """A number > 0 (and < *below*): PAC's ε and δ (0 divides by zero, δ ≥ 1 has no log)."""
+    value = float(text)
+    if not value > 0 or (below is not None and value >= below):
+        raise argparse.ArgumentTypeError(
+            f"expected a number > 0{f' and < {below:g}' if below is not None else ''}, not {text}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     """demo.py's command line (learner/run_config.py's catalogue mirrors its LLM options)."""
     parser = argparse.ArgumentParser(
@@ -647,7 +664,7 @@ def build_parser() -> argparse.ArgumentParser:
              "check and the judge keep --temperature.  0 (default): as the other queries.",
     )
     parser.add_argument(
-        "--eq-max-new-tokens", type=int, default=None, metavar="N",
+        "--eq-max-new-tokens", type=_count, default=None, metavar="N",
         help="With an LLM's own equivalence queries: the generation budget of the "
              "counterexample prompts only; the MQs, the judge and the check keep "
              "--max-new-tokens.  Unset: --max-new-tokens, but at least 128.",
@@ -724,8 +741,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--precompute", dest="no_precompute", action="store_false",
         help="Run Phase 1 after all, when a config (or an earlier flag) skips it.",
     )
-    parser.add_argument("--epsilon", type=float, default=0.2, help="PAC accuracy ε (with --eq pac).")
-    parser.add_argument("--delta", type=float, default=0.1, help="PAC confidence δ (with --eq pac).")
+    parser.add_argument("--epsilon", type=_fraction, default=0.2, help="PAC accuracy ε (with --eq pac), > 0.")
+    parser.add_argument("--delta", type=lambda t: _fraction(t, below=1.0), default=0.1,
+                        help="PAC confidence δ (with --eq pac), > 0 and < 1.")
 
     # --- ReasonerOracle options ---
     reasoner_grp = parser.add_argument_group("ReasonerOracle options")
@@ -754,7 +772,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inference device: cpu, cuda, or mps.",
     )
     llm_grp.add_argument(
-        "--max-new-tokens", type=int, default=None, metavar="N",
+        "--max-new-tokens", type=_count, default=None, metavar="N",
         help="Generation budget per LLM query.  Unset: 2 with a paper prompt "
              "(as upstream), else 1024 for axioms/signature and 128 for --oracle llm.  "
              "Reasoning models need room to finish thinking before their answer.",

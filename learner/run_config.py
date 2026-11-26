@@ -57,6 +57,9 @@ class Option:
     invert: bool = False            # bool whose *false* sets the flag (phase1 -> --no-precompute)
     aliases: tuple[tuple[str, str], ...] = ()   # (old name, choice it now is)
     minimum: int = 0                # for an int
+    above: float = 0.0              # for a float: at least this (or more than it, with open_range)
+    below: float | None = None      # for a float: less than this
+    open_range: bool = False        # for a float: the value must be more than ``above``
     multi: bool = False             # a choice that may also be a list: one run per value
     see: tuple[str, ...] = field(default=())   # experiments that tell its story
 
@@ -203,7 +206,7 @@ OPTIONS: tuple[Option, ...] = (
            "The generation budget of every answer. Unset: 2 with a paper prompt, as the paper; EQ answers "
            "always get at least 128, and the counterexample prompts can have their own. A reasoning model needs room to finish thinking: an answer cut off "
            "before </think> counts as no answer.",
-           flag="--max-new-tokens", nullable=True, env="MAX_NEW_TOKENS", see=("cex20",)),
+           flag="--max-new-tokens", nullable=True, env="MAX_NEW_TOKENS", minimum=1, see=("cex20",)),
     Option("oracle.mq.prompt", "Prompt", "choice",
            "How a membership query is asked. With a natural-language style the EQs are asked in natural "
            "language too. A list runs each prompt in turn (one run per prompt and seed).",
@@ -231,9 +234,10 @@ OPTIONS: tuple[Option, ...] = (
                     ("pac", "The paper's PAC sampling: random statements, and the first one H misses and the "
                             "model's MQ accepts is the counterexample."))),
     Option("oracle.eq.epsilon", "PAC accuracy ε", "float",
-           "With pac: the sample budget is round((h·ln|X| − ln δ)/ε).", flag="--epsilon", default=0.2),
+           "With pac: the sample budget is round((h·ln|X| − ln δ)/ε).", flag="--epsilon", default=0.2,
+           open_range=True),
     Option("oracle.eq.delta", "PAC confidence δ", "float",
-           "With pac: see ε.", flag="--delta", default=0.1),
+           "With pac: see ε.", flag="--delta", default=0.1, open_range=True, below=1.0),
     Option("oracle.eq.mode", "Mode", "choice",
            "How an EQ is asked.", flag="--eq-mode", default="judge", env="EQ_MODES",
            choices=(("judge", "A yes/no question whether H is complete; if not, a second prompt for a "
@@ -388,6 +392,12 @@ class ConfigError(ValueError):
     pass
 
 
+def float_range(opt: Option) -> str:
+    """The values a float option takes, in words: "≥ 0", "> 0", "> 0 and < 1"."""
+    text = f"{'>' if opt.open_range else '≥'} {opt.above:g}"
+    return text + (f" and < {opt.below:g}" if opt.below is not None else "")
+
+
 def _check_value(opt: Option, value: Any) -> None:
     where = f"{opt.key}: "
     if value is None:
@@ -409,8 +419,10 @@ def _check_value(opt: Option, value: Any) -> None:
         if isinstance(value, bool) or not isinstance(value, int) or value < opt.minimum:
             raise ConfigError(where + f"expected a whole number ≥ {opt.minimum}, not {value!r}")
     elif opt.kind == "float":
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-            raise ConfigError(where + f"expected a number ≥ 0, not {value!r}")
+        low = value > opt.above if opt.open_range else value >= opt.above
+        if (isinstance(value, bool) or not isinstance(value, (int, float)) or not low
+                or (opt.below is not None and value >= opt.below)):
+            raise ConfigError(where + f"expected a number {float_range(opt)}, not {value!r}")
     elif opt.kind == "str":
         if not isinstance(value, str) or not value:
             raise ConfigError(where + f"expected a name, not {value!r}")
