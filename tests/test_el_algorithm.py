@@ -78,6 +78,7 @@ Test catalogue
 58  learn_el_terminology    — repair: one wrong belief, learning with repair ends with H ≡ O, without it does not
 59  repair                  — a proposal true of anything (⊤ on the right) is skipped: no axiom is disputed
 60  learn_el_terminology    — repair: a failed EQ whose proposals repair H is no failed EQ, for the oracle too
+61  repair                  — when the round cap is reached with a refuted statement still entailed, the log says so
 """
 
 from __future__ import annotations
@@ -1261,3 +1262,21 @@ def test_60_failed_eq_repaired_is_no_failed_eq():
     assert oracle.rescued == 1
     assert GCI(_BIRD, _BACKBONE) in oracle.refuted
     assert all(_entails(H, ax) for ax in O) and not _entails(H, GCI(_BIRD, _BACKBONE))
+
+
+def test_61_round_cap_reported(monkeypatch):
+    # H entails the refuted A ⊑ C through A ⊑ B and B ⊑ C, which _weaken alone cannot see.
+    # With no rounds left, the outcome must not read "repaired".
+    from learner import el_algorithm
+    A, B_, C_ = (ELConcept(frozenset({n})) for n in "ABC")
+    oracle = _BeliefOracle({GCI(A, B_)}, set(), {"A", "B", "C"})
+    oracle.refuted = [GCI(A, C_)]
+    H = {GCI(A, B_), GCI(B_, C_)}
+    monkeypatch.setattr(el_algorithm, "ENFORCE_ROUNDS", 0)
+    el_algorithm._check_refuted(oracle, H, lambda g: _entails(H, g), 1)
+    event = oracle.repair_log[-1]
+    assert event["outcome"] == "H still entails a refuted statement"
+    assert event["still_entailed"] == [str(GCI(A, C_))]
+    monkeypatch.setattr(el_algorithm, "ENFORCE_ROUNDS", 20)    # with rounds: B ⊑ C is denied and dropped
+    el_algorithm._check_refuted(oracle, H, lambda g: _entails(H, g), 2)
+    assert oracle.repair_log[-1]["outcome"] == "repaired" and not _entails(H, GCI(A, C_))

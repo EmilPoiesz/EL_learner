@@ -1402,10 +1402,15 @@ def _weaken(oracle: Oracle, H: set[GCI], event: dict) -> None:
         oracle.on_H_replace(H)
 
 
+# Rounds of dispute and weakening in one repair.  Each round refutes something new, so
+# it ends anyway; the cap guards against a bug.  cex50-55 needed at most 6.
+ENFORCE_ROUNDS = 20
+
+
 def _enforce(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], event: dict) -> None:
     """Weaken H until it entails no refuted statement."""
     _weaken(oracle, H, event)
-    for _ in range(20):
+    for _ in range(ENFORCE_ROUNDS):
         left = [n for n in _refuted(oracle) if H_MQ(n)]
         if not left:
             return
@@ -1416,6 +1421,13 @@ def _enforce(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], event: di
             logger.warning("Repair: H still entails the refuted %s; nothing in %s was denied.", left[0], J)
             return
         _weaken(oracle, H, event)
+    else:
+        # The cap reached: say so, or the outcome would read "repaired" (code review
+        # 2026-11-26).  The check at the next EQ (_check_refuted) tries again.
+        left = [n for n in _refuted(oracle) if H_MQ(n)]
+        if left:
+            event["still_entailed"] = [str(n) for n in left]
+            logger.warning("Repair: H still entails the refuted %s after %d rounds.", left[0], ENFORCE_ROUNDS)
 
 
 def _repair_followed(oracle: Oracle, H: set[GCI], H_MQ: Callable[[GCI], bool], eq: int,
