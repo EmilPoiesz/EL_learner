@@ -526,12 +526,6 @@ def build_parser() -> argparse.ArgumentParser:
              "misses; it ends learning like the judge's yes. Not offered in the masked phase.",
     )
     parser.add_argument(
-        "--eq-shuffle", action=argparse.BooleanOptionalAction, default=False,
-        help="With an LLM's own equivalence queries: list the concept names in the "
-             "counterexample prompt in a new order for each attempt (from the seed, the EQ "
-             "and the attempt) instead of sorted.",
-    )
-    parser.add_argument(
         "--eq-temperature", type=float, default=0.0, metavar="T",
         help="With an LLM's own equivalence queries: sample only the counterexample "
              "prompts at T (Ollama's other defaults, seeded by --seed); the MQs, the "
@@ -769,7 +763,6 @@ if __name__ == "__main__":
                 memory=args.eq_memory,
                 explain=args.eq_explain,
                 explain_form=args.eq_explain_form,
-                shuffle=args.eq_shuffle,
                 mask=args.eq_mask,
                 none=args.eq_none,
                 temperature=args.eq_temperature,

@@ -294,15 +294,6 @@ OPTIONS: tuple[Option, ...] = (
                             "the EQs fail."),
                     (True, "The prompt adds: if every statement you know to be true in O already follows "
                            "from H, reply with exactly one word instead: none."))),
-    Option("oracle.eq.counterexample.shuffle", "Shuffled concept names", "bool",
-           "Whether the counterexample prompt lists the concept names in a new order for each "
-           "attempt. Added 2026-11-16 against fixation (a run proposing nearly everything about one "
-           "concept, cex30/cex31).",
-           flag="--eq-shuffle", default=False, env="EQ_SHUFFLE",
-           choices=((True, "A new order per attempt, drawn from the seed, the EQ and the attempt "
-                           "(reproducible). Roles, the judge and the check unchanged."),
-                    (False, "Sorted, the same in every prompt.")),
-           see=()),
     Option("oracle.eq.counterexample.explain", "Explain failures", "bool",
            "Whether a retry line also says what to do instead of the failed answer.",
            flag="--eq-explain", default=False, env="EQ_EXPLAIN",
@@ -432,6 +423,8 @@ def _check_value(opt: Option, value: Any) -> None:
 # Options removed from the code; a config that still sets one is a record of an old run.
 RETIRED = {
     "oracle.resample": "removed on 2026-11-26 (used in cex47 only: sampling each repeat afresh hurt)",
+    "oracle.eq.counterexample.shuffle": "removed on 2026-11-26 (never used in a run; the fixation probe "
+                                        "found no help)",
 }
 
 

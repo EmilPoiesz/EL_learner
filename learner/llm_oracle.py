@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-import random
 import re
 import time
 from collections import Counter
@@ -58,15 +57,6 @@ QUERY_STATS = ("asked", "cached", "generated", "prompt_tokens", "new_tokens", "s
 
 
 _subsumed = subsumed_without_axioms   # c ⊑ d with no axioms (el_algorithm)
-
-
-def shuffled_names(sig: set[str], seed: int, eq: int, attempt: int) -> list[str]:
-    """The concept names in a random order fixed by (seed, eq, attempt): the same in
-    every process (``random.Random`` with a string seed is not hash-randomised), and
-    a new order for each attempt, so a retry prompt also changes in that way."""
-    names = sorted(sig)
-    random.Random(f"shuffle-{seed}-{eq}-{attempt}").shuffle(names)
-    return names
 
 
 def _trivial(gci: GCI) -> bool:
@@ -182,14 +172,6 @@ class EQSettings:
         ``"g2b"``, examples about cars, in either language.  The variants before it
         (cex13-cex17) were removed on 2026-11-26.  Mode ``"combined"`` has its own
         prompt (``eq_combined_prompt``).
-    shuffle : bool
-        False (default): the counterexample prompt lists the concept names sorted.
-        True: in a new order for each attempt, drawn from the oracle's seed, the EQ
-        and the attempt (``shuffled_names``), so a run is reproducible.  Added
-        2026-11-16 against fixation: every run proposed nearly all its statements
-        about one concept (cex30 animals: Bird in 132 of 132), and the
-        alphabetical list puts the same names first in every prompt.  The roles,
-        the judge and the check are not changed.
     mask : int
         0 (default): off.  N > 0: a masked phase of N accepted counterexamples,
         starting after the run's first accepted one.  In it the prompts (judge
@@ -220,7 +202,6 @@ class EQSettings:
     memory: bool = False
     explain: bool = False
     explain_form: bool = False
-    shuffle: bool = False
     mask: int = 0
     none: bool = False
     temperature: float = 0.0
@@ -270,7 +251,6 @@ class EQSettings:
                 + (", rejections remembered across EQs" if self.memory else "")
                 + (", failed answers explained" if self.explain else "")
                 + (" (also '¬', inverse roles, 'Nothing')" if self.explain_form else "")
-                + (", concept names shuffled per attempt" if self.shuffle else "")
                 + (f", masked phase of {self.mask} counterexamples after the first (empty H shown, "
                    f"H's concepts out of scope)" if self.mask else "")
                 + (", 'none' allowed as a counterexample answer" if self.none else "")
@@ -1106,9 +1086,7 @@ class LLMOracle(Oracle):
             # a repeated line only lengthened the prompt, and without the count a repeat
             # would leave the prompt as it was, so every attempt left got the cached answer.
             feedback = earlier + [prompts.unusable_feedback(r, n) for r, n in Counter(reasons).items()]
-            names = (shuffled_names(sig, self._seed, self.eq_count, attempt)
-                     if settings.shuffle else sig)
-            prompt = build(names, self._roles, shown, feedback, language)
+            prompt = build(sig, self._roles, shown, feedback, language)
             try:
                 counterexample = self._query(prompt, parse=parse, label=label,
                                              sampling=sampling, **generate)

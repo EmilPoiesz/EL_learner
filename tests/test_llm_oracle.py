@@ -25,7 +25,7 @@ is replaced by a stub that returns scripted responses.
 49 EQ: why an answer failed, explained in one sentence naming nothing of the signature
 50 EQ: the explain setting adds those sentences to the retry lines, and only it
 51 EQ: a repeated unusable answer gets one retry line, saying how often (streaks of 10 from 2026-11-16)
-52 EQ: shuffle lists the concept names in a new, reproducible order per attempt; off, sorted
+52 EQ: every attempt lists the concept names sorted
 53 EQ: mask: after the first accepted counterexample, N EQs show an empty H with H's left-side concepts out of scope, without the judge
 54 thinking off: enable_thinking=False reaches the chat template, and keys the cache apart from thinking on
 56 a sampled MQ asked again is replayed from the cache (one draw per question and seed), as a greedy one
@@ -860,27 +860,14 @@ def _scope_line(prompt: str) -> list[str]:
     return line.removeprefix("Concept names in scope: ").rstrip(".").split(", ")
 
 
-@pytest.mark.parametrize("shuffle", [False, True])
-def test_52_eq_shuffle(tmp_path, shuffle):
-    # judge no; an unusable answer, then a usable one the check accepts.  Shuffled,
-    # each attempt lists the names in its own order, the same in a second run.
+def test_52_names_sorted_in_every_attempt(tmp_path):
+    # judge no; an unusable answer, then a usable one the check accepts.  Each attempt
+    # lists the concept names sorted (shuffling per attempt was removed on 2026-11-26).
     names = {"A", "B", "C", "D", "E", "F", "G", "H"}
-    orders = []
-    for run in ("one", "two"):
-        (tmp_path / run).mkdir()
-        oracle = _oracle(tmp_path / run, ["no", "not a statement", "A SubClassOf B", "True"])
-        oracle._sig = set(names)
-        oracle._eq = EQSettings(shuffle=shuffle)
-        assert oracle.EQ(set()) == _GCI
-        first, retry = _scope_line(oracle._pipe.prompts[1]), _scope_line(oracle._pipe.prompts[2])
-        assert set(first) == set(retry) == names
-        orders.append((first, retry))
-        if not shuffle:
-            assert first == retry == sorted(names)
-        else:
-            assert first != retry and sorted(names) not in (first, retry)
-    assert orders[0] == orders[1]
-    assert ("concept names shuffled" in EQSettings(shuffle=shuffle).describe()) is shuffle
+    oracle = _oracle(tmp_path, ["no", "not a statement", "A SubClassOf B", "True"])
+    oracle._sig = set(names)
+    assert oracle.EQ(set()) == _GCI
+    assert _scope_line(oracle._pipe.prompts[1]) == _scope_line(oracle._pipe.prompts[2]) == sorted(names)
 
 
 def _gci(text: str) -> GCI:
