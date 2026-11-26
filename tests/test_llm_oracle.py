@@ -26,7 +26,7 @@ is replaced by a stub that returns scripted responses.
 50 EQ: the explain setting adds those sentences to the retry lines, and only it
 51 EQ: a repeated unusable answer gets one retry line, saying how often (streaks of 10 from 2026-11-16)
 52 EQ: shuffle lists the concept names in a new, reproducible order per attempt; off, sorted
-53 EQ: mask: after the first accepted counterexample, N EQs show an empty H with H's left-side concepts out of scope
+53 EQ: mask: after the first accepted counterexample, N EQs show an empty H with H's left-side concepts out of scope, without the judge
 54 thinking off: enable_thinking=False reaches the chat template, and keys the cache apart from thinking on
 56 resample: a sampled MQ asked again is generated afresh, not replayed; greedy and resample off still use the cache
 57 repair: direct_MQ asks the model even where H entails the GCI (an MQ is answered from H); a refuted GCI is no without asking
@@ -891,11 +891,12 @@ def test_53_eq_mask_phase(tmp_path):
     # mask=2 on Σ = {A, B, C, D}.  EQ 1 is as without the mask.  EQs 2 and 3 are the
     # masked phase: the prompts show an empty H, and the concepts on the left of H's
     # axioms (A, then A and C) are out of scope, so an answer about A is unusable; a
-    # remembered rejection naming A is left out.  EQ 4 is as without the mask again.
+    # remembered rejection naming A is left out.  The masked EQs ask no judge (it would be
+    # about the empty H shown).  EQ 4 is as without the mask again.
     oracle = _oracle(tmp_path, [
         "no", "A SubClassOf B", "True",                          # EQ 1
-        "no", "A SubClassOf C", "C SubClassOf D", "True",        # EQ 2: A masked
-        "no", "D SubClassOf B", "True",                          # EQ 3: A, C masked
+        "A SubClassOf C", "C SubClassOf D", "True",              # EQ 2: A masked
+        "D SubClassOf B", "True",                                # EQ 3: A, C masked
         "no", "B SubClassOf D", "True",                          # EQ 4: phase over
     ])
     oracle._sig = {"A", "B", "C", "D"}
@@ -910,16 +911,17 @@ def test_53_eq_mask_phase(tmp_path):
     start = len(oracle._pipe.prompts)
     assert oracle.EQ(H) == _gci("C SubClassOf D")
     eq2 = oracle._pipe.prompts[start:]
-    for prompt in (eq2[0], eq2[1], eq2[2]):                     # judge, two attempts
+    assert len(eq2) == 3 and not any("Does H capture" in p for p in eq2)   # two attempts, the check
+    for prompt in eq2[:2]:
         assert _scope_line(prompt) == ["B", "C", "D"]
         assert "A SubClassOf B" not in prompt                   # H shown empty
         assert "A SubClassOf D" not in prompt                   # rejection naming A left out
-    assert "A is not a concept name in scope" in eq2[2]
+    assert "A is not a concept name in scope" in eq2[1]
     H.add(_gci("C SubClassOf D"))
 
     start = len(oracle._pipe.prompts)
     assert oracle.EQ(H) == _gci("D SubClassOf B")
-    assert _scope_line(oracle._pipe.prompts[start + 1]) == ["B", "D"]
+    assert _scope_line(oracle._pipe.prompts[start]) == ["B", "D"]
     H.add(_gci("D SubClassOf B"))
     assert oracle._mask_accepted == 2
 
@@ -929,7 +931,10 @@ def test_53_eq_mask_phase(tmp_path):
     assert _scope_line(last) == ["A", "B", "C", "D"]
     assert "A SubClassOf B" in last and "C SubClassOf D" in last
     assert "A SubClassOf D" in last                             # the rejection is back
+    assert "Does H capture" in oracle._pipe.prompts[start]      # the judge is back
     assert "masked phase of 2" in EQSettings(mask=2).describe()
+    with pytest.raises(ValueError, match="mask needs mode 'judge'"):
+        EQSettings(mask=1, mode="combined")
     assert "masked" not in EQSettings().describe()
 
 
@@ -1075,12 +1080,12 @@ def test_59_eq_none_answer(tmp_path):
     # Masked phase: not offered (the prompt shows only part of H), so "none" is unusable.
     (tmp_path / "mask").mkdir()
     oracle = _oracle(tmp_path / "mask", ["no", "A SubClassOf B", "True",
-                                          "no", "none", "B SubClassOf C", "True"])
+                                          "none", "B SubClassOf C", "True"])       # masked: no judge
     oracle._sig = {"A", "B", "C"}
     oracle._eq = EQSettings(none=True, mask=1)
     H = {oracle.EQ(set())}
     assert oracle.EQ(H) == _gci("B SubClassOf C")       # A is masked
-    assert NONE_LINE not in oracle._pipe.prompts[4]
+    assert NONE_LINE not in oracle._pipe.prompts[3]
     assert oracle.eq_outcomes["unusable"] == 1
 
     assert "'none' allowed" in EQSettings(none=True).describe()

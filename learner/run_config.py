@@ -279,7 +279,8 @@ OPTIONS: tuple[Option, ...] = (
            "prompts (judge and counterexample) show an empty H, as in a fresh run, and leave every concept "
            "on the left side of an axiom of H out of scope, so an answer using one is unusable; the mask "
            "grows with H. Remembered rejections and carried retry lines that name a masked concept are "
-           "left out. Only the prompts change: 'follows from H' and the learner use the real H. Added "
+           "left out. No judge is asked in the phase (it would be about the empty H shown; since 2026-11-26), and "
+           "'none' is not offered. Only the prompts change: 'follows from H' and the learner use the real H. Judge mode only. Added "
            "2026-11-16 against fixation, after shuffling alone did not move animals off Bird (note "
            "fixation-probe).",
            flag="--eq-mask", default=0, env="EQ_MASK", minimum=0, see=()),

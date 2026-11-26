@@ -255,6 +255,8 @@ class EQSettings:
             raise ValueError(f"generation must be one of {GENERATIONS}, not {self.generation!r}")
         if self.none and self.mode != "judge":
             raise ValueError("none needs mode 'judge' (mode combined has its own yes)")
+        if self.mask and self.mode != "judge":
+            raise ValueError("mask needs mode 'judge' (a combined prompt's yes would be about the empty H shown)")
         if self.explain_form and not self.explain:
             raise ValueError("explain_form needs explain")
 
@@ -1076,7 +1078,10 @@ class LLMOracle(Oracle):
         render = gci_to_nl if language == "nl" else gci_to_manchester
         names_in = re.compile(r"\b(" + "|".join(map(re.escape, sorted(masked))) + r")\b") if masked else None
         visible = (lambda line: True) if names_in is None else (lambda line: not names_in.search(line))
-        if settings.mode == "judge":
+        # Not in the masked phase: it would ask whether the empty H shown is complete, and
+        # a yes would end learning with the real H (code review 2026-11-26; 'none' is not
+        # offered there for the same reason).
+        if settings.mode == "judge" and not masked:
             try:
                 equivalent = self._query(
                     prompts.eq_judge_prompt(sig, self._roles, shown, language, again),
