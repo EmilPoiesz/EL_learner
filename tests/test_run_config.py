@@ -15,6 +15,7 @@ Tests for learner/run_config.py and demo.py --config.
 11 values that would crash a job after the model loads are config and command-line errors:
    max_new_tokens 0, ε 0, δ 0 or 1 (code review 2026-11-26, finding 14)
 12 --repair needs an LLM's own EQs: with the reasoner or PAC sampling it is an error (finding 23)
+13 every bool a config can set, the command line can undo: --no-repair, --no-resample, --thinking (finding 22)
 """
 
 from __future__ import annotations
@@ -249,3 +250,22 @@ def test_12_repair_needs_llm_eqs(tmp_path, capsys):
     with pytest.raises(SystemExit):                       # also from a config
         demo.parse_args(parser, ["--config", _write(tmp_path, pac), "--ontology", "ontologies/animals.owl",
                                  "--seed", "0"])
+
+
+def test_13_command_line_undoes_config_bools(tmp_path):
+    on = {**STANDARD, "learner": {**STANDARD.get("learner", {}), "repair": True},
+          "oracle": {**STANDARD["oracle"], "thinking": False, "resample": True, "temperature": 0.6}}
+    path = _write(tmp_path, on)
+    parser = demo.build_parser()
+    pick = ["--config", path, "--ontology", "ontologies/animals.owl", "--seed", "0"]
+    args = demo.parse_args(parser, pick)
+    assert args.repair and args.resample and args.no_thinking
+    args = demo.parse_args(parser, pick + ["--no-repair", "--no-resample", "--thinking"])
+    assert not args.repair and not args.resample and not args.no_thinking
+    # Every bool option of the catalogue has a flag for each value.
+    flags = {s for a in parser._actions for s in a.option_strings}
+    for opt in run_config.OPTIONS:
+        if opt.kind == "bool" and opt.flag:
+            undo = (opt.flag.replace("--no-", "--", 1) if opt.flag.startswith("--no-")
+                    else "--no-" + opt.flag[2:])
+            assert undo in flags, opt.flag

@@ -703,7 +703,7 @@ def build_parser() -> argparse.ArgumentParser:
              "count towards --max-eqs.",
     )
     parser.add_argument(
-        "--repair", action="store_true",
+        "--repair", action=argparse.BooleanOptionalAction, default=False,
         help="Not in the paper: when a counterexample proposal already follows from H, ask about "
              "the parts of the H axioms it follows from, refute the parts the teacher denies, and "
              "weaken H; refuted statements are answered no from then on.  Needs an LLM's own "
@@ -725,7 +725,7 @@ def build_parser() -> argparse.ArgumentParser:
              "don't count towards --max-eqs.",
     )
     parser.add_argument(
-        "--resample", action="store_true",
+        "--resample", action=argparse.BooleanOptionalAction, default=False,
         help="With --temperature above 0: the oracle's sampled queries (MQs, the check, the judge) "
              "are never answered from the cache, so a repeated question is sampled afresh. "
              "Counterexample prompts are not affected.",
@@ -741,6 +741,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="With an LLM over an ontology (axioms, signature): pass enable_thinking=False "
              "to the chat template, which switches a hybrid model's reasoning off (Qwen3-8B, "
              "14B, 32B); other templates ignore it.",
+    )
+    parser.add_argument(
+        "--thinking", dest="no_thinking", action="store_false",
+        help="Thinking on after all, when a config (or an earlier flag) turns it off.",
     )
     parser.add_argument(
         "--no-precompute", action="store_true",
